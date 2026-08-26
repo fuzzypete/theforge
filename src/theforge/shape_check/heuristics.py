@@ -30,6 +30,7 @@ from theforge.shape_check.issue_spec import (
     DIAGNOSIS_SECTION,
     ENHANCEMENT_SPEC,
     EXAMPLE_SECTION,
+    ISSUE_SHAPE_REFERENCE_PATH,
     RECOGNIZED_TYPE_LABELS,
     SECTIONS,
     ContradictionTrigger,
@@ -891,37 +892,59 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
     type is the whole edit — this function reads that, it does not restate it.
     """
     spec = _declared_type_spec(labels)
-    if spec is None or spec.contradiction is None:
+    if spec is None:
         return None
 
-    contradiction = spec.contradiction
+    # The forbidden set is the section rules themselves. Marking a section
+    # ``Presence.FORBIDDEN`` on a type is the whole edit; the contradiction
+    # block carries only *how the refusal reads* and when a lone heading counts,
+    # never a second list of which sections are forbidden — that is the drift
+    # this specification exists to remove.
+    forbidden_keys = spec.section_keys_with(Presence.FORBIDDEN)
+    if not forbidden_keys:
+        return None
+
     rule = _type_shape_rule(spec)
-    assert rule is not None  # contradiction is not None, checked above
+    trigger = (
+        spec.contradiction.trigger if spec.contradiction else ContradictionTrigger.ANY_SECTION
+    )
     declared_type = spec.label
 
-    if contradiction.trigger is ContradictionTrigger.ANY_SECTION:
-        offending = _forbidden_section_headings(body, contradiction.forbidden_section_keys)
-        if not offending:
-            return None
+    # BUG_BODY_SHAPE: a lone forbidden heading is ordinary prose. The body must
+    # carry the bug-report shape itself before its sections contradict a type.
+    if trigger is ContradictionTrigger.BUG_BODY_SHAPE and not has_bug_body_headings(body):
+        return None
+
+    offending_headings = _forbidden_section_headings(body, forbidden_keys)
+    if not offending_headings:
+        return None
+
+    if rule is None:
+        # A type that forbids sections without declaring how to say so is still
+        # enforced; it just gets the specification's own words for it.
+        return Reason(
+            code="type_shape_contradiction",
+            severity=Severity.BLOCKING,
+            detail=(
+                f"{declared_type} body carries "
+                f"{_format_heading_list(offending_headings)}, which the {declared_type} "
+                f"specification forbids (see {ISSUE_SHAPE_REFERENCE_PATH}). "
+                "Remove the section or relabel the issue."
+            ),
+        )
+
+    if trigger is ContradictionTrigger.ANY_SECTION:
         return Reason(
             code="type_shape_contradiction",
             severity=Severity.BLOCKING,
             detail=(
                 f"{declared_type} body carries an {rule.contradicted_section_slug} section"
-                f" ({offending[0]!r}); "
+                f" ({offending_headings[0]!r}); "
                 f"{rule.type_rule_text} (see authoring guide). "
                 f"{rule.remediation_hint.capitalize()}."
             ),
         )
 
-    # BUG_BODY_SHAPE: a lone forbidden heading is ordinary prose. The body must
-    # carry the bug-report shape itself before its sections contradict a type.
-    if not has_bug_body_headings(body):
-        return None
-
-    offending_headings = _forbidden_section_headings(body, contradiction.forbidden_section_keys)
-    if not offending_headings:
-        return None
     return Reason(
         code="type_shape_contradiction",
         severity=Severity.BLOCKING,

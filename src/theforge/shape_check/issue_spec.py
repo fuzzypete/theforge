@@ -180,9 +180,15 @@ class LifecycleState:
 
 @dataclass(frozen=True)
 class TypeShapeContradiction:
-    """How a type's forbidden sections are reported when they appear."""
+    """How a type's forbidden sections are reported when they appear.
 
-    forbidden_section_keys: tuple[str, ...]
+    *Which* sections are forbidden is not stated here — that is
+    :attr:`IssueTypeSpec.section_rules` with :attr:`Presence.FORBIDDEN`, and it
+    is the only place it is stated. This record carries the wording of the
+    refusal and the ``trigger`` that decides when a forbidden heading is a
+    contradiction rather than ordinary prose.
+    """
+
     trigger: ContradictionTrigger
     slug: str
     rule_text: str
@@ -357,10 +363,6 @@ SECTIONS: dict[str, SectionSpec] = {
     )
 }
 
-#: Section keys that together constitute the bug-report shape.
-BUG_SHAPE_SECTION_KEYS: tuple[str, ...] = ("observed", "expected", "reproduction", "diagnosis")
-
-
 # --- Lifecycle --------------------------------------------------------------
 
 _IMPLEMENTATION_READY = LifecycleState(
@@ -434,7 +436,6 @@ BUG_SPEC = IssueTypeSpec(
     ),
     lifecycle_states=_BUG_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        forbidden_section_keys=("acceptance_criteria",),
         trigger=ContradictionTrigger.ANY_SECTION,
         slug="acceptance-criteria",
         rule_text="bugs use observed/expected plus diagnosis",
@@ -458,7 +459,6 @@ ENHANCEMENT_SPEC = IssueTypeSpec(
     ),
     lifecycle_states=_FEATURE_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        forbidden_section_keys=BUG_SHAPE_SECTION_KEYS,
         trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text=(
@@ -484,7 +484,6 @@ TASK_SPEC = IssueTypeSpec(
     ),
     lifecycle_states=_FEATURE_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        forbidden_section_keys=BUG_SHAPE_SECTION_KEYS,
         trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text="task issues use why/acceptance criteria/example, not bug-report sections",
@@ -508,7 +507,6 @@ EPIC_SPEC = IssueTypeSpec(
     ),
     lifecycle_states=_TRACKING_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        forbidden_section_keys=BUG_SHAPE_SECTION_KEYS,
         trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text="epic issues are tracking entries, not bug-report sections",

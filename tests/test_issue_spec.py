@@ -154,23 +154,69 @@ class TestCheckerDerivesFromSpecification:
         assert result.verdict is ShapeVerdict.NEEDS_GROOMING_MISSING_AC
         assert any(r.code == "missing_acceptance_criteria" for r in result.reasons)
 
-    def test_changing_a_forbidden_section_changes_what_the_gate_refuses(self, monkeypatch) -> None:
+    @staticmethod
+    def _with_presence(spec, section_key: str, presence: Presence):
+        return dataclasses.replace(
+            spec,
+            section_rules=tuple(
+                SectionRule(rule.section_key, presence)
+                if rule.section_key == section_key
+                else rule
+                for rule in spec.section_rules
+            ),
+        )
+
+    def test_marking_a_section_forbidden_is_the_whole_edit(self, monkeypatch) -> None:
+        # The section rule is the only place "forbidden" is stated. Flipping it
+        # — and nothing else, in particular not the contradiction block — must
+        # be enough to make the gate refuse a body carrying that section.
         body = CANONICAL_BUG_BODY + "\n## Steps to reproduce\n\n- run `forge shape --apply`\n"
         assert check("Rewrite bug", body, ["bug"]).verdict is ShapeVerdict.RUNNABLE
 
+        forbidding = self._with_presence(BUG_SPEC, "reproduction", Presence.FORBIDDEN)
+        assert forbidding.contradiction == BUG_SPEC.contradiction
+        self._respecify(monkeypatch, forbidding)
+
+        result = check("Rewrite bug", body, ["bug"])
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+        assert "Steps to reproduce" in reason.detail
+
+    def test_a_type_that_forbids_without_declaring_wording_still_refuses(
+        self, monkeypatch
+    ) -> None:
+        # A type may forbid a section without carrying a contradiction block at
+        # all. Enforcement must not depend on the prose being written first.
+        body = CANONICAL_BUG_BODY + "\n## Steps to reproduce\n\n- run `forge shape --apply`\n"
         forbidding = dataclasses.replace(
-            BUG_SPEC,
-            contradiction=dataclasses.replace(
-                BUG_SPEC.contradiction,
-                forbidden_section_keys=("reproduction",),
-                slug="steps-to-reproduce",
-            ),
+            self._with_presence(BUG_SPEC, "reproduction", Presence.FORBIDDEN),
+            contradiction=None,
         )
         self._respecify(monkeypatch, forbidding)
 
         result = check("Rewrite bug", body, ["bug"])
         assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
-        assert any(r.code == "type_shape_contradiction" for r in result.reasons)
+        reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+        assert "specification forbids" in reason.detail
+        assert ISSUE_SHAPE_REFERENCE_PATH in reason.detail
+
+    def test_unforbidding_a_section_stops_the_refusal(self, monkeypatch) -> None:
+        body = (
+            "## Observed\n\nthe queue and the gate disagree\n\n"
+            "## Expected\n\nthey return one admission answer\n\n"
+            "## Acceptance criteria\n\n- one answer, consumed everywhere\n"
+        )
+        assert check("Disagreement", body, ["enhancement"]).verdict is (
+            ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        )
+
+        permissive = ENHANCEMENT_SPEC
+        for key in ("observed", "expected"):
+            permissive = self._with_presence(permissive, key, Presence.OPTIONAL)
+        self._respecify(monkeypatch, permissive)
+
+        result = check("Disagreement", body, ["enhancement"])
+        assert not any(r.code == "type_shape_contradiction" for r in result.reasons)
 
     def test_observable_verb_vocabulary_is_no_longer_an_admission_input(self) -> None:
         # ADR-0009 clause 5: presence of criteria is structural, whether they

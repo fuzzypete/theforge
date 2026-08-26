@@ -89,7 +89,8 @@ def _render_type(spec: IssueTypeSpec) -> list[str]:
     if spec.contradiction is not None:
         contradiction = spec.contradiction
         forbidden = ", ".join(
-            f"`{SECTIONS[key].canonical_heading}`" for key in contradiction.forbidden_section_keys
+            f"`{SECTIONS[key].canonical_heading}`"
+            for key in spec.section_keys_with(Presence.FORBIDDEN)
         )
         lines.append("### Type/shape contradiction")
         lines.append("")
