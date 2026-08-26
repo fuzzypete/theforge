@@ -888,37 +888,38 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
     Both the forbidden sections and the wording of the refusal come from the
     declared type's specification: a bug may not carry the feature-style
     acceptance-criteria section, and the feature-shaped types may not use the
-    bug report section shape. Marking a section ``Presence.FORBIDDEN`` on a
-    type is the whole edit — this function reads that, it does not restate it.
+    bug report sections. Marking a section ``Presence.FORBIDDEN`` on a type is
+    the whole edit — this function reads that, it does not restate it.
+
+    Each forbidden rule carries its own trigger, because sections differ in how
+    much they say alone. ``## Diagnosis`` on an enhancement is a defect
+    investigation however the rest of the body reads, so it is refused on sight;
+    ``## Expected`` is ordinary English about intended behavior, so it counts
+    only when the body carries the whole bug-report shape around it.
     """
     spec = _declared_type_spec(labels)
     if spec is None:
         return None
 
-    # The forbidden set is the section rules themselves. Marking a section
-    # ``Presence.FORBIDDEN`` on a type is the whole edit; the contradiction
-    # block carries only *how the refusal reads* and when a lone heading counts,
-    # never a second list of which sections are forbidden — that is the drift
-    # this specification exists to remove.
-    forbidden_keys = spec.section_keys_with(Presence.FORBIDDEN)
-    if not forbidden_keys:
-        return None
-
-    rule = _type_shape_rule(spec)
-    trigger = (
-        spec.contradiction.trigger if spec.contradiction else ContradictionTrigger.ANY_SECTION
-    )
-    declared_type = spec.label
-
-    # BUG_BODY_SHAPE: a lone forbidden heading is ordinary prose. The body must
-    # carry the bug-report shape itself before its sections contradict a type.
-    if trigger is ContradictionTrigger.BUG_BODY_SHAPE and not has_bug_body_headings(body):
-        return None
-
-    offending_headings = _forbidden_section_headings(body, forbidden_keys)
+    # The forbidden set — and when each member of it counts — is the section
+    # rules themselves. The contradiction block carries only *how the refusal
+    # reads*, never a second list of which sections are forbidden: that is the
+    # drift this specification exists to remove.
+    shape_keys = spec.forbidden_keys_with_trigger(ContradictionTrigger.BUG_BODY_SHAPE)
+    carries_bug_shape = bool(shape_keys) and has_bug_body_headings(body)
+    enforced_keys = [
+        key
+        for key in spec.section_keys_with(Presence.FORBIDDEN)
+        if key not in shape_keys or carries_bug_shape
+    ]
+    # Section order is declaration order, so a refusal names the sections the
+    # way the specification lists them.
+    offending_headings = _forbidden_section_headings(body, enforced_keys)
     if not offending_headings:
         return None
 
+    declared_type = spec.label
+    rule = _type_shape_rule(spec)
     if rule is None:
         # A type that forbids sections without declaring how to say so is still
         # enforced; it just gets the specification's own words for it.
@@ -933,12 +934,13 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
             ),
         )
 
-    if trigger is ContradictionTrigger.ANY_SECTION:
+    if len(offending_headings) == 1:
+        article = "an" if rule.contradicted_section_slug[:1].lower() in "aeiou" else "a"
         return Reason(
             code="type_shape_contradiction",
             severity=Severity.BLOCKING,
             detail=(
-                f"{declared_type} body carries an {rule.contradicted_section_slug} section"
+                f"{declared_type} body carries {article} {rule.contradicted_section_slug} section"
                 f" ({offending_headings[0]!r}); "
                 f"{rule.type_rule_text} (see authoring guide). "
                 f"{rule.remediation_hint.capitalize()}."
@@ -949,8 +951,7 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
         code="type_shape_contradiction",
         severity=Severity.BLOCKING,
         detail=(
-            f"{declared_type} body carries {rule.contradicted_section_slug} section"
-            f"{'s' if len(offending_headings) != 1 else ''} "
+            f"{declared_type} body carries {rule.contradicted_section_slug} sections "
             f"{_format_heading_list(offending_headings)}; "
             f"{rule.type_rule_text} (see authoring guide). "
             f"{rule.remediation_hint.capitalize()}."

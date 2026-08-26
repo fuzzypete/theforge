@@ -18,6 +18,7 @@ from theforge.shape_check.issue_spec import (
     ISSUE_SHAPE_REFERENCE_PATH,
     ISSUE_TYPES,
     SECTIONS,
+    ContradictionTrigger,
     IssueTypeSpec,
     Presence,
     SectionSpec,
@@ -41,6 +42,10 @@ def _heading_spellings(section: SectionSpec) -> str:
     return f"{canonical} (also recognized: {', '.join(others)})"
 
 
+def _section_list(section_keys: tuple[str, ...]) -> str:
+    return ", ".join(f"`{SECTIONS[key].canonical_heading}`" for key in section_keys)
+
+
 def _render_type(spec: IssueTypeSpec) -> list[str]:
     lines = [
         f"## `{spec.label}`",
@@ -55,10 +60,13 @@ def _render_type(spec: IssueTypeSpec) -> list[str]:
     lines.append("| --- | --- | --- |")
     for rule in spec.section_rules:
         section = SECTIONS[rule.section_key]
-        lines.append(
-            f"| {section.canonical_heading} | {_heading_spellings(section)} "
-            f"| {_PRESENCE_NOTE[rule.presence]} |"
-        )
+        note = _PRESENCE_NOTE[rule.presence]
+        if (
+            rule.presence is Presence.FORBIDDEN
+            and rule.trigger is ContradictionTrigger.BUG_BODY_SHAPE
+        ):
+            note = "forbidden — but only as part of the bug-report shape (see below)"
+        lines.append(f"| {section.canonical_heading} | {_heading_spellings(section)} | {note} |")
     lines.append("")
 
     fielded = [
@@ -86,18 +94,28 @@ def _render_type(spec: IssueTypeSpec) -> list[str]:
         lines.append(f"| `{state.key}` | {admits} | {state.summary} |")
     lines.append("")
 
-    if spec.contradiction is not None:
-        contradiction = spec.contradiction
-        forbidden = ", ".join(
-            f"`{SECTIONS[key].canonical_heading}`"
-            for key in spec.section_keys_with(Presence.FORBIDDEN)
-        )
+    if spec.section_keys_with(Presence.FORBIDDEN):
         lines.append("### Type/shape contradiction")
         lines.append("")
-        lines.append(f"{contradiction.rule_text.capitalize()}.")
-        lines.append("")
-        lines.append(f"- Sections that contradict this type: {forbidden}")
-        lines.append(f"- Remediation: {contradiction.remediation_hint}")
+        if spec.contradiction is not None:
+            lines.append(f"{spec.contradiction.rule_text.capitalize()}.")
+            lines.append("")
+        on_sight = _section_list(
+            spec.forbidden_keys_with_trigger(ContradictionTrigger.ANY_SECTION)
+        )
+        if on_sight:
+            lines.append(f"- Refused on sight: {on_sight}")
+        in_shape = _section_list(
+            spec.forbidden_keys_with_trigger(ContradictionTrigger.BUG_BODY_SHAPE)
+        )
+        if in_shape:
+            lines.append(
+                f"- Refused only as part of the bug-report shape: {in_shape} — a reproduction"
+                " heading, or a symptom heading paired with an expectation heading, must be"
+                " present before these count. One of them alone is ordinary prose."
+            )
+        if spec.contradiction is not None:
+            lines.append(f"- Remediation: {spec.contradiction.remediation_hint}")
         lines.append("")
 
     return lines

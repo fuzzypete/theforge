@@ -72,12 +72,19 @@ class Presence(str, Enum):
 
 
 class ContradictionTrigger(str, Enum):
-    """When a forbidden section actually contradicts the declared type.
+    """When one forbidden section actually contradicts the declared type.
 
-    ``ANY_SECTION`` — any one of the forbidden sections is enough.
-    ``BUG_BODY_SHAPE`` — the body carries the *bug report shape*: a reproduction
-    heading, or a symptom heading paired with an expectation heading. A lone
-    ``## Expected`` under a feature issue is ordinary prose, not a bug report.
+    A property of the *section*, not of the type: some headings say what they
+    are on their own, and some are ordinary English that only mean a bug report
+    in company.
+
+    ``ANY_SECTION`` — the heading is enough by itself. ``## Diagnosis`` in a
+    feature body is a defect investigation however the rest of the body reads,
+    so the gate refuses it on sight. This is the default.
+    ``BUG_BODY_SHAPE`` — the section counts only when the body carries the whole
+    *bug report shape*: a reproduction heading, or a symptom heading paired with
+    an expectation heading. A lone ``## Expected`` under a feature issue is
+    ordinary prose describing intended behavior, not a bug report.
     """
 
     ANY_SECTION = "any_section"
@@ -156,10 +163,18 @@ class SectionSpec:
 
 @dataclass(frozen=True)
 class SectionRule:
-    """A type's stance on one section."""
+    """A type's stance on one section.
+
+    ``trigger`` applies only to :attr:`Presence.FORBIDDEN` and says when the
+    section's presence is a contradiction rather than ordinary prose. It sits
+    here, on the rule, because it is a fact about *that section under that
+    type* — a feature issue's ``## Diagnosis`` contradicts on sight while its
+    ``## Expected`` only does so as part of a whole bug report.
+    """
 
     section_key: str
     presence: Presence
+    trigger: ContradictionTrigger = ContradictionTrigger.ANY_SECTION
 
 
 @dataclass(frozen=True)
@@ -182,14 +197,13 @@ class LifecycleState:
 class TypeShapeContradiction:
     """How a type's forbidden sections are reported when they appear.
 
-    *Which* sections are forbidden is not stated here — that is
-    :attr:`IssueTypeSpec.section_rules` with :attr:`Presence.FORBIDDEN`, and it
-    is the only place it is stated. This record carries the wording of the
-    refusal and the ``trigger`` that decides when a forbidden heading is a
-    contradiction rather than ordinary prose.
+    *Which* sections are forbidden, and when each one counts, is not stated
+    here — that is :attr:`IssueTypeSpec.section_rules` with
+    :attr:`Presence.FORBIDDEN` and its :attr:`SectionRule.trigger`, and that is
+    the only place it is stated. This record carries the wording of the refusal
+    and nothing else.
     """
 
-    trigger: ContradictionTrigger
     slug: str
     rule_text: str
     remediation_hint: str
@@ -227,6 +241,18 @@ class IssueTypeSpec:
 
     def section_keys_with(self, presence: Presence) -> tuple[str, ...]:
         return tuple(r.section_key for r in self.section_rules if r.presence is presence)
+
+    def forbidden_keys_with_trigger(self, trigger: ContradictionTrigger) -> tuple[str, ...]:
+        """Forbidden section keys whose presence counts under ``trigger``.
+
+        In declaration order, so a refusal names the sections in the order the
+        type renders them.
+        """
+        return tuple(
+            rule.section_key
+            for rule in self.section_rules
+            if rule.presence is Presence.FORBIDDEN and rule.trigger is trigger
+        )
 
     def requires(self, section_key: str) -> bool:
         return self.presence_of(section_key) is Presence.REQUIRED
@@ -436,7 +462,6 @@ BUG_SPEC = IssueTypeSpec(
     ),
     lifecycle_states=_BUG_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        trigger=ContradictionTrigger.ANY_SECTION,
         slug="acceptance-criteria",
         rule_text="bugs use observed/expected plus diagnosis",
         remediation_hint="remove the feature-style checklist or relabel the issue",
@@ -452,14 +477,13 @@ ENHANCEMENT_SPEC = IssueTypeSpec(
     section_rules=(
         SectionRule("acceptance_criteria", Presence.REQUIRED),
         SectionRule("example", Presence.ADVISORY),
-        SectionRule("observed", Presence.FORBIDDEN),
-        SectionRule("expected", Presence.FORBIDDEN),
+        SectionRule("observed", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
+        SectionRule("expected", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
         SectionRule("reproduction", Presence.FORBIDDEN),
         SectionRule("diagnosis", Presence.FORBIDDEN),
     ),
     lifecycle_states=_FEATURE_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text=(
             "enhancement issues use why/acceptance criteria/example, not bug-report sections"
@@ -477,14 +501,13 @@ TASK_SPEC = IssueTypeSpec(
     section_rules=(
         SectionRule("acceptance_criteria", Presence.REQUIRED),
         SectionRule("example", Presence.ADVISORY),
-        SectionRule("observed", Presence.FORBIDDEN),
-        SectionRule("expected", Presence.FORBIDDEN),
+        SectionRule("observed", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
+        SectionRule("expected", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
         SectionRule("reproduction", Presence.FORBIDDEN),
         SectionRule("diagnosis", Presence.FORBIDDEN),
     ),
     lifecycle_states=_FEATURE_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text="task issues use why/acceptance criteria/example, not bug-report sections",
         remediation_hint="relabel the issue as a bug or rewrite the body to the task shape",
@@ -500,14 +523,13 @@ EPIC_SPEC = IssueTypeSpec(
     section_rules=(
         SectionRule("acceptance_criteria", Presence.REQUIRED),
         SectionRule("example", Presence.ADVISORY),
-        SectionRule("observed", Presence.FORBIDDEN),
-        SectionRule("expected", Presence.FORBIDDEN),
+        SectionRule("observed", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
+        SectionRule("expected", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
         SectionRule("reproduction", Presence.FORBIDDEN),
         SectionRule("diagnosis", Presence.FORBIDDEN),
     ),
     lifecycle_states=_TRACKING_LIFECYCLE,
     contradiction=TypeShapeContradiction(
-        trigger=ContradictionTrigger.BUG_BODY_SHAPE,
         slug="bug-report-shape",
         rule_text="epic issues are tracking entries, not bug-report sections",
         remediation_hint="relabel the issue as a bug or file runnable child work instead",

@@ -71,7 +71,7 @@ Each field is written as a bolded bullet lead-in. The gate matches the
 
 Bugs use observed/expected plus diagnosis.
 
-- Sections that contradict this type: `Acceptance criteria`
+- Refused on sight: `Acceptance criteria`
 - Remediation: remove the feature-style checklist or relabel the issue
 
 ---
@@ -86,8 +86,8 @@ New or changed behavior, stated as outcomes a reviewer can check.
 | --- | --- | --- |
 | Acceptance criteria | `## Acceptance criteria` (also recognized: `Done criteria`, `Checklist`) | required — the gate refuses a body without it |
 | Example | `## Example` (also recognized: `Examples`) | advisory — reported when absent, but it decides nothing |
-| Observed | `## Observed` (also recognized: `What happened`) | forbidden — its presence contradicts this type |
-| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — its presence contradicts this type |
+| Observed | `## Observed` (also recognized: `What happened`) | forbidden — but only as part of the bug-report shape (see below) |
+| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — but only as part of the bug-report shape (see below) |
 | Steps to reproduce | `## Steps to reproduce` (also recognized: `Reproduction`) | forbidden — its presence contradicts this type |
 | Diagnosis | `## Diagnosis` (also recognized: `Root cause`) | forbidden — its presence contradicts this type |
 
@@ -102,7 +102,8 @@ New or changed behavior, stated as outcomes a reviewer can check.
 
 Enhancement issues use why/acceptance criteria/example, not bug-report sections.
 
-- Sections that contradict this type: `Observed`, `Expected`, `Steps to reproduce`, `Diagnosis`
+- Refused on sight: `Steps to reproduce`, `Diagnosis`
+- Refused only as part of the bug-report shape: `Observed`, `Expected` — a reproduction heading, or a symptom heading paired with an expectation heading, must be present before these count. One of them alone is ordinary prose.
 - Remediation: relabel the issue as a bug or rewrite the body to the feature shape
 
 ---
@@ -117,8 +118,8 @@ Operator-scoped or documentation-shaped work with a checkable outcome.
 | --- | --- | --- |
 | Acceptance criteria | `## Acceptance criteria` (also recognized: `Done criteria`, `Checklist`) | required — the gate refuses a body without it |
 | Example | `## Example` (also recognized: `Examples`) | advisory — reported when absent, but it decides nothing |
-| Observed | `## Observed` (also recognized: `What happened`) | forbidden — its presence contradicts this type |
-| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — its presence contradicts this type |
+| Observed | `## Observed` (also recognized: `What happened`) | forbidden — but only as part of the bug-report shape (see below) |
+| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — but only as part of the bug-report shape (see below) |
 | Steps to reproduce | `## Steps to reproduce` (also recognized: `Reproduction`) | forbidden — its presence contradicts this type |
 | Diagnosis | `## Diagnosis` (also recognized: `Root cause`) | forbidden — its presence contradicts this type |
 
@@ -133,7 +134,8 @@ Operator-scoped or documentation-shaped work with a checkable outcome.
 
 Task issues use why/acceptance criteria/example, not bug-report sections.
 
-- Sections that contradict this type: `Observed`, `Expected`, `Steps to reproduce`, `Diagnosis`
+- Refused on sight: `Steps to reproduce`, `Diagnosis`
+- Refused only as part of the bug-report shape: `Observed`, `Expected` — a reproduction heading, or a symptom heading paired with an expectation heading, must be present before these count. One of them alone is ordinary prose.
 - Remediation: relabel the issue as a bug or rewrite the body to the task shape
 
 ---
@@ -148,8 +150,8 @@ A tracking entry grouping runnable children; never dispatched itself.
 | --- | --- | --- |
 | Acceptance criteria | `## Acceptance criteria` (also recognized: `Done criteria`, `Checklist`) | required — the gate refuses a body without it |
 | Example | `## Example` (also recognized: `Examples`) | advisory — reported when absent, but it decides nothing |
-| Observed | `## Observed` (also recognized: `What happened`) | forbidden — its presence contradicts this type |
-| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — its presence contradicts this type |
+| Observed | `## Observed` (also recognized: `What happened`) | forbidden — but only as part of the bug-report shape (see below) |
+| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — but only as part of the bug-report shape (see below) |
 | Steps to reproduce | `## Steps to reproduce` (also recognized: `Reproduction`) | forbidden — its presence contradicts this type |
 | Diagnosis | `## Diagnosis` (also recognized: `Root cause`) | forbidden — its presence contradicts this type |
 
@@ -163,7 +165,8 @@ A tracking entry grouping runnable children; never dispatched itself.
 
 Epic issues are tracking entries, not bug-report sections.
 
-- Sections that contradict this type: `Observed`, `Expected`, `Steps to reproduce`, `Diagnosis`
+- Refused on sight: `Steps to reproduce`, `Diagnosis`
+- Refused only as part of the bug-report shape: `Observed`, `Expected` — a reproduction heading, or a symptom heading paired with an expectation heading, must be present before these count. One of them alone is ordinary prose.
 - Remediation: relabel the issue as a bug or file runnable child work instead
 
 ---

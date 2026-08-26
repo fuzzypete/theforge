@@ -38,6 +38,7 @@ from theforge.shape_check.issue_spec import (
     ISSUE_TYPES,
     RECOGNIZED_TYPE_LABELS,
     SECTIONS,
+    ContradictionTrigger,
     Presence,
     SectionRule,
     normalize_heading_text,
@@ -155,16 +156,80 @@ class TestCheckerDerivesFromSpecification:
         assert any(r.code == "missing_acceptance_criteria" for r in result.reasons)
 
     @staticmethod
-    def _with_presence(spec, section_key: str, presence: Presence):
+    def _with_presence(
+        spec,
+        section_key: str,
+        presence: Presence,
+        trigger: ContradictionTrigger = ContradictionTrigger.ANY_SECTION,
+    ):
         return dataclasses.replace(
             spec,
             section_rules=tuple(
-                SectionRule(rule.section_key, presence)
+                SectionRule(rule.section_key, presence, trigger)
                 if rule.section_key == section_key
                 else rule
                 for rule in spec.section_rules
             ),
         )
+
+    def test_a_lone_forbidden_section_is_refused_on_sight(self) -> None:
+        # The regression the second review found: an enhancement whose body
+        # carries a top-level ## Diagnosis was runnable, because the whole type
+        # shared one trigger that demanded the entire bug-report shape. A
+        # diagnosis is a defect investigation however the rest of the body
+        # reads, so its own rule refuses it alone.
+        body = (
+            "## Why\n\nThe queue and the gate disagree.\n\n"
+            "## Acceptance criteria\n\n- one admission answer, consumed everywhere\n\n"
+            "## Diagnosis\n\n- **Confirmed cause:** the result is reduced twice.\n"
+        )
+        result = check("Queue drift", body, ["enhancement"])
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        assert result.admits_implementation_sprint is False
+        reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+        assert "'Diagnosis'" in reason.detail
+
+    def test_a_lone_reproduction_heading_is_refused_on_sight(self) -> None:
+        body = (
+            "## Why\n\nOperators keep re-running it by hand.\n\n"
+            "## Steps to reproduce\n\n- run `forge sprint`\n\n"
+            "## Acceptance criteria\n\n- the command is idempotent\n"
+        )
+        result = check("Idempotent sprint", body, ["task"])
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+        assert "'Steps to reproduce'" in reason.detail
+
+    def test_a_lone_bug_shape_heading_is_not_a_contradiction(self) -> None:
+        # The other half of the same rule: "Expected" is ordinary English about
+        # intended behavior. Its rule declares the narrower trigger, so it
+        # counts only inside the whole bug-report shape.
+        body = (
+            "## Why\n\nThe flag is on by default.\n\n"
+            "## Expected\n\nThe flag defaults to off.\n\n"
+            "## Acceptance criteria\n\n- the flag defaults to off\n"
+        )
+        result = check("Flag default", body, ["enhancement"])
+        assert not any(r.code == "type_shape_contradiction" for r in result.reasons)
+        assert result.admits_implementation_sprint is True
+
+    def test_the_narrower_trigger_is_itself_specification_data(self, monkeypatch) -> None:
+        # Widening one section's trigger is a one-line specification edit, and
+        # the gate follows it with no second change.
+        body = (
+            "## Why\n\nThe flag is on by default.\n\n"
+            "## Expected\n\nThe flag defaults to off.\n\n"
+            "## Acceptance criteria\n\n- the flag defaults to off\n"
+        )
+        assert check("Flag default", body, ["enhancement"]).verdict is ShapeVerdict.RUNNABLE
+
+        strict = self._with_presence(
+            ENHANCEMENT_SPEC, "expected", Presence.FORBIDDEN, ContradictionTrigger.ANY_SECTION
+        )
+        self._respecify(monkeypatch, strict)
+
+        result = check("Flag default", body, ["enhancement"])
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
 
     def test_marking_a_section_forbidden_is_the_whole_edit(self, monkeypatch) -> None:
         # The section rule is the only place "forbidden" is stated. Flipping it
@@ -376,6 +441,15 @@ class TestGeneratedReferenceCannotDrift:
     def test_bug_shape_reference_matches_the_specification(self) -> None:
         path = _REPO_ROOT / BUG_SHAPE_REFERENCE_PATH
         assert path.read_text(encoding="utf-8") == render_bug_shape_reference()
+
+    def test_the_reference_states_when_each_forbidden_section_counts(self) -> None:
+        # A generated contract that said "forbidden" flatly would describe a
+        # rule the gate does not enforce: two of the feature types' forbidden
+        # sections count only inside the bug-report shape.
+        rendered = render_issue_shape_reference()
+        assert "- Refused on sight: `Steps to reproduce`, `Diagnosis`" in rendered
+        assert "- Refused only as part of the bug-report shape: `Observed`, `Expected`" in rendered
+        assert "- Refused on sight: `Acceptance criteria`" in rendered
 
     def test_every_type_and_section_appears_in_the_reference(self) -> None:
         rendered = render_issue_shape_reference()
