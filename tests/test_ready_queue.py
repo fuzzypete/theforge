@@ -51,6 +51,31 @@ Users need a way to bypass the gate.
 - warnings still list every skipped issue's reason codes
 """
 
+_ADVISORY_DONE_STATE_BODY = """## What
+
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+```text
+Before:
+$ forge sprint
+[forge] 2 issue(s) flagged by shape gate
+
+After:
+$ forge sprint --force
+[forge] sprint started with every issue
+```
+
+## Acceptance Criteria
+
+- The toggle is available to operators.
+"""
+
 # A bug filing with no `## Diagnosis` section — the exact shape the gate refuses
 # with a BLOCKING `needs_diagnosis` reason (#1983-#1987 in the story).
 _UNDIAGNOSED_BUG_BODY = """## Observed behavior
@@ -123,6 +148,15 @@ def test_build_prefers_first_known_type_when_multiple(tmp_path: Path) -> None:
 
 def test_build_marks_admissible_issue_ready(tmp_path: Path) -> None:
     issues = [_issue(1512, "add a flag", ["ready", "enhancement"])]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is True
+    assert entry.verdict == "runnable"
+
+
+def test_build_marks_advisory_only_done_state_ready(tmp_path: Path) -> None:
+    issues = [
+        _issue(1513, "add a flag", ["ready", "enhancement"], _ADVISORY_DONE_STATE_BODY),
+    ]
     entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
     assert entry.admissible is True
     assert entry.verdict == "runnable"

@@ -110,6 +110,7 @@ def render_comment(result: ShapeResult) -> str:
     lines.append("**Story shape check**")
     lines.append("")
     lines.append(f"- shape: `{result.shape.value}`")
+    lines.append(f"- admission verdict: `{result.verdict.value}`")
     lines.append(f"- suggested action: `{result.suggested_action.value}`")
     lines.append("")
     if not result.reasons:
@@ -142,13 +143,21 @@ def _log_result(issue_number: int, result: ShapeResult, author: str) -> None:
     """Greppable one-line log for drift analysis."""
     codes = ",".join(r.code for r in result.reasons) or "-"
     logger.info(
-        "shape_check issue=%d author=%s shape=%s action=%s reasons=%s",
+        "shape_check issue=%d author=%s shape=%s verdict=%s action=%s reasons=%s",
         issue_number,
         author,
         result.shape.value,
+        result.verdict.value,
         result.suggested_action.value,
         codes,
     )
+
+
+def _needs_grooming_label(result: ShapeResult) -> bool:
+    """Return whether the async relabeler should keep ``needs-grooming`` applied."""
+    if result.shape in (Shape.TRACKING_ONLY, Shape.SUPERSEDED):
+        return False
+    return not result.admits_implementation_sprint
 
 
 def run_action(
@@ -173,7 +182,7 @@ def run_action(
     _log_result(issue_number, result, author)
 
     existing = set(labels)
-    desired_needs_grooming = result.shape is Shape.NEEDS_GROOMING
+    desired_needs_grooming = _needs_grooming_label(result)
     desired_tracking = result.shape is Shape.TRACKING_ONLY
 
     if desired_needs_grooming and config.needs_grooming_label not in existing:
