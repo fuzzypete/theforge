@@ -18,11 +18,14 @@ findings, and decomposed in #1033 into five sequential slices: a deterministic b
 report, an agent proposal, an adversarial punt review, per-finding operator ratification,
 and headless persistence. All five landed.
 
-In production it decides almost nothing. A full pass over the backlog at v0.16.0rc1 spent
+In the one operator-reported pass on record, over the backlog at v0.16.0rc1, it spent
 $1.6272 across 30 findings and returned 29 `needs_verification`, 1 `fix_later`, and 0
 punts — therefore 0 adversarial reviews, since a proposed punt is that stage's only
-trigger. Four rounds of citation-resolution fixes (#2690, #2692, #2711, #2712, #2738,
-#2739, #2691, #2693) corrected real defects and did not move that number.
+trigger. Those figures are as reported by the operator running that pass; no triage
+proposal run is recorded in the audit substrate, so they cannot be re-derived from it, and
+there is no before/after series across the 2026-08 citation-resolution fixes (#2690, #2692,
+#2711, #2712, #2738, #2739, #2691, #2693). The argument below does not rest on them: it
+rests on what the evidence model can express, which is a static property of the code.
 
 Three findings, measured rather than predicted, explain why.
 
@@ -50,12 +53,12 @@ current tree`: true, and the absence *is the defect* — `sprint/runner.py:1413`
 still call `check_output` with no `timeout=`. On #659 the evidence reads `cited symbol
 reviewer_demoted absent`, which is false; it is at `coordinator/state.py:648`.
 
-**The stale-finding population the feature exists to discard was not found.** Of nine open
-findings hand-verified against `b9fbfaea`, one was stale (#1312). That cohort was
-hand-picked for citation-shape spread, not sampled, so it is not a prevalence estimate for
-the backlog — but it is nine consecutive attempts to find the population the punt path
-serves, and it produced one. The punt path has never fired in production, which is
-consistent.
+**The stale findings the punt path serves were scarce in the sample examined.** Of nine
+open findings hand-verified against `b9fbfaea`, one was stale (#1312). That cohort was
+hand-picked for citation-shape spread, not sampled, so it establishes neither a prevalence
+figure for the backlog nor that the population is absent. It is one observation, recorded
+because the feature's value depends on that population being large and nothing in the
+corpus yet shows that it is.
 
 ### The benchmark
 
@@ -65,11 +68,27 @@ declared before any run. Cohort: #1212, #149, #1104, #2660, #1044 (active, chose
 citation-shape spread), #1312 (stale), #1157 and #659 (active, and adversarial — their
 presence evidence is inverted or false).
 
-Result: 8/8 correct semantic judgments, 0 false `resolved`, 0 false `active`, $3.94 total,
-~$0.52 per finding, 45–180s each. Deterministic premise-checking failed on 9 anchors across
-the first five findings — every finding produced at least one — and the semantic verdict was
-correct regardless. On #149 the cited file (`src/theforge/coordinator.py`) no longer exists
-at any path; the verdict was still correct.
+Two scores, and they differ. **Semantic judgment: 8/8 correct.** **Structured-record score
+against the predeclared mapping: 7/8**, because #1312 serialized `already_resolved: false`
+while its own narrative concluded the premise was removed — a machine-readable false-active,
+and the defect recorded as #2760. Both numbers belong in any citation of this benchmark;
+the narrative score alone overstates what a consumer of the artifacts would get.
+
+| id | hand truth | narrative verdict | `already_resolved` | cost | duration |
+|---|---|---|---|---|---|
+| 1212 | active | active | false ✓ | $0.648 | 86s |
+| 149 | active | active | false ✓ | $0.579 | 94s |
+| 1104 | active | active | false ✓ | $0.521 | 83s |
+| 2660 | active | active | false ✓ | $0.446 | 63s |
+| 1044 | active | active | false ✓ | $0.354 | 52s |
+| 1312 | **resolved** | **resolved** (names removing commit `ed14ddde`) | **false ✗** | $0.600 | 180s |
+| 1157 | active | active | false ✓ | $0.510 | 58s |
+| 659 | active | active | false ✓ | $0.286 | 45s |
+
+$3.94 total, ~$0.52 per finding. Zero false `resolved` in either score. Deterministic
+premise-checking failed on 9 anchors across the first five findings — every finding produced
+at least one — and the semantic verdict was correct regardless. On #149 the cited file
+(`src/theforge/coordinator.py`) no longer exists at any path; the verdict was still correct.
 
 The capability demonstrated is locating the correct cause and implementation seam on active
 findings, which is distinct from confirming that a finding is active. #2660 is the clearest
@@ -183,7 +202,7 @@ built to answer a question its inputs could not reach, and refused honestly ever
 view produces a provenance-rich packet; the sealed proposer consumes it and proposes a
 disposition. Faithful to the original architecture and the most obvious reading of the
 benchmark. Rejected: it preserves a proposer stage whose justification was that judging
-staleness needs fresh eyes, and the staleness population was not found. Once the verifier
+staleness needs fresh eyes, and staleness was one of nine findings in the sample examined. Once the verifier
 returns an active finding with a seam and quoted evidence, the proposer adds a label, not a
 judgment.
 
