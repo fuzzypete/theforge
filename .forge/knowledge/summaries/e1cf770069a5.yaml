@@ -1,0 +1,153 @@
+schema_version: 2
+run_id: e1cf770069a5
+authoritative_run_record: .forge/audits/runs/e1cf770069a5.json
+generated_at: '2026-08-26T02:18:52.843756+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011885
+story:
+  slug: issue-2598
+  name: 'Spike: publication path and landing-evidence model for project memory across
+    every landing mode'
+  github_issue: 2598
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 9
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- .gitattributes
+- .gitignore
+- docs/plans/2598-project-memory-publication-spike.md
+- src/theforge/cli/init_commands.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/landing_evidence.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/landing_observation.py
+- src/theforge/sprint/memory_publication.py
+- src/theforge/sprint/runner.py
+- tests/test_landing_evidence.py
+- tests/test_landing_observation.py
+- tests/test_memory_publication.py
+- tests/test_protected_base_publication_poc.py
+- tests/test_sprint_audit_publish.py
+- tests/test_sprint_parallel.py
+what_changed:
+  description: This run designed and wired a new project-memory publication path plus
+    a separate landing-evidence model so shared run records can accumulate in the
+    repository without relying on direct commits to the base branch or mutating run
+    records after landing outcomes resolve. It also aligned sprint wrap-up, reconciliation,
+    and observation flows around publishing explicit landing attempt and landing assertion
+    artifacts across supported landing modes.
+  approach: 'The change split substrate memory publication from landing-state reporting:
+    publication logic was moved into dedicated memory-publication flows, landing evidence
+    was modeled as its own artifact family, and runner/audit orchestration was revised
+    so terminal outcomes are observed and published through those artifacts instead
+    of by rewriting accumulated run records.'
+  files_modified: *id002
+what_was_learned:
+- claim: When positive landing evidence is derived from pull-request reconciliation,
+    matching on branch identity is insufficient; the evidence writer must bind the
+    resolved PR or merge back to the current run's reviewed commit set, or an older
+    merged PR on the same branch can be misattributed as proof for the current run.
+  evidence:
+  - type: review_finding
+    finding_id: 75466cd845270e23
+    description: Review found that reconciliation accepted an older merged PR for
+      the same branch name and then emitted a positive landing assertion for the current
+      run, demonstrating that branch-level matching alone can fabricate landing evidence
+      unless commit identity is checked.
+  - type: file
+    path: src/theforge/sprint/landing_observation.py
+    description: This is the observation/reconciliation path where review caught the
+      misbinding, showing that PR-resolution logic is the point where commit-to-PR
+      identity must be enforced rather than inferred from branch naming.
+- claim: Negative landing outcomes must be recorded as separate attempt events, not
+    by rewriting the accumulated run record, because terminal world-state changes
+    after approval do not change what the run itself did.
+  evidence:
+  - type: review_finding
+    finding_id: 09cd1c65827f5654
+    description: Review flagged that failed and timed-out landing paths still rewrote
+      the run's landing_status before writing a separate attempt artifact, showing
+      that leaving any negative-state mutation in the run record breaks the intended
+      separation between immutable run memory and external landing outcomes.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner owns terminal wrap-up, so this finding in runner logic
+      demonstrates that the invariant has to be enforced at the orchestration layer
+      where outcomes are finalized, not only in storage helpers.
+- claim: Landing-evidence publication has to be enforced on every terminal resolution
+    path, including asynchronous queued-PR resolvers, because outcome-specific fast
+    paths can otherwise mark a story complete without producing the corresponding
+    evidence artifacts.
+  evidence:
+  - type: review_finding
+    finding_id: 1f344f323e263ee1
+    description: Review found a queued-PR resolution path that removed a story from
+      the queue as landed or failed without writing either positive landing evidence
+      or a terminal attempt artifact, demonstrating that terminal evidence requirements
+      must be applied per resolution path, not assumed from the general wrap-up flow.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle surfaced this omission after earlier fixes
+      were already in place, showing that asynchronous/queued resolution remained
+      a distinct source of drift unless checked separately.
+learned_patterns:
+- commit-bound-landing-evidence
+- immutable-run-records
+- per-path-terminal-evidence
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 75466cd845270e23
+    severity: P1
+    file: src/theforge/sprint/landing_observation.py
+    description: When a branch name has an older merged pull request, reconciliation
+      accepts that merged PR for the current run and writes a positive landing assertion
+      naming the current reviewed commit with the older PR's landed commit.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 09cd1c65827f5654
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When a landing fails or a queued PR times out, the sprint still rewrites
+      the run's accumulated record with the resolved negative landing_status before
+      writing the separate landing-attempt artifact.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 1f344f323e263ee1
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When a queued pull request is resolved by the active-sprint queued-PR
+      resolver before terminal wrap-up, the sprint marks the story landed or failed
+      and removes it from the queue without writing a positive landing assertion or
+      terminal attempt artifact.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly surfaced drift at the boundaries where landing outcomes are
+    reconciled back into sprint state: PR matching, negative-result handling, and
+    queued-resolution fast paths.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 45.992706
+  dominant_difficulty: Preserving a single consistent publication and evidence model
+    across every landing mode and terminal resolution path without letting any path
+    silently infer or rewrite landing state.

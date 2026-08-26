@@ -301,11 +301,123 @@ def _upsert_into_substrate(project_root: Path, record: dict) -> None:
 
 
 def _replace_canonical_run_file(run_file: Path, record: dict) -> None:
-    """Atomically replace a canonical per-run JSON file."""
-    tmp_path = run_file.with_suffix(".tmp")
+    """Atomically replace a canonical per-run JSON file.
+
+    The temporary file is written *outside* the canonical runs tree (#2598).
+    That tree is re-included by forge's generated ``.gitignore`` precisely so it
+    is tracked, which made a write-in-progress ``<run>.tmp`` sitting next to the
+    record indistinguishable from project memory: it dirtied the shared checkout
+    for as long as the write took — enough to refuse a sibling story's landing
+    — and the publication transport would have carried it into the corpus.
+    ``.forge/audits/.tmp`` is denied by the same ``.forge/**`` rule and
+    re-included by nothing, so nothing transient is ever visible to git.
+
+    Same filesystem as the destination, so ``replace`` is still atomic.
+    """
+    tmp_dir = run_file.parent.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{run_file.stem}.json.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(record, f, default=str, indent=2)
     tmp_path.replace(run_file)
+
+
+# Fields of a canonical run record that describe the *world's response* to the
+# run rather than the run itself (#2598). Everything else in the record is a
+# property of what the run did, and is settled the moment the run finishes.
+_LANDING_CLAIM_FIELDS = ("landing_status", "landing", "landing_event", "merge")
+
+
+def _read_json_record(path: Path) -> dict | None:
+    """A record file's mapping, or ``None`` when there is nothing usable there.
+
+    Absent, unreadable and not-a-mapping collapse to the same answer on purpose:
+    every caller's response to all three is to write the record it has.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            persisted = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return persisted if isinstance(persisted, dict) else None
+
+
+def _read_canonical_run_file(project_root: Path, run_file: Path) -> dict | None:
+    """The record already written for this run, wherever it currently lives.
+
+    Not just the canonical tree. The publication transport *drains* that tree to
+    publish it (#2598), so between a publish and the memory pull request merging
+    the record sits in ``.forge/memory-staging`` and the canonical path is empty.
+    A reader that looked only at the canonical path would conclude the record had
+    never been written and recreate it from whatever the current in-memory result
+    says — which is exactly how a landing outcome would slip back into a record
+    the drain had already published.
+    """
+    from ..coordinator import audit_substrate  # noqa: PLC0415
+    from ..coordinator.landing_evidence import (  # noqa: PLC0415
+        PROJECT_MEMORY_STAGING_RELPATH,
+    )
+
+    persisted = _read_json_record(run_file)
+    if persisted is not None:
+        return persisted
+    staged = project_root.joinpath(*PROJECT_MEMORY_STAGING_RELPATH).joinpath(
+        *audit_substrate.RUNS_RELPATH, run_file.name
+    )
+    return _read_json_record(staged)
+
+
+# The scheduler's word for "a landing was owed and has not resolved". It is what
+# a run record says about landing, because a record never speaks to how a landing
+# resolved unless it resolved successfully.
+_LANDING_OWED = "pending_integration"
+
+
+def _without_negative_landing_claim(incoming: dict, existing: dict | None) -> dict:
+    """Keep a *negative* landing claim out of a canonical run record.
+
+    A run record is an attestation of what a run did. A landing that fails, is
+    refused, or times out changes nothing about the run — only the world's
+    response to it — so a record saying ``landing_status: failed`` is an
+    attestation carrying something that is not about its subject. The spike for
+    #2598 makes that explicit: a landing that does not happen produces an
+    *attempt artifact* under ``.forge/audits/landing``, which is where the error,
+    the carrier and the outcome live.
+
+    The rule is uniform across first writes and rewrites, and that matters. A
+    story whose landing fails on its first attempt has no earlier record to
+    preserve, and guarding only rewrites would let exactly that story's record be
+    *created* carrying the negative — the same claim, arrived at by a different
+    route. So a resolved-negative landing is either replaced by the record the
+    run already had, or demoted to "a landing was owed", which is all the record
+    ever knew.
+
+    A landing that *did* happen is allowed through untouched. That asymmetry is
+    the whole model: the record may be advanced to a fact, never turned into a
+    denial. The positive assertion is the durable evidence either way; letting
+    the flattened field carry ``landed`` keeps it usable for the readers that
+    have not moved to the evidence artifacts yet, without ever letting it carry a
+    claim those artifacts would refuse to make.
+
+    Rewrites also happen for reasons unrelated to landing — the knowledge summary
+    is folded in after the record is first written — so this rewrites the landing
+    fields rather than skipping the write.
+    """
+    if str(incoming.get("landing_status") or "") != "failed":
+        return incoming
+    safe = dict(incoming)
+    if existing is not None:
+        for field in _LANDING_CLAIM_FIELDS:
+            if field in existing:
+                safe[field] = existing[field]
+            else:
+                safe.pop(field, None)
+        return safe
+    safe["landing_status"] = _LANDING_OWED
+    for field in ("landing", "landing_event", "merge"):
+        if field in safe:
+            safe[field] = None
+    return safe
 
 
 def _write_native_story_record(
@@ -314,7 +426,11 @@ def _write_native_story_record(
     *,
     force_replace: bool = False,
 ) -> None:
-    """Write the canonical per-story run JSON and mirror it into the substrate."""
+    """Write the canonical per-story run JSON and mirror it into the substrate.
+
+    A record never carries a negative landing claim, whether it is being created
+    or replaced — see :func:`_without_negative_landing_claim`.
+    """
     run_id = audit_data.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         _upsert_into_substrate(project_root, audit_data)
@@ -350,24 +466,14 @@ def _write_native_story_record(
         runs_dir = audit_substrate.runs_dir(project_root)
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.json"
-        if force_replace or not run_file.exists():
+        existing = _read_canonical_run_file(project_root, run_file)
+        if existing is None or force_replace:
+            # Absent, unreadable, not a mapping, or a deliberate replacement.
+            redacted = _without_negative_landing_claim(redacted, existing)
             _replace_canonical_run_file(run_file, redacted)
             persisted = redacted
         else:
-            should_repair = False
-            try:
-                with open(run_file, encoding="utf-8") as f:
-                    persisted = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                persisted = redacted
-                should_repair = True
-            else:
-                if not isinstance(persisted, dict):
-                    persisted = redacted
-                    should_repair = True
-            if should_repair:
-                _replace_canonical_run_file(run_file, redacted)
-                persisted = redacted
+            persisted = existing
 
         stat = run_file.stat()
         conn = audit_substrate.create_or_open(project_root)

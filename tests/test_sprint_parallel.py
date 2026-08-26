@@ -3364,6 +3364,9 @@ class TestSprintRunAuditCommit:
         start = shell_calls.index(("git status --porcelain -- .forge/audits/runs", tmp_path))
         assert shell_calls[start:] == [
             ("git status --porcelain -- .forge/audits/runs", tmp_path),
+            # Landing evidence (#2598) is the third tracked memory tree, probed
+            # like the others; it contributes nothing to the commit when clean.
+            ("git status --porcelain -- .forge/audits/landing", tmp_path),
             ("git add -- .forge/audits/runs", tmp_path),
             (commit_cmd, tmp_path),
             ("git push origin main", tmp_path),
@@ -3507,15 +3510,18 @@ class TestSprintRunAuditCommit:
 
         assert any("canonical story run audit publish failed" in warning for warning in warnings)
 
-    def test_run_sprint_publishes_audits_under_pr_workflow_without_auto_push(
+    def test_run_sprint_publishes_audits_off_the_base_branch_under_a_pr_workflow(
         self, tmp_path: Path
     ) -> None:
-        """on_approve: pr + auto_push: false must still push the audit commit.
+        """on_approve: pr must not put an audit commit on the base checkout.
 
-        Nothing merges into the local base branch under a PR workflow, so there
-        are no local merges a push could over-publish — and story branches are
-        pushed for GitHub to diff against origin/<base>, which is exactly where
-        an unpublished audit commit shows up as content of the wrong story.
+        Nothing merges into the local base branch under a PR workflow, and story
+        branches are pushed for GitHub to diff against origin/<base> — which is
+        exactly where an audit commit on the local base shows up as content of
+        the wrong story. Forge used to answer that by committing and pushing the
+        audit anyway. Since #2598 it answers it by not making the commit at all:
+        the memory is drained out of the checkout and published from the memory
+        branch, which a base branch that only advances by pull request accepts.
         """
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = _make_manifest_parallel(
@@ -3531,28 +3537,26 @@ class TestSprintRunAuditCommit:
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
         commit_cmd = 'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs'
         shell_calls: list[str] = []
-        logs: list[str] = []
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append(cmd)
             if cmd == "git rev-parse --abbrev-ref HEAD":
                 return (True, "main\n")
-            if cmd == "git status --porcelain -- .forge/audits/runs":
+            if cmd.startswith("git status --porcelain -uall -- .forge/audits/runs"):
                 return (True, "?? .forge/audits/runs/run-123.json")
-            if cmd == "git rev-list --count origin/main..main":
-                return (True, "0\n")
             return (True, "")
 
         with (
             patch("theforge.sprint.runner.run_task", return_value=result),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
-            patch("theforge.sprint.audit_publish._log", side_effect=logs.append),
         ):
             run_sprint_ctx(config, manifest_path)
 
-        assert commit_cmd in shell_calls
-        assert "git push origin main" in shell_calls
-        assert not any("remain local" in line for line in logs)
+        assert commit_cmd not in shell_calls
+        assert not any(call.startswith("git commit") for call in shell_calls)
+        # The memory trees were drained instead, which is what leaves the
+        # checkout clean without touching the protected branch.
+        assert "git status --porcelain -uall -- .forge/audits/runs" in shell_calls
 
     def test_run_sprint_commits_without_push_under_local_merge(self, tmp_path: Path) -> None:
         """Local-merge landing without auto_push: pushing would over-publish.

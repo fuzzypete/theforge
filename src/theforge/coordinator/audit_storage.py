@@ -45,6 +45,7 @@ from .agent_identity import (
     dev_model_identity_detail,
     invocation_identity_rows,
 )
+from .landing_evidence import LANDING_EVIDENCE_RELPATH
 
 # The named interface between storage and the analytical read model.
 #
@@ -187,6 +188,12 @@ class AuditPathInfo:
 AUDIT_PATH_REGISTRY: tuple[AuditPathInfo, ...] = (
     AuditPathInfo("Audit index (SQLite, canonical, queryable)", SUBSTRATE_RELPATH),
     AuditPathInfo("Per-run audit records (JSON, one file per run)", RUNS_RELPATH, "/*.json"),
+    AuditPathInfo(
+        "Landing evidence (JSON; '<run>.landed.json' asserts an observed landing, "
+        "'<run>.attempt-NNN.json' records an attempt that did not land)",
+        LANDING_EVIDENCE_RELPATH,
+        "/*.json",
+    ),
     AuditPathInfo(
         "Legacy cross-run audit history (JSONL — superseded by the index above "
         "but still present on older repos)",

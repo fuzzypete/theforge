@@ -55,6 +55,8 @@ MagicMock/
 !.forge/audits/
 !.forge/audits/runs/
 !.forge/audits/runs/**
+!.forge/audits/landing/
+!.forge/audits/landing/**
 !.forge/knowledge/
 !.forge/knowledge/summaries/
 !.forge/knowledge/summaries/**
