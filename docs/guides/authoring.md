@@ -59,7 +59,7 @@ Storage is incidental; shape is what matters.
 | Use case | Required sections | Optional but recommended |
 |----------|------------------|--------------------------|
 | Feature / enhancement | Title, Why, Acceptance criteria, Example | Notes |
-| Bug report | Title, What happened, What was expected, Diagnosis (landed by `forge diagnose`) | (nothing) |
+| Bug report | Title, Observed, Expected, Diagnosis (landed by `forge diagnose`) | (nothing) |
 | Refactor / mechanical change | Title, Why, Acceptance criteria, Example (before/after) | Notes |
 | Rollup | Title, Why, Acceptance criteria (one per child), Example | Notes |
 | Docs / chore | Title, Why, Acceptance criteria, Example | Notes |
@@ -172,8 +172,8 @@ fixed.
 
 A bug goes through two states, and the shape gate enforces the boundary:
 
-1. **Capture** the symptom: file the issue with `## What happened` and
-   `## What was expected`. This is a valid capture, but it is *symptom-only*
+1. **Capture** the symptom: file the issue with `## Observed` and
+   `## Expected`. This is a valid capture, but it is *symptom-only*
    — the sprint-entry gate hard-blocks it (`needs_diagnosis`: "Bug has no
    Diagnosis section — not fix-ready").
 2. **Diagnose**: run `forge diagnose --issue <N>` (or investigate manually).
@@ -190,9 +190,11 @@ A bug goes through two states, and the shape gate enforces the boundary:
 ### Required sections
 
 - **Title** — names the misbehavior, not the suspected cause.
-- **What happened** — heading literally `## What happened`. Concrete
+- **Observed** — canonical heading `## Observed`; `## What happened` is
+  recognized too, and producers rewrite it to the canonical spelling. Concrete
   observation: command run, output, environment, link to logs if relevant.
-- **What was expected** — heading literally `## What was expected`. Describe
+- **Expected** — canonical heading `## Expected` (`## What was expected` is
+  also recognized). Describe
   the **category-level rule** that was violated, written as prose. The
   expected behavior should generalize past the single triggering case so the
   fix has a defined scope.
@@ -213,7 +215,7 @@ A bug goes through two states, and the shape gate enforces the boundary:
 - **No test requirements.** "Add a regression test" is implementation, not
   expected behavior.
 - **No anchoring to one provider, one model, or one issue number.** The rule
-  in *What was expected* should hold across the category.
+  in *Expected* should hold across the category.
 
 ### Worked example
 
@@ -224,14 +226,14 @@ sections; the `## Diagnosis` section is what `forge diagnose` adds.
 ````markdown
 # `forge sprint --resume` re-runs already-merged stories
 
-## What happened
+## Observed
 
 Ran `forge sprint --resume` on a sprint where two of three stories had been
 reviewed, approved, and merged to main in a previous session. The resume run
 re-entered both merged stories at the dev phase and produced a second set of
 commits for work that had already landed.
 
-## What was expected
+## Expected
 
 Resuming a sprint should never repeat work that has already reached a
 terminal merged state. A story whose branch has been merged into the base
@@ -622,8 +624,11 @@ they are useful to recognize:
 - **`missing_acceptance_criteria`** — no `## Acceptance criteria` heading
   with at least one bullet (feature/refactor/rollup/chore only — bugs are
   exempt).
-- **`no_observable_done_state`** — AC bullets exist but none use a
-  behavioral verb a reviewer can check.
+- **`no_observable_done_state`** — the acceptance-criteria section is absent
+  or carries no bullets at all. It no longer scores your *wording*: the closed
+  verb vocabulary that once decided this was retired as an admission input
+  (ADR-0009), because it made admission depend on word choice, verb tense and
+  line wrapping rather than on whether a reviewer could check the outcome.
 - **`missing_example`** — feature-shaped issues with no `## Example` (or
   equivalent) section, or with one that has no fenced block, bullets, or
   table rows. Advisory, but worth fixing.
@@ -649,10 +654,17 @@ time. If you find a section that references something the code no longer has
 (a removed flag, a renamed field, a deleted heading), treat that as a doc bug
 worth filing — drift in the authoring guide is what motivated this rewrite.
 
+The structural rules are not restated here at all: they live in one
+declarative specification and are published, generated from it, as
+[the issue shape reference](../reference/issue-shape.md). When this guide and
+that reference disagree, the reference is right — it cannot drift, because CI
+regenerates it from the same data the gate validates against.
+
 The two anchors to verify against are:
 
-- `src/theforge/shape_check/heuristics.py` — defines the headings, verbs, and
-  example patterns the sprint-entry validator looks for.
+- `docs/reference/issue-shape.md` — generated from
+  `src/theforge/shape_check/issue_spec.py`, the specification the sprint-entry
+  validator derives its structural rules from.
 - `CONVENTIONS.md` — the project-level rules this guide operationalizes
   (bug-format minimalism, what-not-how, runnable-at-creation).
 

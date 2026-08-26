@@ -30,6 +30,8 @@ from typing import Any
 
 import yaml
 
+from theforge.shape_check.issue_spec import RECOGNIZED_TYPE_LABELS
+
 from .config import ForgeConfig
 
 _LINE_COUNT_RULES = frozenset({"max_module_lines", "max_test_file_lines"})
@@ -46,7 +48,7 @@ _DETAIL_RE = re.compile(r"^(?P<file>.+) has (?P<line_count>\d+) lines \(limit (?
 # type labels supplied via ``issue_filing.label`` are therefore dropped from
 # the gh invocation; the resulting issue carries only ``task``.
 _RUNNABLE_TYPE_LABEL = "task"
-_RECOGNIZED_TYPE_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
+_RECOGNIZED_TYPE_LABELS = RECOGNIZED_TYPE_LABELS
 
 _TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
 

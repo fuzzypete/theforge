@@ -5,9 +5,13 @@ from pathlib import Path
 
 import yaml
 
+from theforge.shape_check.issue_spec import RECOGNIZED_TYPE_LABELS
+
 ALLOW_MUTATE_FORGE_YAML_KEY = "allow_mutate_forge_yaml"
 
-RECOGNIZED_STORY_TYPES: frozenset[str] = frozenset({"bug", "enhancement", "epic", "task"})
+# The story types a file-based story may declare are the issue types the
+# specification recognizes — one vocabulary, not two that can drift apart.
+RECOGNIZED_STORY_TYPES: frozenset[str] = RECOGNIZED_TYPE_LABELS
 
 
 class StoryTypeError(ValueError):
