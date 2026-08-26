@@ -33,6 +33,7 @@ from theforge.config.types import NotificationConfig, RetryPolicy
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.resume_persistence import load_spec_gap_resolutions
+from theforge.coordinator.spec_gap_flow import _gate_outcome
 
 CRITERION = "Ending a workout marks the linked Polar session ended"
 UNDEFINED = "no correlated Polar session exists for the workout"
@@ -268,6 +269,100 @@ class TestAnsweredGap:
         assert [entry["answer"] for entry in seen_at_cleanup["stored"]] == ["leave unmarked"]
         stored = load_spec_gap_resolutions(tmp_path, "test-task")
         assert [entry["answer"] for entry in stored] == ["leave unmarked"]
+
+
+class TestAnswerTextIsNotConfusedWithExpiry:
+    """A free-form gate cannot read its poller's expiry sentinel as an answer.
+
+    ``poll_pending`` reports expiry by returning the string ``"timeout"``. Every
+    other gate offers a fixed menu that does not contain that word, so the
+    sentinel is unambiguous there. This one takes the operator's own words, where
+    ``timeout`` is an ordinary thing to write — and losing it would drop a real
+    decision and silently proceed under the assumption instead.
+    """
+
+    def test_an_operator_answer_of_exactly_timeout_is_recorded_as_an_answer(self, tmp_path):
+        answerer = _Answerer(tmp_path, "timeout")
+        result, seen, _config_used, _task = _run(
+            tmp_path, [SPEC_GAP_OUTPUT, "Done."], answerer=answerer
+        )
+
+        assert answerer.answered
+        (resolution,) = _resolutions(result)
+        assert resolution["source"] == "operator"
+        assert resolution["answer"] == "timeout"
+        assert resolution["decided_at"] is not None
+        # And it reaches the dev agent as a decision, not as a fallback.
+        assert "**Operator answer:** timeout" in seen["prompts"][1]
+        assert "the pause expired without one" not in seen["prompts"][1]
+
+    def test_an_answer_of_timeout_survives_into_the_durable_record(self, tmp_path):
+        answerer = _Answerer(tmp_path, "timeout")
+        _run(tmp_path, [SPEC_GAP_OUTPUT, "Done."], answerer=answerer)
+        assert answerer.answered
+
+        stored = load_spec_gap_resolutions(tmp_path, "test-task")
+        assert [(e["source"], e["answer"]) for e in stored] == [("operator", "timeout")]
+
+
+class TestGateOutcomeDiscrimination:
+    """Unit coverage for the answered-vs-expired decision itself."""
+
+    class _FakePending:
+        def __init__(self, record):
+            self._record = record
+
+        def read_pending(self, run_id, project_root=None):
+            return self._record
+
+    def _outcome(self, record, *, polled_decision, polled_decided_at):
+        return _gate_outcome(
+            self._FakePending(record),
+            "run-1",
+            None,
+            polled_decision=polled_decision,
+            polled_decided_at=polled_decided_at,
+        )
+
+    def test_a_written_decision_of_timeout_is_an_answer(self):
+        answered, answer, decided_at = self._outcome(
+            {"decision": "timeout", "decided_at": "2026-08-26T00:00:00+00:00"},
+            polled_decision="timeout",
+            polled_decided_at="2026-08-26T00:00:00+00:00",
+        )
+        assert (answered, answer) == (True, "timeout")
+        assert decided_at == "2026-08-26T00:00:00+00:00"
+
+    def test_a_hand_written_decision_without_a_timestamp_is_still_an_answer(self):
+        """The pending file is writable by anything; a timestamp is not required."""
+        answered, answer, decided_at = self._outcome(
+            {"decision": "timeout"}, polled_decision="timeout", polled_decided_at=None
+        )
+        assert (answered, answer, decided_at) == (True, "timeout", None)
+
+    def test_a_readable_record_with_no_decision_is_an_expiry(self):
+        assert self._outcome(
+            {"run_id": "run-1"}, polled_decision="timeout", polled_decided_at=None
+        ) == (False, None, None)
+
+    def test_a_swept_record_falls_back_to_what_the_poller_saw(self):
+        assert self._outcome(None, polled_decision="leave unmarked", polled_decided_at=None) == (
+            True,
+            "leave unmarked",
+            None,
+        )
+        assert self._outcome(None, polled_decision="timeout", polled_decided_at="t") == (
+            True,
+            "timeout",
+            "t",
+        )
+
+    def test_a_swept_record_with_no_evidence_of_an_answer_is_an_expiry(self):
+        assert self._outcome(None, polled_decision="timeout", polled_decided_at=None) == (
+            False,
+            None,
+            None,
+        )
 
 
 class TestUnansweredAndBoundedGaps:

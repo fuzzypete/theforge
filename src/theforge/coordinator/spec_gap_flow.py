@@ -283,6 +283,49 @@ def handle_spec_gap(
     return True
 
 
+def _gate_outcome(
+    pending_module: Any,
+    run_id: str,
+    project_root: Any,
+    *,
+    polled_decision: str,
+    polled_decided_at: str | None,
+) -> tuple[bool, str | None, str | None]:
+    """Return ``(answered, answer, decided_at)`` for a finished SPEC_GAP poll.
+
+    :func:`theforge.pending.poll_pending` reports an expiry by returning the
+    string ``"timeout"``, which is unambiguous for every gate that offers a fixed
+    menu — none of them lists ``timeout`` as an option. This gate takes free-form
+    text, so ``timeout`` is a perfectly ordinary thing for an operator to write
+    ("timeout the request rather than blocking"), and reading the sentinel as an
+    expiry would discard a real answer and proceed under the assumption instead.
+
+    The fact that settles it is whether a ``decision`` field was ever written to
+    the pending record, not what that field says. The record is still on disk
+    here — ``cleanup_pending`` runs after this — so it is re-read and believed.
+
+    ``decided_at`` is corroboration, never the discriminator: the pending file is
+    deliberately writable by anything (CLI, webhook, a human with an editor, per
+    :mod:`theforge.pending`), and a hand-written ``decision:`` may carry no
+    timestamp at all. Keying on the timestamp would turn that answer into a
+    phantom timeout — the same bug in a new place.
+
+    Falls back to the poller's own report when the record cannot be re-read (a
+    stale sweep between the poll and here): a non-sentinel decision, or any
+    ``decided_at``, means the poller genuinely saw an answer.
+    """
+    record = pending_module.read_pending(run_id, project_root=project_root) or {}
+    raw = record.get("decision")
+    if isinstance(raw, str) and raw.strip():
+        return True, raw.strip(), record.get("decided_at") or polled_decided_at
+    if record:
+        # The record is readable and carries no decision: the gate expired.
+        return False, None, None
+    if polled_decided_at is not None or polled_decision != "timeout":
+        return True, polled_decision.strip() or None, polled_decided_at
+    return False, None, None
+
+
 def _open_gate(
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
@@ -355,13 +398,21 @@ def _open_gate(
     waited = time.monotonic() - _poll_start
     state.human_review_waited_seconds = (state.human_review_waited_seconds or 0.0) + waited
 
-    answered = decision != "timeout" and bool(str(decision).strip())
+    # Decided from the record on disk, not from the poller's sentinel string —
+    # see _gate_outcome. Must run before cleanup_pending removes the record.
+    answered, answer, answered_at = _gate_outcome(
+        _pending,
+        _eff_run_id,
+        project_root,
+        polled_decision=decision,
+        polled_decided_at=decided_at,
+    )
     resolution = _record(
         state,
         signal,
         source=operator_source if answered else no_answer_source,
-        answer=str(decision).strip() if answered else None,
-        decided_at=decided_at if answered else None,
+        answer=answer,
+        decided_at=answered_at,
         gated=True,
         waited_seconds=waited,
         timeout_seconds=timeout_seconds,
@@ -378,7 +429,7 @@ def _open_gate(
     if answered:
         _cu._log(
             f"  ✓ SPEC_GAP  operator answered after {_cu._fmt_duration(waited)}: "
-            f"{str(decision).strip()[:160]}"
+            f"{(answer or '')[:160]}"
         )
     else:
         _cu._log(
