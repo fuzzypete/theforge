@@ -158,7 +158,7 @@ _BUG_LABELS: frozenset[str] = frozenset({"bug"})
 # The recognized type vocabulary is the specification's, not this module's.
 _RECOGNIZED_TYPE_LABELS: frozenset[str] = RECOGNIZED_TYPE_LABELS
 
-_EXAMPLE_SECTION_PATTERNS = (EXAMPLE_SECTION.recognition_pattern,)
+_EXAMPLE_SECTION_PATTERNS = (EXAMPLE_SECTION.heading_pattern,)
 _EXAMPLE_MIN_CONTENT_CHARS = 30
 
 # "root cause" is recognized alongside "diagnosis" so the gate agrees with
@@ -166,7 +166,7 @@ _EXAMPLE_MIN_CONTENT_CHARS = 30
 # counts as a diagnosis-shaped heading — a body whose analysis lives under
 # "## Root cause" must not be treated as diagnosed by the classifier while
 # the gate simultaneously reports the Diagnosis section missing (#2263).
-DIAGNOSIS_HEADING_PATTERN = DIAGNOSIS_SECTION.recognition_pattern
+DIAGNOSIS_HEADING_PATTERN = DIAGNOSIS_SECTION.heading_pattern
 
 # Headings whose text, normalized, exactly equals one of these are the
 # canonical diagnosis section — as opposed to a heading that merely mentions
@@ -285,13 +285,13 @@ def _forbidden_section_headings(body: str, section_keys: Iterable[str]) -> list[
         if key == DIAGNOSIS_SECTION.key:
             match = find_authoritative_heading(
                 body,
-                section.recognition_pattern,
+                section.heading_pattern,
                 DIAGNOSIS_CANONICAL_HEADING_TEXTS,
                 diagnosis_completeness_score,
             )
             heading = match.group(2).strip() if match is not None else None
         else:
-            heading = _heading_text_for_pattern(body, section.recognition_pattern)
+            heading = _heading_text_for_pattern(body, section.heading_pattern)
         if heading is not None and heading not in headings:
             headings.append(heading)
     return headings

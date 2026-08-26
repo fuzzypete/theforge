@@ -27,6 +27,12 @@ Two distinct notions of "this heading is that section" live here on purpose:
     heading whose extra words carry the author's meaning. A heading matched by
     the pattern but not by an alias is preserved verbatim (ADR-0009 clause 8).
 
+The two are not independent. Every alias is a spelling the renderer will
+rewrite, so the gate must be able to see it: :attr:`SectionSpec.heading_pattern`
+is the recognition pattern widened, mechanically, to cover each declared alias,
+and it is what every heading probe uses. Declaring an alias is therefore enough
+— there is no second edit to keep the gate in step with the renderer.
+
 Stdlib only, no imports from the rest of the package — pure-data types in a
 low-dependency module (project convention 4).
 """
@@ -152,6 +158,33 @@ class SectionSpec:
                 + [normalize_heading_text(a) for a in self.aliases]
             )
         )
+
+    @property
+    def heading_pattern(self) -> str:
+        """The regex every heading probe uses to find this section in a body.
+
+        :attr:`recognition_pattern` widened, mechanically, to cover each
+        declared alias. Recognition must be at least as wide as
+        canonicalization: an alias is a spelling the *renderer* will rewrite to
+        the canonical heading, so a gate that could not see that spelling would
+        refuse — or admit — a section depending on which of the two read the
+        body first. ``## Reproduction`` was exactly that hole: it parsed as the
+        reproduction section and rendered as ``## Steps to reproduce``, while
+        the pattern the gate probed with only matched the latter.
+
+        Alias alternatives are anchored, with the same trailing label
+        punctuation :func:`normalize_heading_text` tolerates, because an alias
+        is an exact spelling. The hand-written ``recognition_pattern`` stays
+        deliberately broad on top of that — ``## Observed behavior`` is a
+        symptom heading — and is left exactly as declared.
+        """
+        alternatives = [self.recognition_pattern]
+        broad = re.compile(self.recognition_pattern, re.IGNORECASE)
+        for alias in self.normalized_aliases:
+            if broad.search(alias):
+                continue
+            alternatives.append(rf"^{re.escape(alias)}[\s:.\-—]*$")
+        return "|".join(alternatives)
 
     def matches_heading(self, heading_text: str) -> bool:
         """True when ``heading_text`` is an exact (normalized) spelling of this section."""

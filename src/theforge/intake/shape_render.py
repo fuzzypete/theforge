@@ -61,8 +61,8 @@ from theforge.shape_check.types import ShapeVerdict
 # ``## Observed behavior`` counts as present (#2053: a private substring probe
 # for a hard-coded heading level is exactly the producer/validator drift the
 # specification exists to eliminate).
-_OBSERVED_HEADING_PATTERN = OBSERVED_SECTION.recognition_pattern
-_EXPECTED_HEADING_PATTERN = EXPECTED_SECTION.recognition_pattern
+_OBSERVED_HEADING_PATTERN = OBSERVED_SECTION.heading_pattern
+_EXPECTED_HEADING_PATTERN = EXPECTED_SECTION.heading_pattern
 
 
 def restructure_body(proposal: ShapeProposal, current_body: str) -> str:

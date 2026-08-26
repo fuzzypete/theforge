@@ -39,7 +39,7 @@ _EXAMPLE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
-ACCEPTANCE_CRITERIA_HEADING_PATTERN = ACCEPTANCE_CRITERIA_SECTION.recognition_pattern
+ACCEPTANCE_CRITERIA_HEADING_PATTERN = ACCEPTANCE_CRITERIA_SECTION.heading_pattern
 
 
 @dataclass(frozen=True)
@@ -316,9 +316,9 @@ def extract_authoritative_section(
 # place — the specification — because intake decides "is this a bug body?" in
 # more than one gate and a body admitted by one gate must not be refused by
 # another (#2139, ADR-0003).
-_BUG_SYMPTOM_HEADING = OBSERVED_SECTION.recognition_pattern
-_BUG_EXPECTATION_HEADING = EXPECTED_SECTION.recognition_pattern
-_BUG_REPRODUCTION_HEADING = REPRODUCTION_SECTION.recognition_pattern
+_BUG_SYMPTOM_HEADING = OBSERVED_SECTION.heading_pattern
+_BUG_EXPECTATION_HEADING = EXPECTED_SECTION.heading_pattern
+_BUG_REPRODUCTION_HEADING = REPRODUCTION_SECTION.heading_pattern
 
 # Public aliases for other readers that need to recognize the same bug-body
 # sections. The accepted heading spellings must stay in one place.

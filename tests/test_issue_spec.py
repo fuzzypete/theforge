@@ -17,6 +17,7 @@ rule:
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 
 from theforge.intake.shape_classify import Classification, Confidence, ShapeProposal
@@ -111,6 +112,21 @@ class TestSpecificationIsData:
         # Two type labels is not a declaration.
         assert spec_for_labels(["bug", "enhancement"]) is None
 
+    def test_recognition_is_at_least_as_wide_as_canonicalization(self) -> None:
+        # Every spelling the renderer would rewrite to the canonical heading
+        # must be a spelling the gate's heading probes can see. A section the
+        # parser models but the gate cannot find is admitted or refused
+        # depending on which of the two reads the body first — the hole
+        # ``## Reproduction`` fell through.
+        for section in SECTIONS.values():
+            probe = re.compile(section.heading_pattern, re.IGNORECASE)
+            for alias in section.normalized_aliases:
+                for spelling in (alias, alias.title(), alias.title() + ":", f"  {alias}  "):
+                    assert probe.search(spelling.strip()), (
+                        f"{section.key}: heading_pattern does not recognize {spelling!r}, "
+                        "which the renderer would canonicalize"
+                    )
+
     def test_a_canonical_heading_is_its_own_alias(self) -> None:
         for section in SECTIONS.values():
             assert section.matches_heading(section.canonical_heading)
@@ -199,6 +215,35 @@ class TestCheckerDerivesFromSpecification:
         assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
         reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
         assert "'Steps to reproduce'" in reason.detail
+
+    def test_a_legacy_spelling_of_a_forbidden_section_is_refused_too(self) -> None:
+        # ``## Reproduction`` is a declared alias: the renderer rewrites it to
+        # ``## Steps to reproduce``. The gate must therefore see it as that
+        # section, or a body would be admitted purely for spelling the section
+        # the way the renderer is about to change.
+        body = (
+            "## Why\n\nOperators keep re-running it by hand.\n\n"
+            "## Reproduction\n\n- run `forge sprint`\n\n"
+            "## Acceptance criteria\n\n- the command is idempotent\n"
+        )
+        for label in ("task", "enhancement"):
+            result = check("Idempotent sprint", body, [label])
+            assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE, label
+            assert result.admits_implementation_sprint is False
+            reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+            assert "'Reproduction'" in reason.detail
+
+    def test_the_gate_and_the_renderer_agree_on_a_legacy_spelling(self) -> None:
+        # The same body, seen by both halves of the contract: what the renderer
+        # canonicalizes is what the gate refuses.
+        body = "## Reproduction\n\n- run `forge sprint`\n"
+        document = parse_issue_document(body, labels=["task"])
+        assert document.modeled_keys() == ("reproduction",)
+        assert render_issue_document(document) == "## Steps to reproduce\n\n- run `forge sprint`\n"
+        assert (
+            check("Idempotent sprint", body, ["task"]).verdict
+            is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        )
 
     def test_a_lone_bug_shape_heading_is_not_a_contradiction(self) -> None:
         # The other half of the same rule: "Expected" is ordinary English about
