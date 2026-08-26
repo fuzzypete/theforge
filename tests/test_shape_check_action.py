@@ -33,6 +33,47 @@ WELL_FORMED_BODY = textwrap.dedent(
     """
 )
 
+ADVISORY_DONE_STATE_BODY = textwrap.dedent(
+    """\
+    ## What
+    Add a CLI flag.
+
+    ## Why
+    Users need a way to bypass the gate.
+
+    ## Example
+    ```text
+    Before:
+    $ forge sprint
+    [forge] 2 issue(s) flagged by shape gate
+
+    After:
+    $ forge sprint --force
+    [forge] sprint started with every issue
+    ```
+
+    ## Acceptance Criteria
+    - The toggle is available to operators.
+    """
+)
+
+CAUSE_UNKNOWN_BUG_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    `forge status --ready` lists issues the gate refuses.
+
+    ## Expected behavior
+    The listing agrees with sprint entry.
+
+    ## Diagnosis
+    - **Observed symptom:** the queue and the gate disagree.
+    - **Evidence:** run id `abc123`.
+    - **Confirmed cause:** unknown
+    - **Affected code path:** `ready_queue.build_ready_queue`.
+    - **Fix-success criterion:** the queue and the gate cannot disagree.
+    """
+)
+
 
 class FakeGitHubAPI:
     """In-memory GitHubAPI double. Records calls; models labels + comments."""
@@ -131,6 +172,14 @@ class TestRenderComment:
         assert "missing_acceptance_criteria" in out
         assert "blocking" in out
         assert "No AC section found." in out
+
+    def test_includes_admission_verdict(self):
+        result = ShapeResult(
+            shape=Shape.RUNNABLE,
+            suggested_action=SuggestedAction.PROCEED,
+        )
+        out = render_comment(result)
+        assert "- admission verdict: `runnable`" in out
 
 
 class TestFindBotComment:
@@ -262,6 +311,40 @@ class TestRunActionEdited:
         # No update_comment call on second run since body is identical.
         update_calls = [c for c in api.calls if c[0] == "update_comment"]
         assert update_calls == []
+
+    def test_edit_with_advisory_only_done_state_does_not_apply_needs_grooming(self):
+        api = FakeGitHubAPI(issue_number=34, labels=["enhancement"])
+        event = _event(
+            action="edited",
+            number=34,
+            title="Add a flag",
+            body=ADVISORY_DONE_STATE_BODY,
+            labels=["enhancement"],
+        )
+
+        result = run_action(event, api)
+
+        assert result.shape is Shape.RUNNABLE
+        assert "needs-grooming" not in api.labels
+
+    def test_edit_with_cause_unknown_bug_applies_needs_grooming_and_reports_verdict(self):
+        api = FakeGitHubAPI(issue_number=35, labels=["bug"])
+        event = _event(
+            action="edited",
+            number=35,
+            title="Queue disagreement",
+            body=CAUSE_UNKNOWN_BUG_BODY,
+            labels=["bug"],
+        )
+
+        result = run_action(event, api)
+
+        assert result.shape is Shape.RUNNABLE
+        assert "needs-grooming" in api.labels
+        assert result.verdict.value == "diagnosis_cause_unknown"
+        assert any(
+            "admission verdict: `diagnosis_cause_unknown`" in c["body"] for c in api.comments
+        )
 
 
 class TestRunActionTrackingOnly:

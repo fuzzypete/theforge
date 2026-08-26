@@ -37,6 +37,24 @@ GATE_PASSING_BODY = (
 )
 
 SYMPTOM_ONLY_BODY = "## Observed behavior\n\nthe thing broke on every release run.\n"
+ADVISORY_DONE_STATE_TITLE = "forge shape leaves advisory AC prose runnable"
+ADVISORY_DONE_STATE_BODY = (
+    "## What\n\n"
+    "Add a CLI flag.\n\n"
+    "## Why\n\n"
+    "Users need a way to bypass the gate.\n\n"
+    "## Example\n\n"
+    "```text\n"
+    "Before:\n"
+    "$ forge sprint\n"
+    "[forge] 2 issue(s) flagged by shape gate\n\n"
+    "After:\n"
+    "$ forge sprint --force\n"
+    "[forge] sprint started with every issue\n"
+    "```\n\n"
+    "## Acceptance Criteria\n\n"
+    "- The toggle is available to operators.\n"
+)
 
 
 def _make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
@@ -93,6 +111,18 @@ def test_readiness_false_for_symptom_only_bug():
     )
     assert readiness.verdict is ShapeVerdict.NEEDS_DIAGNOSIS
     assert readiness.ready is False
+
+
+def test_readiness_true_for_advisory_only_done_state_issue():
+    proposal = classify(ADVISORY_DONE_STATE_TITLE, ADVISORY_DONE_STATE_BODY, ["enhancement"])
+    readiness = evaluate_readiness(
+        proposal,
+        title=ADVISORY_DONE_STATE_TITLE,
+        body=ADVISORY_DONE_STATE_BODY,
+        labels=["enhancement"],
+    )
+    assert readiness.verdict is ShapeVerdict.RUNNABLE
+    assert readiness.ready is True
 
 
 def test_readiness_false_while_a_label_edit_is_still_pending():
@@ -160,6 +190,19 @@ def test_shape_next_flag_reports_terminal_state(mock_run, tmp_path, capsys):
     assert rc == 0
     assert "no further action is needed" in out
     assert "forge groom" not in out
+
+
+@patch("theforge.cli.shape.subprocess.run")
+def test_shape_reports_terminal_state_for_advisory_only_done_state(mock_run, tmp_path, capsys):
+    mock_run.return_value = _gh_view(
+        ADVISORY_DONE_STATE_TITLE,
+        ADVISORY_DONE_STATE_BODY,
+        ["enhancement"],
+    )
+    rc = cmd_shape(_make_args(tmp_path, issue=2230, next=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no further action is needed" in out
 
 
 @patch("theforge.cli.shape.subprocess.run")

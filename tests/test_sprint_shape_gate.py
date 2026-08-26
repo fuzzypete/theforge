@@ -40,6 +40,31 @@ $ forge sprint --force
 - the warning output reports every skipped issue's reason codes
 """
 
+_ADVISORY_DONE_STATE_BODY = """## What
+
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+```text
+Before:
+$ forge sprint
+[forge] 2 issue(s) flagged by shape gate
+
+After:
+$ forge sprint --force
+[forge] sprint started with every issue
+```
+
+## Acceptance Criteria
+
+- The toggle is available to operators.
+"""
+
 _BAD_BODY = "just a one-liner, no acceptance criteria, no structure"
 
 # A story whose third acceptance criterion depends on the recorded outcome of a
@@ -368,6 +393,30 @@ def test_runnable_bug_surfaces_local_advisories_without_changing_verdict(
     entry = result.advisories[0]
     assert entry.reason_codes == ("bug_fix_location_prescription",)
     assert "fix location" in entry.detail
+
+
+def test_advisory_only_done_state_stays_runnable_and_surfaces_as_advisory(
+    tmp_path: Path,
+) -> None:
+    issues = [{"number": 2512, "title": "Add a flag"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(
+            _ADVISORY_DONE_STATE_BODY,
+            ["enhancement"],
+            "Add a flag",
+        ),
+    )
+
+    assert [r["number"] for r in result.runnable] == [2512]
+    assert result.runnable[0]["shape_verdict"] == "runnable"
+    assert result.runnable[0]["shape_advisories"] == ["no_observable_done_state"]
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    entry = result.advisories[0]
+    assert entry.reason_codes == ("no_observable_done_state",)
 
 
 def test_cause_unknown_refusal_does_not_promote_phrase_advice_to_skipped_codes(

@@ -44,6 +44,31 @@ Users need a way to bypass the gate.
 - the warning output reports every skipped issue's reason codes
 """
 
+_ADVISORY_DONE_STATE_BODY = """## What
+
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+```text
+Before:
+$ forge sprint
+[forge] 2 issue(s) flagged by shape gate
+
+After:
+$ forge sprint --force
+[forge] sprint started with every issue
+```
+
+## Acceptance Criteria
+
+- The toggle is available to operators.
+"""
+
 # A bug filing with no `## Diagnosis` section — symptom-only, the shape the
 # gate refuses with a BLOCKING `needs_diagnosis` reason.
 _UNDIAGNOSED_BUG_BODY = """## Observed behavior
@@ -253,6 +278,21 @@ def test_admissible_bug_keeps_advisory_reasons_in_result() -> None:
     assert verdict.reason_codes == ()
     assert verdict.result is not None
     assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
+
+
+def test_advisory_only_done_state_is_admissible() -> None:
+    verdict = classify_admissibility(
+        "Add a flag",
+        _ADVISORY_DONE_STATE_BODY,
+        ["enhancement"],
+    )
+
+    assert verdict.admissible is True
+    assert verdict.verdict == ShapeVerdict.RUNNABLE.value
+    assert verdict.reason_codes == ()
+    assert verdict.result is not None
+    assert verdict.result.verdict is ShapeVerdict.RUNNABLE
+    assert any(r.code == "no_observable_done_state" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: local-check refusals ────────────────────────────

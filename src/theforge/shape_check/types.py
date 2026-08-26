@@ -34,11 +34,14 @@ class Reason:
 
 
 class ShapeVerdict(str, Enum):
-    """Bounded verdict taxonomy emitted by the shape gate.
+    """Bounded admission/refusal vocabulary emitted by the shape gate.
 
     Stable string identifiers — used in audit YAML, sprint summary, and
-    operator-facing status surfaces. Per ADR-0001, verdicts are vocabulary
-    only; routing to a producer command is the operator's call.
+    operator-facing status surfaces. ``RUNNABLE`` is the only admission-
+    granting verdict; advisory findings may still appear in ``ShapeResult.reasons``
+    but do not decide admission unless a specific lifecycle rule says so.
+    Per ADR-0001, routing to a producer command is separate from this
+    readiness vocabulary.
     """
 
     RUNNABLE = "runnable"
@@ -78,12 +81,12 @@ VERDICT_DESCRIPTIONS: dict[ShapeVerdict, str] = {
         "issue spans too many behavioral clusters; split into smaller issues"
     ),
     ShapeVerdict.NEEDS_OPERATOR_ACTION: (
-        "issue requires operator triage (epic/tracking, untriaged finding, stale reopen, "
-        "or an acceptance criterion the dev loop cannot satisfy)"
+        "issue is refused pending operator action or another blocking condition "
+        "outside the runnable typed verdicts"
     ),
     ShapeVerdict.ADR_CANDIDATE: (
-        "issue body contains design/implementation content; "
-        "promote to ADR or refine in plan-review"
+        "legacy routing marker retained for audit compatibility; "
+        "not emitted by the current sprint-admission verdict derivation"
     ),
     ShapeVerdict.DUPLICATE_OR_STALE: (
         "issue is superseded by another or otherwise stale; close or merge"
@@ -97,3 +100,8 @@ class ShapeResult:
     reasons: tuple[Reason, ...] = field(default_factory=tuple)
     suggested_action: SuggestedAction = SuggestedAction.PROCEED
     verdict: ShapeVerdict = ShapeVerdict.RUNNABLE
+
+    @property
+    def admits_implementation_sprint(self) -> bool:
+        """Body-derived admission answer before label-authority overlays."""
+        return self.verdict is ShapeVerdict.RUNNABLE
