@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
@@ -103,6 +104,31 @@ class _Answerer(threading.Thread):
                 if _pending.resolve_pending(run_id, self.answer, self.project_root):
                     self.answered = True
                     return
+            time.sleep(0.05)
+
+
+class _RawYamlAnswerer(_Answerer):
+    """An operator with a text editor, not the CLI.
+
+    Writes the ``decision`` field as raw YAML — so ``yes`` lands as a native
+    bool, not the string ``forge decide`` would have quoted — and omits
+    ``decided_at`` entirely, exactly as a hand edit does.
+    """
+
+    def run(self) -> None:
+        import yaml
+
+        end = time.monotonic() + self.deadline
+        while time.monotonic() < end:
+            for entry in _pending.list_pending(self.project_root):
+                if entry.get("phase") != "SPEC_GAP" or entry.get("decision"):
+                    continue
+                path = self.project_root / ".forge" / "pending" / f"{entry['run_id']}.yaml"
+                raw = path.read_text(encoding="utf-8")
+                path.write_text(f"{raw}decision: {self.answer}\n", encoding="utf-8")
+                self.seen_entry = dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+                self.answered = True
+                return
             time.sleep(0.05)
 
 
@@ -296,6 +322,23 @@ class TestAnswerTextIsNotConfusedWithExpiry:
         assert "**Operator answer:** timeout" in seen["prompts"][1]
         assert "the pause expired without one" not in seen["prompts"][1]
 
+    def test_a_hand_edited_yaml_scalar_answer_is_recorded(self, tmp_path):
+        """An operator editing the pending file writes YAML, not necessarily a string.
+
+        `decision: yes` round-trips through yaml.safe_load as Python True. The
+        poller treats it as a decision, so the gate must too.
+        """
+        answerer = _RawYamlAnswerer(tmp_path, "yes")
+        result, seen, _config_used, _task = _run(
+            tmp_path, [SPEC_GAP_OUTPUT, "Done."], answerer=answerer
+        )
+
+        assert answerer.answered
+        (resolution,) = _resolutions(result)
+        assert resolution["source"] == "operator"
+        assert resolution["answer"] == "True"
+        assert "**Operator answer:** True" in seen["prompts"][1]
+
     def test_an_answer_of_timeout_survives_into_the_durable_record(self, tmp_path):
         answerer = _Answerer(tmp_path, "timeout")
         _run(tmp_path, [SPEC_GAP_OUTPUT, "Done."], answerer=answerer)
@@ -309,6 +352,15 @@ class TestGateOutcomeDiscrimination:
     """Unit coverage for the answered-vs-expired decision itself."""
 
     class _FakePending:
+        """Stands in for the module, but keeps the *real* decision predicate.
+
+        Substituting a hand-rolled one here would let the gate and the poller
+        drift apart again without any test noticing — which is how this defect
+        recurred twice.
+        """
+
+        decision_of = staticmethod(_pending.decision_of)
+
         def __init__(self, record):
             self._record = record
 
@@ -339,6 +391,49 @@ class TestGateOutcomeDiscrimination:
             {"decision": "timeout"}, polled_decision="timeout", polled_decided_at=None
         )
         assert (answered, answer, decided_at) == (True, "timeout", None)
+
+    @pytest.mark.parametrize(
+        "written,expected",
+        [
+            # What `decision: yes` / `decision: 42` become after yaml.safe_load.
+            # The YAML-level round trip itself is covered end to end by
+            # test_a_hand_edited_yaml_scalar_answer_is_recorded.
+            (True, "True"),
+            (42, "42"),
+            (0.5, "0.5"),
+            ("yes", "yes"),  # the same word quoted stays a string
+            ("  leave unmarked  ", "leave unmarked"),
+        ],
+    )
+    def test_a_yaml_native_scalar_decision_is_an_answer(self, written, expected):
+        """`decision: yes` is `True` in Python — somebody still typed an answer."""
+        answered, answer, _decided_at = self._outcome(
+            {"decision": written}, polled_decision=str(written), polled_decided_at=None
+        )
+        assert (answered, answer) == (True, expected)
+
+    @pytest.mark.parametrize("written", [None, "", "   ", 0, False])
+    def test_falsy_and_blank_decisions_are_not_answers(self, written):
+        """Matches the poller's truthiness test, so no existing gate shifts."""
+        assert self._outcome(
+            {"decision": written}, polled_decision="timeout", polled_decided_at=None
+        ) == (False, None, None)
+
+    def test_the_gate_and_the_poller_share_one_predicate(self):
+        """Guards the invariant, not an instance of it.
+
+        Both earlier fixes here re-derived "is this decided?" and drifted from
+        the poller. Anything the poller would return a decision for must reach
+        the gate as an answer, and vice versa.
+        """
+        for written in ["timeout", "yes", True, 42, 0.5, "  spaced  ", None, "", "  ", 0, False]:
+            record = {"decision": written}
+            poller_sees = _pending.decision_of(record)
+            answered, answer, _at = self._outcome(
+                record, polled_decision="timeout", polled_decided_at=None
+            )
+            assert answered is (poller_sees is not None), written
+            assert answer == poller_sees, written
 
     def test_a_readable_record_with_no_decision_is_an_expiry(self):
         assert self._outcome(

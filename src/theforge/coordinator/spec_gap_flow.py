@@ -300,9 +300,17 @@ def _gate_outcome(
     ("timeout the request rather than blocking"), and reading the sentinel as an
     expiry would discard a real answer and proceed under the assumption instead.
 
-    The fact that settles it is whether a ``decision`` field was ever written to
-    the pending record, not what that field says. The record is still on disk
-    here — ``cleanup_pending`` runs after this — so it is re-read and believed.
+    What settles it is whether the pending record carries a decision at all, and
+    that question has exactly one answer: :func:`theforge.pending.decision_of`,
+    the same predicate the poller itself uses. This function must never re-derive
+    it. Two earlier attempts here did, each with a slightly different rule, and
+    each disagreed with the poller about a different class of real file — first
+    the literal answer ``timeout``, then YAML-native scalars like ``yes`` and
+    ``42``, which arrive as ``bool``/``int`` and which a string-only test reads
+    as silence. Sharing the predicate is what stops that recurring.
+
+    The record is still on disk here (``cleanup_pending`` runs after), so it is
+    re-read and believed over the poller's sentinel.
 
     ``decided_at`` is corroboration, never the discriminator: the pending file is
     deliberately writable by anything (CLI, webhook, a human with an editor, per
@@ -310,14 +318,13 @@ def _gate_outcome(
     timestamp at all. Keying on the timestamp would turn that answer into a
     phantom timeout — the same bug in a new place.
 
-    Falls back to the poller's own report when the record cannot be re-read (a
-    stale sweep between the poll and here): a non-sentinel decision, or any
-    ``decided_at``, means the poller genuinely saw an answer.
+    The sentinel is consulted only when the authoritative record is gone (a
+    sweep between the poll and here), where the poller's report is all there is.
     """
     record = pending_module.read_pending(run_id, project_root=project_root) or {}
-    raw = record.get("decision")
-    if isinstance(raw, str) and raw.strip():
-        return True, raw.strip(), record.get("decided_at") or polled_decided_at
+    answer = pending_module.decision_of(record)
+    if answer is not None:
+        return True, answer, record.get("decided_at") or polled_decided_at
     if record:
         # The record is readable and carries no decision: the gate expired.
         return False, None, None
