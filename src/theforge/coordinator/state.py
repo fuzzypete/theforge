@@ -138,6 +138,11 @@ class RetryReason(str, Enum):
     CONVENTION_VIOLATIONS = "convention_violations"
     MAX_ITERATIONS_NO_SUBMIT = "max_iterations_no_submit"
     P2_CLEANUP = "p2_cleanup"
+    # A dev iteration that raised a specification gap and was resolved (by an
+    # operator answer, by an expired pause, or by an exhausted allowance).
+    # Re-enters DEV directly: the gap cost no review cycle, so none is spent
+    # returning from it (#2122).
+    SPEC_GAP_RESUME = "spec_gap_resume"
 
 
 # ── Disposition enum ──────────────────────────────────────────────────
@@ -641,6 +646,21 @@ class CoordinatorState:
     # without a handoff, for one) return before telemetry is recorded, and an
     # unconfined coordinator execution must never be invisible in the audit trail.
     dev_verification_requests: list[dict[str, Any]] = field(default_factory=list)
+    # ── Specification-gap backchannel (#2122) ────────────────────────────
+    # Every ``<forge_spec_gap>`` a dev agent raised this run, in order: what was
+    # asked, whether it got an operator pause, and how long the pause waited.
+    # Plain JSON-safe dicts so they survive the audit, the pending file, and the
+    # durable resume record unchanged.
+    spec_gap_events: list[dict[str, Any]] = field(default_factory=list)
+    # How each raised gap ended: an operator answer, an expired pause, or an
+    # exhausted allowance. One entry per event — no gap resolves without a
+    # record. Restored from the durable record on resume *and* on a fresh run of
+    # the same story, so an answer is never re-asked.
+    spec_gap_resolutions: list[dict[str, Any]] = field(default_factory=list)
+    # Pauses this run actually opened. Bounded by
+    # ``retry.max_spec_gap_pauses``; a gap raised past the bound is recorded and
+    # resolved under its own assumption rather than pausing again.
+    spec_gap_pauses_used: int = 0
     plan_session_id: str | None = None
     plan_review_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name

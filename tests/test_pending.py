@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import threading
 import time
 from unittest.mock import patch
@@ -279,3 +280,60 @@ def test_cleanup_stale_removes_pidless_files(tmp_path):
     removed = pending.cleanup_stale(project_root=tmp_path)
     assert removed == 1
     assert not (pending_dir / "pidless-run.yaml").exists()
+
+
+def _stale_entry(pending_dir, run_id, decision):
+    """A past-deadline gate carrying ``decision``, written as raw YAML."""
+    past = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10)
+    ).isoformat()
+    data = {
+        "run_id": run_id,
+        "story": "s",
+        "phase": "SPEC_GAP",
+        "reason": "r",
+        "options": [],
+        "created_at": past,
+        "timeout_at": past,
+        "pid": os.getpid(),
+        "decision": decision,
+    }
+    (pending_dir / f"{run_id}.yaml").write_text(yaml.safe_dump(data))
+
+
+def test_cleanup_stale_and_the_poller_agree_on_what_decided_means(tmp_path):
+    """The sweeper asks the same predicate the poller does (#2122).
+
+    Both read the same field of the same record. When the sweeper's notion of
+    "decided" is wider than the poller's, a record the poller is still waiting
+    on is kept forever; when it is narrower, an answered record is deleted out
+    from under the run. One predicate, so neither can happen.
+    """
+    pending_dir = tmp_path / ".forge" / "pending"
+    pending_dir.mkdir(parents=True)
+
+    # Answers: kept for the coordinator to consume, whatever YAML made of them.
+    for run_id, decision in [
+        ("answered-text", "leave unmarked"),
+        ("answered-sentinel", "timeout"),
+        ("answered-bool", True),
+        ("answered-int", 42),
+    ]:
+        _stale_entry(pending_dir, run_id, decision)
+    # Not answers: the poller keeps waiting on these, so past their deadline
+    # they are genuinely expired and must be swept.
+    for run_id, decision in [
+        ("blank-str", ""),
+        ("whitespace-only", "   "),
+        ("zero", 0),
+        ("false", False),
+        ("null", None),
+    ]:
+        _stale_entry(pending_dir, run_id, decision)
+
+    pending.cleanup_stale(project_root=tmp_path)
+
+    for run_id in ["answered-text", "answered-sentinel", "answered-bool", "answered-int"]:
+        assert (pending_dir / f"{run_id}.yaml").exists(), f"{run_id} was an answer"
+    for run_id in ["blank-str", "whitespace-only", "zero", "false", "null"]:
+        assert not (pending_dir / f"{run_id}.yaml").exists(), f"{run_id} was not an answer"

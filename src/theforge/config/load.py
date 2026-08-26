@@ -1380,8 +1380,17 @@ def load_config(config_path: Path) -> ForgeConfig:
             f"retry.escalate_timeout_policy: unknown value {escalate_timeout_policy!r} "
             f"(expected one of {', '.join(ESCALATE_TIMEOUT_POLICIES)})"
         )
+    # Config loading is an integrity boundary (convention 2): a negative
+    # allowance would silently read as "disabled" while looking like a limit.
+    max_spec_gap_pauses = int(retry_data.get("max_spec_gap_pauses", 1))
+    if max_spec_gap_pauses < 0:
+        raise ValueError(
+            f"retry.max_spec_gap_pauses: must be >= 0, got {max_spec_gap_pauses} "
+            "(0 disables the specification-gap channel)"
+        )
     retry = RetryPolicy(
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
+        max_spec_gap_pauses=max_spec_gap_pauses,
         max_dev_transport_retries=int(retry_data.get("max_dev_transport_retries", 1)),
         max_plan_transport_retries=int(retry_data.get("max_plan_transport_retries", 2)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),

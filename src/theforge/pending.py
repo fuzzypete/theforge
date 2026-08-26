@@ -109,6 +109,34 @@ def write_pending(
     return path
 
 
+def decision_of(entry: object) -> str | None:
+    """The decision recorded in a pending record, or None when undecided.
+
+    The single definition of "has this gate been answered, and what does the
+    answer say?". It lives here, beside the writer and the poller, because the
+    pending record's format is this module's to own — and because every caller
+    that re-derived the predicate for itself drifted from the poller and
+    disagreed with it about real files (#2122).
+
+    The field is deliberately writable by anything — ``forge decide``, a webhook,
+    a human with an editor — so it arrives as whatever YAML produced. ``yes``
+    becomes ``True`` and ``42`` becomes ``int``; both are answers somebody typed,
+    and a caller that demanded ``isinstance(raw, str)`` would read them as
+    silence. Normalisation is therefore ``str(raw).strip()``, applied once, here.
+
+    Falsy values (absent, null, ``""``, ``0``, ``false``) are *not* decisions —
+    matching the poller's long-standing truthiness test, so this helper changes
+    no existing gate's behaviour. A whitespace-only value is likewise no
+    decision: it would otherwise resolve a gate to the empty string.
+    """
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("decision")
+    if not raw:
+        return None
+    return str(raw).strip() or None
+
+
 def read_pending(run_id: str, project_root: Path | None = None) -> dict[str, Any] | None:
     """Load and return the pending YAML dict, or None if not found."""
     path = _pending_dir(project_root) / f"{run_id}.yaml"
@@ -238,9 +266,9 @@ def poll_pending(
     with _wb.operator_wait(phase_label or "pending decision"):
         while time.monotonic() < deadline:
             data = read_pending(run_id, project_root)
-            if isinstance(data, dict) and data.get("decision"):
-                decision = str(data["decision"]).strip()
-                decided_at = data.get("decided_at")
+            decision = decision_of(data)
+            if decision is not None:
+                decided_at = data.get("decided_at") if isinstance(data, dict) else None
                 _cu._log(f"  Pending decision received: {decision!r}")
                 return decision, decided_at
 
@@ -337,8 +365,11 @@ def cleanup_stale(project_root: Path | None = None) -> int:
         if is_triage_pending(entry):
             continue
 
-        # If already decided, leave it — coordinator will clean up
-        if entry.get("decision"):
+        # If already decided, leave it — coordinator will clean up. Asked through
+        # the shared predicate so the sweeper and the poller cannot disagree
+        # about what "decided" means: a value the poller is still waiting on must
+        # not make this treat the record as resolved and keep it forever.
+        if decision_of(entry) is not None:
             continue
 
         # Remove if past timeout_at

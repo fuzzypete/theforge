@@ -31,6 +31,8 @@ from theforge.task import (
     build_dev_prompt,
     build_fix_prompt,
     render_batch_spec_section,
+    render_resolved_spec_gaps_section,
+    render_spec_gap_section,
     render_verification_section,
 )
 from theforge.traces import write_trace
@@ -58,6 +60,7 @@ from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
+from .spec_gap_flow import handle_spec_gap, resolved_gaps_for_prompt, spec_gap_pauses_remaining
 from .state import (
     CoordinatorResult,
     CoordinatorState,
@@ -1111,6 +1114,17 @@ def _run_dev_phase(
     _verification_prompt_kwargs: dict = {
         f"verification_{key}": value for key, value in _verification_channel.items()
     }
+    # ── Specification-gap backchannel (#2122) ─────────────────────────────
+    # Every prompt-building route gets the same two facts: how many gap pauses
+    # this run can still honour, and every gap already settled for this story
+    # (including ones an earlier run or an earlier iteration answered). Assembled
+    # once, before routing, so no route can describe a different channel — and
+    # so the timeout-resume route, which builds its prompt without a builder,
+    # renders the resolved gaps from the same source.
+    _spec_gap_prompt_kwargs: dict = {
+        "spec_gap_pauses_remaining": spec_gap_pauses_remaining(state, config),
+        "resolved_spec_gaps": resolved_gaps_for_prompt(state),
+    }
     # Gate execution is coordinator-owned on EVERY iteration (#1944 / #823). The
     # dev agent is never the gate authority: VALIDATE runs the authoritative gate
     # unsandboxed (on every successful handoff before REVIEW/MERGE), or records a
@@ -1139,6 +1153,16 @@ def _run_dev_phase(
             # coordinator is no longer serving — indistinguishable, from inside
             # the agent, from the capability not existing at all.
             prompt += render_verification_section(**_verification_channel)
+            # Same reasoning as the verification section above, applied to the
+            # gap channel: a resumed agent that is not told what an operator
+            # already decided will rediscover the question this run paid to
+            # answer — and, with the channel still open, may ask it again.
+            prompt += render_resolved_spec_gaps_section(
+                _spec_gap_prompt_kwargs["resolved_spec_gaps"]
+            )
+            prompt += render_spec_gap_section(
+                remaining_pauses=_spec_gap_prompt_kwargs["spec_gap_pauses_remaining"]
+            )
             state.dev_prompt_injected_finding_ids.append([])
             state.retry_reason = None
             state.human_feedback = None
@@ -1166,6 +1190,7 @@ def _run_dev_phase(
                 advisory_p2_only=True,
                 p2_policy=config.dev.p2_policy,
                 **_verification_prompt_kwargs,
+                **_spec_gap_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
@@ -1194,6 +1219,7 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 p2_policy=config.dev.p2_policy,
                 **_verification_prompt_kwargs,
+                **_spec_gap_prompt_kwargs,
             )
             injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
             injected_finding_ids.extend(
@@ -1236,6 +1262,7 @@ def _run_dev_phase(
                 assembled_context=dev_context,
                 p2_policy=config.dev.p2_policy,
                 **_verification_prompt_kwargs,
+                **_spec_gap_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None
@@ -1247,9 +1274,17 @@ def _run_dev_phase(
             | RetryReason.REJECT
             | RetryReason.EXTEND
             | RetryReason.REVIEW_CHANGES
+            | RetryReason.SPEC_GAP_RESUME
         ):
             # None → first iteration; gate_fail/convention_violations/dirty_worktree/reject
-            # /extend(no findings) → fresh dev prompt
+            # /extend(no findings) → fresh dev prompt.
+            #
+            # spec_gap_resume takes this route rather than a short continuation
+            # prompt of its own: the resolved gap is rendered by the same
+            # builder every other route uses, so the answer reaches the agent
+            # whether or not its session survived the pause. A continuation
+            # prompt would carry the answer only when the session was reusable,
+            # and lose it exactly when the agent has the least context (#2122).
             dev_context = ContextAssembler.from_config(config).assemble(
                 phase="dev",
                 story_text=story_content,
@@ -1289,6 +1324,7 @@ def _run_dev_phase(
                 # re-read the warning as though it were about them (#2288).
                 inherited_work_note=state.workspace_inherited_work_note,
                 **_verification_prompt_kwargs,
+                **_spec_gap_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed
@@ -1512,6 +1548,58 @@ def _run_dev_phase(
             cost_usd=_dev_cost_total,
             duration_s=round(_dev_elapsed, 2),
         )
+
+    # ── Specification gap raised by this iteration (#2122) ───────────
+    # Checked before every other outcome path: a dev agent that stopped to ask
+    # about an underspecified criterion has not failed, has not completed, and
+    # must not be routed as either. Handled here — at the moment of ambiguity —
+    # rather than after the review allowance is exhausted, which is the whole
+    # point: the operator answers one question instead of the run spending a
+    # review budget rediscovering that the guess was wrong.
+    #
+    # The gap resolution never touches review_cycle or
+    # validate_opened_review_cycles, so no review cycle is spent on the gap
+    # itself; the coordinator loops straight back to DEV.
+    if handle_spec_gap(
+        state,
+        config,
+        task,
+        dev_result.output,
+        logger=logger,
+    ):
+        # Preserve whatever the agent produced before it stopped to ask. Same
+        # reasoning as the timeout and max-iterations paths: uncommitted work is
+        # invisible to the next iteration's baseline, and the coordinator is the
+        # party that owns the worktree.
+        if _worktree_has_changes(workspace_path):
+            if _checkpoint_commit(workspace_path, "specification gap raised"):
+                _log("  ⎇ DEV   checkpoint-committed work before the specification-gap pause")
+                if logger:
+                    logger._safe_emit(
+                        "dev_checkpoint_commit",
+                        phase="DEV",
+                        iteration=state.dev_iteration,
+                        reason="spec_gap",
+                    )
+        state.retry_reason = RetryReason.SPEC_GAP_RESUME
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+            gate_result="DEV_SPEC_GAP",
+        )
+        _log(
+            f"  ↻ DEV   specification gap resolved (iter={state.dev_iteration} → "
+            f"re-entering dev; no review cycle spent)"
+        )
+        if logger:
+            logger._safe_emit(
+                "phase_end",
+                phase="DEV",
+                outcome="spec_gap_resume",
+                iteration=state.dev_iteration,
+            )
+        return None
 
     # ── Unproven-completion guard (successful dev only) ──────────────
     # Fail closed at the dev seam: a dev that exits successfully but hands off a

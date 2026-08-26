@@ -609,7 +609,12 @@ def _pending_entry_is_live(entry: dict) -> bool:
     either as "waiting on you" would send the operator to a gate that is not
     open, so both are filtered out here.
     """
-    if entry.get("decision"):
+    from theforge.pending import decision_of  # noqa: PLC0415
+
+    # Through the shared predicate: a record the poller still considers
+    # undecided is a gate that really is open, and hiding it here would leave an
+    # operator with no prompt to answer something the run is blocked on.
+    if decision_of(entry) is not None:
         return False
     # A triage record shares the directory but is not a story gate: no story is
     # held at it and no process owns it. It is pid-less by construction, so this
