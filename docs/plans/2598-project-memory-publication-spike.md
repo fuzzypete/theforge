@@ -267,10 +267,25 @@ would turn reconciliation into a poll loop over the whole history.
 | Observer | Runs at | Covers |
 | --- | --- | --- |
 | `sprint.integration` | `_attempt_integration`, immediately after the landing resolves | Every `merge` and `merge-pr` landing attempt |
-| `sprint.queued-pr` | The sprint's queued-PR wrap-up | A queued auto-merge that resolves *before* the sprint exits |
+| `sprint.queued-pr` | `_resolve_queued_pr` during the work loop, and the sprint's queued-PR wrap-up | A queued auto-merge that resolves *before* the sprint exits, whichever of the two sees it |
+| `sprint.batch-member` | `_apply_batch_landing_to_member` | A batch member, whose changes exist only on its leader's branch and land through the leader's carrier |
 | `forge.reconcile` | `reconcile_landing_evidence`, called at sprint startup after the base-branch pull | Every landing that resolved *after* the sprint that requested it exited |
 
-The third is the seam asynchronous modes needed and did not have. `sprint/prior_landing.py`
+Two of these are one observer at two sites, and that is worth stating because it is where
+this drifted. A queued pull request that merges, closes or fails while the sprint is still
+running is resolved by `_resolve_queued_pr` and never reaches the wrap-up, so wiring the
+wrap-up alone left every mid-loop resolution unpublished. `_resolve_queued_pr`'s own
+docstring already listed durable landing evidence among the bookkeeping every caller owes —
+the evidence was the one item not wired. `tests/test_landing_observation.py` now asserts
+against the parsed module that every site which persists a landing also publishes evidence,
+because the failure mode is a site being forgotten rather than a behaviour being wrong.
+
+A batch member is a landing observation too. Its changes exist only on the leader's branch,
+so the *leader's* merge info is threaded through as the carrier — the member has none of its
+own — while its reviewed and gated commits are read off its own run, because the review and
+gate that judged it were its own.
+
+The reconciliation observer is the seam asynchronous modes needed and did not have. `sprint/prior_landing.py`
 holds pure predicates over already-persisted mappings and has no project root, no GitHub
 access and no publication capability, so it could not have been it. Reconciliation is driven
 by the evidence tree — the handful of runs with an open attempt — rather than by the run
@@ -304,7 +319,7 @@ observed later.
 | Outcome | At sprint exit | Later observed | Landing evidence |
 | --- | --- | --- | --- |
 | PR merged during the landing step | `merge-pr` reported merged | — | Assertion by `sprint.integration`, `carrier_kind: pull_request`, `carrier_ref` the PR number, `landed_commit` from `mergeCommit.oid` |
-| Auto-merge queued, resolves before sprint exit | queued, then polled MERGED | — | Attempt `queued`, then assertion by `sprint.queued-pr` |
+| Auto-merge queued, resolves before sprint exit | queued, then polled MERGED — by the work loop's resolver or by the wrap-up, whichever sees it first | — | Attempt `queued`, then assertion by `sprint.queued-pr` |
 | Auto-merge queued, still open at exit | attempt `queued`, then attempt `timeout` when forge stops waiting; record keeps `pending_integration` | PR merges later | Assertion by `forge.reconcile` on the next sprint. The run record is **not** rewritten |
 | Auto-merge queued, PR closed unmerged | attempt `queued` | PR closed | Attempt `closed`. Terminal; no assertion, ever |
 | Required checks decided red | attempt `failed`; record keeps `pending_integration` | — | Attempt `failed`. Terminal |
@@ -392,6 +407,8 @@ An indexed projection of evidence into the substrate would need both, and is a f
 | Memory reaches the remote with the base branch untouched; a fresh clone carries the corpus | `tests/test_memory_publication.py` |
 | Neither writer leaves a temporary file in a tracked tree; a stray one is never publishable | `tests/test_memory_publication.py` |
 | A stale merged PR on a reused branch is refused as the carrier; a squashed PR is still recognised by its commit list; an unverifiable lookup fails closed | `tests/test_landing_observation.py` |
+| A queued PR that merges, closes or times out *during the work loop* publishes its assertion or terminal attempt, not just one resolved at wrap-up | `tests/test_landing_observation.py` |
+| Every site that persists a landing also publishes evidence for it (asserted against the parsed module, so a forgotten site fails a test) | `tests/test_landing_observation.py` |
 | A failed or timed-out landing does not put a negative claim in the run record, on rewrite or on first write; a successful one may still advance it | `tests/test_landing_observation.py` |
 | Every story admission is preceded by a drain, and a sibling finishing in that window does not dirty the newcomer's checkout | `tests/test_protected_base_publication_poc.py::test_every_admission_is_preceded_by_a_drain_of_sibling_memory` |
 | Sprints accumulate onto one memory branch; the branch restarts from base once merged | `tests/test_memory_publication.py` |

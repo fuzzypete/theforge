@@ -137,6 +137,7 @@ from .dag import (
 from .display import _print_worker_status, _story_header
 from .dropped_work import WorktreeWork, describe_worktree_work, inspect_worktree_work
 from .gate_timeout_resolver import resolve_effective_gate_timeout
+from .landing_observation import OBSERVER_BATCH_MEMBER as LANDING_OBSERVER_BATCH_MEMBER
 from .landing_observation import OBSERVER_INTEGRATION as LANDING_OBSERVER_INTEGRATION
 from .landing_observation import OBSERVER_QUEUED_PR as LANDING_OBSERVER_QUEUED_PR
 from .landing_observation import reconcile_landing_evidence
@@ -3952,6 +3953,7 @@ def _record_landing_evidence(
     landing_mode: str,
     observer: str,
     attempt_outcome: str | None = None,
+    carrier: dict | None = None,
 ) -> None:
     """Publish durable evidence for a landing attempt that just resolved (#2598).
 
@@ -3961,12 +3963,19 @@ def _record_landing_evidence(
     only where a successful landing was observed and can be named. The sprint's
     ``landing_status`` remains what the scheduler consults; it is no longer what
     a fresh clone has to believe.
+
+    ``carrier`` overrides the merge info the carrier is resolved from. A batch
+    member's changes exist only on its *leader's* branch, so the leader's merge
+    info is what names the pull request that carried them; the member's own is
+    empty. Its attested commits still come from its own run — the review and
+    gate that judged it are its own.
     """
     from .landing_observation import attested_commits, observe_landing  # noqa: PLC0415
 
     run_id = result.state.run_id or state.sprint_run_id
     if not run_id:
         return
+    merge_info = carrier if isinstance(carrier, dict) else result.merge
     reviewed, gated = attested_commits(result.state)
     observe_landing(
         state.context.config,
@@ -3974,7 +3983,7 @@ def _record_landing_evidence(
         slug=slug,
         landing_mode=landing_mode,
         landing_status=getattr(result, "landing_status", None),
-        merge_info=result.merge if isinstance(result.merge, dict) else None,
+        merge_info=merge_info if isinstance(merge_info, dict) else None,
         reviewed_commit=reviewed,
         gated_commit=gated,
         observer=observer,
@@ -4209,6 +4218,7 @@ def _apply_batch_landing_to_member(
     landing_status: str,
     leader_slug: str,
     group_id: str,
+    carrier: dict | None = None,
 ) -> None:
     """Give one batch member the landing verdict its leader's branch reached.
 
@@ -4217,6 +4227,12 @@ def _apply_batch_landing_to_member(
     the base branch — the exact misreport this propagation exists to
     prevent. A member that failed on its own merits keeps its own verdict:
     the leader landing successfully does not retroactively approve it.
+
+    This is a landing observation like any other, so it owes the corpus the
+    same evidence (#2598). ``carrier`` is the *leader's* merge info, because
+    that is what names the pull request or merge the member's changes actually
+    rode in on — the member has none of its own. Its reviewed and gated commits
+    are still its own, read off its own run.
     """
     if not result.success:
         return
@@ -4245,6 +4261,16 @@ def _apply_batch_landing_to_member(
             reason=reason,
         )
         _log(f"✗ {member_slug}: {reason}")
+    _leader_mode = (carrier or {}).get("action") or state.context.config.workspace.on_approve
+    _record_landing_evidence(
+        state,
+        member_slug,
+        result,
+        landing_mode=str(_leader_mode),
+        observer=LANDING_OBSERVER_BATCH_MEMBER,
+        carrier=carrier,
+        attempt_outcome=None if landing_status == "landed" else "failed",
+    )
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
     _times = state.story_times.get(member_slug)
     if _times is not None:
@@ -4254,13 +4280,21 @@ def _apply_batch_landing_to_member(
 
 
 def _resolve_batch_leader_landing(
-    state: SprintExecutionState, leader_slug: str, landing_status: str
+    state: SprintExecutionState,
+    leader_slug: str,
+    landing_status: str,
+    *,
+    carrier: dict | None = None,
 ) -> None:
     """Record a batch leader's final landing status and push it to its members.
 
     Called from every site where a leader's landing reaches a terminal
     answer, including the queued-PR paths that resolve long after the
     member rows were written. A no-op for stories that do not lead a batch.
+
+    ``carrier`` is the leader's merge info, carried through so each member's
+    landing evidence can name the pull request or merge that actually delivered
+    its changes rather than inferring one it does not have.
     """
     group_id = state.batch_group_of_leader.get(leader_slug)
     if group_id is None:
@@ -4274,7 +4308,14 @@ def _resolve_batch_leader_landing(
         if member_group != group_id:
             continue
         _apply_batch_landing_to_member(
-            state, member_slug, member_task, member_result, landing_status, leader_slug, group_id
+            state,
+            member_slug,
+            member_task,
+            member_result,
+            landing_status,
+            leader_slug,
+            group_id,
+            carrier=carrier,
         )
 
 
@@ -4323,8 +4364,19 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
         # not be clobbered by a later re-dispatch or wrap-up pass.
         _set_outcome(state, slug, StoryOutcome.DONE, landed=True)
         _persist_story_landing(state, slug, result)
+        # This resolver observes the landing as surely as the wrap-up does, and
+        # owes the corpus the same artifact (#2598). Its docstring already
+        # listed durable landing evidence among the bookkeeping every caller
+        # owes; the evidence was the one item that had not been wired.
+        _record_landing_evidence(
+            state,
+            slug,
+            result,
+            landing_mode="merge-pr",
+            observer=LANDING_OBSERVER_QUEUED_PR,
+        )
         _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-        _resolve_batch_leader_landing(state, slug, "landed")
+        _resolve_batch_leader_landing(state, slug, "landed", carrier=result.merge)
         _end_collision_claim(state, slug, "queued PR merged")
         _log(f"INFO {slug}: queued PR merged ({why}); unblocking dependents")
         return "merged"
@@ -4339,6 +4391,16 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
     _mark_mf(result.state, result, _err, result.state.branch_name)
     _set_outcome(state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
     _persist_story_landing(state, slug, result)
+    # The poll status, not the scheduler's collapsed "failed": a queued PR forge
+    # stopped waiting for stays reconcilable, and one that was closed does not.
+    _record_landing_evidence(
+        state,
+        slug,
+        result,
+        landing_mode="merge-pr",
+        observer=LANDING_OBSERVER_QUEUED_PR,
+        attempt_outcome=_QUEUED_PR_ATTEMPT_OUTCOME.get(poll_result["status"], "failed"),
+    )
     # Defensive/idempotent: the parent is normally already in the DAG's
     # _finished set (added when its PR was queued, via the
     # pending_integration classify branch), so its collision (soft) edge is
@@ -4349,7 +4411,7 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
     # deadlock-cleanup branch.
     state.dag.mark_skipped(slug)
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-    _resolve_batch_leader_landing(state, slug, "failed")
+    _resolve_batch_leader_landing(state, slug, "failed", carrier=result.merge)
     _end_collision_claim(state, slug, f"queued PR {poll_result['status']}")
     _log(f"✗ {slug}: queued PR {poll_result['status']} ({why})")
     return "failed"
@@ -4599,7 +4661,7 @@ def _attempt_integration(
         state.merged_slugs.add(slug)
         state.dag.mark_complete(slug)
         _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-        _resolve_batch_leader_landing(state, slug, "landed")
+        _resolve_batch_leader_landing(state, slug, "landed", carrier=merge_info)
         if effective_on_approve == "merge-pr" and not merge_info.get("auto_merge_queued", False):
             ci_result = poll_required_checks(
                 state.context.config.project_root,
@@ -4634,7 +4696,7 @@ def _attempt_integration(
     result.state.error = merge_info.get("error") or "integration failed"
     _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-    _resolve_batch_leader_landing(state, slug, "failed")
+    _resolve_batch_leader_landing(state, slug, "failed", carrier=merge_info)
     return True
 
 
@@ -7930,7 +7992,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sprint_state.dag.mark_complete(slug)
                 result.landing_status = "landed"
                 _set_outcome(_sprint_state, slug, StoryOutcome.DONE, landed=True)
-                _resolve_batch_leader_landing(_sprint_state, slug, "landed")
+                _resolve_batch_leader_landing(_sprint_state, slug, "landed", carrier=result.merge)
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
@@ -7943,7 +8005,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _set_outcome(
                     _sprint_state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name
                 )
-                _resolve_batch_leader_landing(_sprint_state, slug, "failed")
+                _resolve_batch_leader_landing(_sprint_state, slug, "failed", carrier=result.merge)
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _persist_story_landing(_sprint_state, slug, result)
             # The queued PR resolved while this sprint was still running, so

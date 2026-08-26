@@ -279,3 +279,212 @@ def test_a_first_write_cannot_create_the_negative_claim_either(tmp_path: Path) -
     assert record["landing_status"] == "pending_integration"
     assert record["merge"] is None
     assert record["landing_event"] is None
+
+
+# ── Queued-PR resolution during the work loop ────────────────────────────
+#
+# A queued pull request that resolves while the sprint is still running is
+# observed by ``_resolve_queued_pr``, not by the terminal wrap-up. It is the
+# same observation and owes the corpus the same artifact; the wrap-up's wiring
+# is no substitute, because a PR resolved mid-loop never reaches it.
+
+
+def _spec(tmp_path: Path, slug: str, *, depends_on: str | None = None) -> None:
+    depends = f"depends_on: {depends_on}\n" if depends_on else ""
+    (tmp_path / f"{slug}.md").write_text(
+        f"---\nname: {slug}\nslug: {slug}\n{depends}---\n# {slug}\nGo.",
+        encoding="utf-8",
+    )
+
+
+def _sprint_manifest(tmp_path: Path, slugs: list[str]) -> Path:
+    import yaml
+
+    path = tmp_path / "sprint.yaml"
+    path.write_text(
+        yaml.dump(
+            {
+                "name": "Queued PR Sprint",
+                "budget_usd": 30.0,
+                "stories": [f"{slug}.md" for slug in slugs],
+                "max_parallel": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _queued_result(run_id: str, slug: str, landing_status: str):
+    from unittest.mock import MagicMock
+
+    from theforge.coordinator.state import (
+        CoordinatorResult,
+        CoordinatorState,
+        Phase,
+        ReviewCycleMetadata,
+    )
+
+    state = CoordinatorState()
+    state.run_id = run_id
+    state.branch_name = f"forge/{slug}"
+    state.preflight_verdict = "PROCEED"
+    preflight = MagicMock()
+    preflight.cost_usd = 1.0
+    state.preflight_result = preflight
+    state.last_gate_commit = GATED
+    state.review_cycle_metadata.append(
+        ReviewCycleMetadata(pool_models=["r"], successful=["r"], failed=[], synthesized=False)
+    )
+    state.review_cycle_metadata[-1].reviewed_commit = REVIEWED
+    result = CoordinatorResult(
+        success=True, phase=Phase.DONE, state=state, message="Done.", merge=None
+    )
+    result.landing_status = landing_status
+    return result
+
+
+def _run_queued_pr_sprint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, poll_status: str):
+    """A sprint whose first story's PR is queued and resolves mid-loop.
+
+    ``feature-b`` depends on ``feature-a``, and ``StoryDAG.ready()`` gates hard
+    dependencies on completion, so ``feature-b`` is not ready while
+    ``feature-a`` is queued. The dependent-dispatch pre-check therefore never
+    consumes the queued PR — the mid-loop resolver does.
+    """
+    from unittest.mock import patch
+
+    from sprint_test_helpers import run_sprint_ctx
+
+    _spec(tmp_path, "feature-a")
+    _spec(tmp_path, "feature-b", depends_on="feature-a")
+    manifest = _sprint_manifest(tmp_path, ["feature-a", "feature-b"])
+    config = _make_config(tmp_path)
+
+    result_a = _queued_result("run-a", "feature-a", "pending_integration")
+    result_b = _queued_result("run-b", "feature-b", "landed")
+
+    monkeypatch.setattr("theforge.sprint.landing_observation._sh", _gh_dispatcher([_pr()]))
+    with (
+        patch(
+            "theforge.sprint.runner.run_task",
+            side_effect=lambda cfg, task, **kw: result_a if task.slug == "feature-a" else result_b,
+        ),
+        patch(
+            "theforge.coordinator.completion.land_story",
+            return_value=(
+                {"merge_queued": True, "pr_url": "https://example.test/pr/7"},
+                "pending_integration",
+            ),
+        ),
+        patch("theforge.sprint.runner._poll_queued_pr", return_value={"status": poll_status}),
+    ):
+        return run_sprint_ctx(config, manifest)
+
+
+def test_a_queued_pr_merged_mid_loop_publishes_a_positive_assertion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sprint = _run_queued_pr_sprint(tmp_path, monkeypatch, "merged")
+
+    # Both stories succeeding is the proof the mid-loop resolver ran: had the
+    # PR only been resolved at wrap-up, feature-b would never have unblocked.
+    assert sprint.specs_succeeded == 2
+
+    assertion = read_landing_assertion(tmp_path, "run-a")
+    assert assertion is not None, "the mid-loop resolver observed a landing and asserted nothing"
+    assert assertion["landed_commit"] == FRESH_MERGE
+    assert assertion["reviewed_commit"] == REVIEWED
+    assert assertion["gated_commit"] == GATED
+    assert assertion["carrier_kind"] == "pull_request"
+    assert assertion["carrier_ref"] == "#7"
+    assert assertion["landing_mode"] == "merge-pr"
+    assert assertion["observer"] == "sprint.queued-pr"
+    assert landing_state(tmp_path, "run-a") == "landed"
+
+
+def test_a_queued_pr_closed_mid_loop_publishes_a_terminal_attempt_and_no_assertion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``closed`` is terminal, so the attempt records it as such and stops."""
+    _run_queued_pr_sprint(tmp_path, monkeypatch, "closed")
+
+    assert read_landing_assertion(tmp_path, "run-a") is None
+    attempts = read_landing_attempts(tmp_path, "run-a")
+    assert [a["outcome"] for a in attempts] == ["queued", "closed"]
+    assert attempts[-1]["observer"] == "sprint.queued-pr"
+    assert landing_state(tmp_path, "run-a") == "not_landed"
+
+
+def test_a_queued_pr_that_timed_out_mid_loop_stays_reconcilable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout is forge giving up waiting, not the PR being decided against."""
+    _run_queued_pr_sprint(tmp_path, monkeypatch, "timeout")
+
+    assert read_landing_assertion(tmp_path, "run-a") is None
+    assert [a["outcome"] for a in read_landing_attempts(tmp_path, "run-a")] == [
+        "queued",
+        "timeout",
+    ]
+    assert landing_state(tmp_path, "run-a") == "not_landed"
+    from theforge.sprint.landing_observation import RECONCILABLE_OUTCOMES
+
+    assert "timeout" in RECONCILABLE_OUTCOMES
+
+
+# ── Anti-drift ───────────────────────────────────────────────────────────
+
+
+def test_every_landing_resolution_site_also_records_evidence() -> None:
+    """The bookkeeping owed at a resolved landing must not drift apart again.
+
+    ``_resolve_queued_pr``'s own docstring says why this test exists: the
+    copies of this bookkeeping drifted once before, and the dependent-dispatch
+    gate ended up recording neither the landing nor the claim release. Landing
+    evidence drifted the same way — it was wired at the terminal wrap-up and at
+    the integration seam, and missing from the resolver that handles every
+    queued PR that lands while the sprint is still running.
+
+    So: any function that persists a story's landing state, or applies a
+    leader's verdict to a batch member, also publishes the durable artifact.
+    Asserted against the parsed module rather than through a scenario, because
+    the failure mode is a *site* being forgotten, not a behaviour being wrong.
+    """
+    import ast
+
+    source = Path("src/theforge/sprint/runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def _calls(node: ast.AST) -> set[str]:
+        return {
+            child.func.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+
+    checked: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        calls = _calls(node)
+        # Persisting a story's landing state means this function saw a landing
+        # resolve. Being the batch-member applier means the same. Delegating to
+        # that applier discharges the obligation rather than incurring it.
+        owes_evidence = (
+            "_persist_story_landing" in calls or node.name == "_apply_batch_landing_to_member"
+        ) and "_apply_batch_landing_to_member" not in calls
+        if not owes_evidence:
+            continue
+        checked.append(node.name)
+        assert "_record_landing_evidence" in calls, (
+            f"{node.name} resolves a landing without publishing evidence for it"
+        )
+
+    # Guard the guard: if these sites are renamed away, the test must not
+    # silently pass by checking nothing.
+    assert set(checked) >= {
+        "_attempt_integration",
+        "_resolve_queued_pr",
+        "_apply_batch_landing_to_member",
+    }, checked

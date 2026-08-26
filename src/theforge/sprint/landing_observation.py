@@ -6,12 +6,15 @@ built, which is the harder half: the rule is that a positive landing assertion
 requires a landing that was observed to have happened and can be named, and
 everything short of that is an attempt.
 
-Two observers live here, and the split follows the shape of the landing modes
-rather than the shape of the code:
+Observation splits by *when* a landing resolves, not by which code path saw it:
 
-**In-sprint** (:func:`observe_landing`) — the sprint's integration step just ran
-a landing and knows the reviewed commit, the gated commit, the carrier and the
-result. Synchronous modes resolve here.
+**In-sprint** (:func:`observe_landing`) — a landing just resolved and the caller
+knows the reviewed commit, the gated commit, the carrier and the result.
+Synchronous modes resolve here, and so does every queued pull request that
+settles while the sprint is still running. That last one has more than one
+caller — the integration seam, the work loop's queued-PR resolver, the terminal
+wrap-up, and batch-member propagation — and wiring only some of them is how this
+drifted: a PR resolved mid-loop never reaches the wrap-up.
 
 **Post-exit** (:func:`reconcile_landing_evidence`) — an asynchronous mode
 (``merge-pr`` with a queued auto-merge, ``pr``) exits the sprint with the
@@ -64,6 +67,7 @@ from ..log_util import _log_line
 RECONCILABLE_OUTCOMES = frozenset({"queued", "unknown", "timeout"})
 
 OBSERVER_INTEGRATION = "sprint.integration"
+OBSERVER_BATCH_MEMBER = "sprint.batch-member"
 OBSERVER_QUEUED_PR = "sprint.queued-pr"
 OBSERVER_RECONCILE = "forge.reconcile"
 
