@@ -573,6 +573,34 @@ forge init-hooks
 
 ---
 
+## `forge author`
+
+Interactively collect the required parts of a typed issue body before it is
+filed or promoted out of `todo:draft`. The command renders through the shared
+typed issue specification and validates with the same shape gate used
+everywhere else before any GitHub mutation is attempted.
+
+```bash
+forge author --type enhancement
+forge author --from-draft drafts/issue-2408.md --output drafts/issue-2408.md
+forge author --from-issue 2408 --create
+```
+
+**Use this when:** You want the path of least resistance to be a first-pass
+body that already satisfies the intake rules, or you need to resume a saved
+local draft / `todo:draft` issue without rediscovering the constraints by
+refusal.
+
+If a required part is still missing, `forge author` reports it at the prompt
+where it matters, keeps or adds `todo:draft`, and writes an honestly
+incomplete draft instead of submitting something that reads ready. Acceptance
+criteria are collected as reviewer-checkable outcomes; implementation-plan
+details such as file paths, call sequences, and design notes belong outside
+the issue body. See [Authoring Issues and Stories](authoring.md) for the
+per-use-case guidance and examples.
+
+---
+
 ## `forge shape`
 
 Classify a rough draft (issue, file, or stdin) into a typed work object —

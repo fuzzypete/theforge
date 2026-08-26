@@ -263,11 +263,7 @@ def with_section(
     index = _insertion_index(document, order, key)
     blocks = list(document.sections)
 
-    content = "\n\n" + body.strip("\n") + "\n"
-    if index < len(blocks):
-        # A following block starts with its own heading line, so the inserted
-        # section needs the blank line between them.
-        content += "\n"
+    content = _render_section_body(body, has_following=index < len(blocks))
     blocks.insert(
         index,
         DocumentSection(key=key, heading=spec.canonical_heading, level=spec.level, body=content),
@@ -275,6 +271,36 @@ def with_section(
     if index > 0:
         blocks[index - 1] = _blank_terminated(blocks[index - 1])
     return replace(document, sections=tuple(blocks))
+
+
+def replace_section(document: IssueDocument, key: str, body: str) -> IssueDocument:
+    """Return ``document`` with the first modeled ``key`` block's body replaced.
+
+    This is the complement to :func:`with_section`: when a modeled section is
+    present but incomplete, resuming authoring needs a way to replace its
+    content instead of silently leaving the short section in place.
+    """
+    blocks = list(document.sections)
+    for index, block in enumerate(blocks):
+        if block.key != key:
+            continue
+        has_following = index + 1 < len(blocks)
+        blocks[index] = replace(
+            block,
+            body=_render_section_body(body, has_following=has_following),
+        )
+        return replace(document, sections=tuple(blocks))
+    return document
+
+
+def _render_section_body(body: str, *, has_following: bool) -> str:
+    """Render section content with the canonical blank-line padding."""
+    content = "\n\n" + body.strip("\n") + "\n"
+    if has_following:
+        # A following block starts with its own heading line, so the section
+        # body needs the blank line between them.
+        content += "\n"
+    return content
 
 
 def _blank_terminated(block: DocumentSection) -> DocumentSection:
