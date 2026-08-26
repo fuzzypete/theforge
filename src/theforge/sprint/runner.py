@@ -86,8 +86,10 @@ from .audit import (
     write_live_story_audit,
 )
 from .audit_publish import (
+    drain_project_memory_before_dispatch,
     project_root_dirt_is_story_run_artifacts_only,
     publish_pending_story_run_audits,
+    publish_story_run_artifacts_for_config,
     publish_story_run_audits,
     read_audit_publish_state,
     write_terminal_sprint_audits,
@@ -135,6 +137,10 @@ from .dag import (
 from .display import _print_worker_status, _story_header
 from .dropped_work import WorktreeWork, describe_worktree_work, inspect_worktree_work
 from .gate_timeout_resolver import resolve_effective_gate_timeout
+from .landing_observation import OBSERVER_BATCH_MEMBER as LANDING_OBSERVER_BATCH_MEMBER
+from .landing_observation import OBSERVER_INTEGRATION as LANDING_OBSERVER_INTEGRATION
+from .landing_observation import OBSERVER_QUEUED_PR as LANDING_OBSERVER_QUEUED_PR
+from .landing_observation import reconcile_landing_evidence
 from .launch_guard import (
     REASON_IN_FLIGHT,
     REASON_IN_FLIGHT_UNRESOLVED,
@@ -3928,6 +3934,63 @@ def _persist_accumulated_story_entries(
     )
 
 
+# A queued PR's poll status, as a landing-attempt outcome. The scheduler treats
+# every one of these as "not landed" and moves on, which is correct for it; the
+# corpus needs the distinction, because only some of them can still resolve into
+# a landing later (see ``RECONCILABLE_OUTCOMES``).
+_QUEUED_PR_ATTEMPT_OUTCOME = {
+    "timeout": "timeout",
+    "closed": "closed",
+    "checks_failed": "failed",
+}
+
+
+def _record_landing_evidence(
+    state: SprintExecutionState,
+    slug: str,
+    result: CoordinatorResult,
+    *,
+    landing_mode: str,
+    observer: str,
+    attempt_outcome: str | None = None,
+    carrier: dict | None = None,
+) -> None:
+    """Publish durable evidence for a landing attempt that just resolved (#2598).
+
+    Distinct from :func:`_persist_story_landing`, which updates the sprint's own
+    live scheduling state. This writes the immutable artifacts the *corpus*
+    keeps: an attempt for every landing forge tried, and a positive assertion
+    only where a successful landing was observed and can be named. The sprint's
+    ``landing_status`` remains what the scheduler consults; it is no longer what
+    a fresh clone has to believe.
+
+    ``carrier`` overrides the merge info the carrier is resolved from. A batch
+    member's changes exist only on its *leader's* branch, so the leader's merge
+    info is what names the pull request that carried them; the member's own is
+    empty. Its attested commits still come from its own run — the review and
+    gate that judged it are its own.
+    """
+    from .landing_observation import attested_commits, observe_landing  # noqa: PLC0415
+
+    run_id = result.state.run_id or state.sprint_run_id
+    if not run_id:
+        return
+    merge_info = carrier if isinstance(carrier, dict) else result.merge
+    reviewed, gated = attested_commits(result.state)
+    observe_landing(
+        state.context.config,
+        run_id=run_id,
+        slug=slug,
+        landing_mode=landing_mode,
+        landing_status=getattr(result, "landing_status", None),
+        merge_info=merge_info if isinstance(merge_info, dict) else None,
+        reviewed_commit=reviewed,
+        gated_commit=gated,
+        observer=observer,
+        attempt_outcome=attempt_outcome,
+    )
+
+
 def _persist_story_landing(
     state: SprintExecutionState, slug: str, result: CoordinatorResult
 ) -> None:
@@ -4155,6 +4218,7 @@ def _apply_batch_landing_to_member(
     landing_status: str,
     leader_slug: str,
     group_id: str,
+    carrier: dict | None = None,
 ) -> None:
     """Give one batch member the landing verdict its leader's branch reached.
 
@@ -4163,6 +4227,12 @@ def _apply_batch_landing_to_member(
     the base branch — the exact misreport this propagation exists to
     prevent. A member that failed on its own merits keeps its own verdict:
     the leader landing successfully does not retroactively approve it.
+
+    This is a landing observation like any other, so it owes the corpus the
+    same evidence (#2598). ``carrier`` is the *leader's* merge info, because
+    that is what names the pull request or merge the member's changes actually
+    rode in on — the member has none of its own. Its reviewed and gated commits
+    are still its own, read off its own run.
     """
     if not result.success:
         return
@@ -4191,6 +4261,16 @@ def _apply_batch_landing_to_member(
             reason=reason,
         )
         _log(f"✗ {member_slug}: {reason}")
+    _leader_mode = (carrier or {}).get("action") or state.context.config.workspace.on_approve
+    _record_landing_evidence(
+        state,
+        member_slug,
+        result,
+        landing_mode=str(_leader_mode),
+        observer=LANDING_OBSERVER_BATCH_MEMBER,
+        carrier=carrier,
+        attempt_outcome=None if landing_status == "landed" else "failed",
+    )
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
     _times = state.story_times.get(member_slug)
     if _times is not None:
@@ -4200,13 +4280,21 @@ def _apply_batch_landing_to_member(
 
 
 def _resolve_batch_leader_landing(
-    state: SprintExecutionState, leader_slug: str, landing_status: str
+    state: SprintExecutionState,
+    leader_slug: str,
+    landing_status: str,
+    *,
+    carrier: dict | None = None,
 ) -> None:
     """Record a batch leader's final landing status and push it to its members.
 
     Called from every site where a leader's landing reaches a terminal
     answer, including the queued-PR paths that resolve long after the
     member rows were written. A no-op for stories that do not lead a batch.
+
+    ``carrier`` is the leader's merge info, carried through so each member's
+    landing evidence can name the pull request or merge that actually delivered
+    its changes rather than inferring one it does not have.
     """
     group_id = state.batch_group_of_leader.get(leader_slug)
     if group_id is None:
@@ -4220,7 +4308,14 @@ def _resolve_batch_leader_landing(
         if member_group != group_id:
             continue
         _apply_batch_landing_to_member(
-            state, member_slug, member_task, member_result, landing_status, leader_slug, group_id
+            state,
+            member_slug,
+            member_task,
+            member_result,
+            landing_status,
+            leader_slug,
+            group_id,
+            carrier=carrier,
         )
 
 
@@ -4269,8 +4364,19 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
         # not be clobbered by a later re-dispatch or wrap-up pass.
         _set_outcome(state, slug, StoryOutcome.DONE, landed=True)
         _persist_story_landing(state, slug, result)
+        # This resolver observes the landing as surely as the wrap-up does, and
+        # owes the corpus the same artifact (#2598). Its docstring already
+        # listed durable landing evidence among the bookkeeping every caller
+        # owes; the evidence was the one item that had not been wired.
+        _record_landing_evidence(
+            state,
+            slug,
+            result,
+            landing_mode="merge-pr",
+            observer=LANDING_OBSERVER_QUEUED_PR,
+        )
         _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-        _resolve_batch_leader_landing(state, slug, "landed")
+        _resolve_batch_leader_landing(state, slug, "landed", carrier=result.merge)
         _end_collision_claim(state, slug, "queued PR merged")
         _log(f"INFO {slug}: queued PR merged ({why}); unblocking dependents")
         return "merged"
@@ -4285,6 +4391,16 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
     _mark_mf(result.state, result, _err, result.state.branch_name)
     _set_outcome(state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
     _persist_story_landing(state, slug, result)
+    # The poll status, not the scheduler's collapsed "failed": a queued PR forge
+    # stopped waiting for stays reconcilable, and one that was closed does not.
+    _record_landing_evidence(
+        state,
+        slug,
+        result,
+        landing_mode="merge-pr",
+        observer=LANDING_OBSERVER_QUEUED_PR,
+        attempt_outcome=_QUEUED_PR_ATTEMPT_OUTCOME.get(poll_result["status"], "failed"),
+    )
     # Defensive/idempotent: the parent is normally already in the DAG's
     # _finished set (added when its PR was queued, via the
     # pending_integration classify branch), so its collision (soft) edge is
@@ -4295,7 +4411,7 @@ def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool
     # deadlock-cleanup branch.
     state.dag.mark_skipped(slug)
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-    _resolve_batch_leader_landing(state, slug, "failed")
+    _resolve_batch_leader_landing(state, slug, "failed", carrier=result.merge)
     _end_collision_claim(state, slug, f"queued PR {poll_result['status']}")
     _log(f"✗ {slug}: queued PR {poll_result['status']} ({why})")
     return "failed"
@@ -4533,12 +4649,19 @@ def _attempt_integration(
     # the landing as owed. Now that it has resolved either way, rewrite it so
     # the durable record a later re-exec reads matches what happened (#2189).
     _persist_story_landing(state, slug, result)
+    _record_landing_evidence(
+        state,
+        slug,
+        result,
+        landing_mode=effective_on_approve,
+        observer=LANDING_OBSERVER_INTEGRATION,
+    )
 
     if merge_info.get("merged"):
         state.merged_slugs.add(slug)
         state.dag.mark_complete(slug)
         _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-        _resolve_batch_leader_landing(state, slug, "landed")
+        _resolve_batch_leader_landing(state, slug, "landed", carrier=merge_info)
         if effective_on_approve == "merge-pr" and not merge_info.get("auto_merge_queued", False):
             ci_result = poll_required_checks(
                 state.context.config.project_root,
@@ -4573,7 +4696,7 @@ def _attempt_integration(
     result.state.error = merge_info.get("error") or "integration failed"
     _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
-    _resolve_batch_leader_landing(state, slug, "failed")
+    _resolve_batch_leader_landing(state, slug, "failed", carrier=merge_info)
     return True
 
 
@@ -4708,6 +4831,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     dependency_parents_land_in_project_root = (
         max_parallel <= 1 or _ctx.config.workspace.on_approve != "merge-pr"
     )
+    # Whether the mid-sprint project-memory publish has to wait for a quiet
+    # pass. Only a run that lands in the project root does: the constraint is
+    # about a concurrent merge into the checkout the publish commits from, and
+    # a run with no local landings has no such merge to protect.
+    _publish_needs_quiescence = config_lands_in_project_root
 
     # Stories of this sprint whose agent survived the re-exec. They stay in the
     # DAG and are dispatched like any other story, but through the deferred path
@@ -4989,6 +5117,19 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         )
     if not _ctx.no_pull and _project_root_is_git_checkout(_ctx.config.project_root):
         coordinator_workspace.pull_base_branch(_ctx.config, lands_locally=_sprint_lands_locally)
+        # Landings owed by earlier sprints may have resolved while nothing was
+        # watching — a queued auto-merge that completed, a PR an operator merged
+        # last week. Closing them out here is the post-exit observation seam
+        # asynchronous modes need (#2598): it runs before this sprint writes
+        # anything of its own, and publishes so the evidence it produces cannot
+        # then refuse this sprint's first story.
+        try:
+            if reconcile_landing_evidence(_ctx.config):
+                publish_story_run_artifacts_for_config(
+                    _ctx.config, lands_locally=_sprint_lands_locally
+                )
+        except Exception as _reconcile_exc:  # noqa: BLE001 — never blocks a sprint
+            _log(f"Warning: landing-evidence reconciliation did not complete: {_reconcile_exc}")
 
     def _publish_sprint_phase(
         phase: str,
@@ -6765,7 +6906,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             #
             # A failure is deferred rather than raised: the terminal publish
             # below is the final, fatal sweep.
-            if ready and not _sprint_state.active:
+            #
+            # The quiescence requirement is a property of the *direct*
+            # transport, not of publishing (#2598). The memory-branch transport
+            # commits from an isolated worktree on its own branch and only
+            # drains the memory trees out of the project root, so there is no
+            # index for a concurrent merge to lose — and under the modes that
+            # use it (``merge-pr`` / ``pr`` / ``none``) no story merges into the
+            # project-root checkout at all. Those runs publish every pass, which
+            # is what keeps a finished story's artifacts from standing across
+            # its sibling's entry under parallelism.
+            if ready and (not _sprint_state.active or not _publish_needs_quiescence):
                 publish_pending_story_run_audits(
                     _sprint_state, lands_locally=_sprint_lands_locally
                 )
@@ -6828,6 +6979,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 if _budget_decision is not None:
                     _sprint_state.budget.skip_story(task.slug, _budget_decision)
                     continue
+
+                # A sibling can finish *during* this pass, after the publish
+                # above and before this story is admitted, leaving its record in
+                # the shared checkout for the newcomer to be refused by (#2598).
+                # The pass-level publish cannot close that window; a drain
+                # immediately before admission can, and costs a status probe.
+                if not _publish_needs_quiescence:
+                    drain_project_memory_before_dispatch(_sprint_state)
 
                 # Eager merge for sequential mode; disabled in parallel mode
                 effective_am = (
@@ -7833,7 +7992,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sprint_state.dag.mark_complete(slug)
                 result.landing_status = "landed"
                 _set_outcome(_sprint_state, slug, StoryOutcome.DONE, landed=True)
-                _resolve_batch_leader_landing(_sprint_state, slug, "landed")
+                _resolve_batch_leader_landing(_sprint_state, slug, "landed", carrier=result.merge)
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
@@ -7846,9 +8005,20 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _set_outcome(
                     _sprint_state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name
                 )
-                _resolve_batch_leader_landing(_sprint_state, slug, "failed")
+                _resolve_batch_leader_landing(_sprint_state, slug, "failed", carrier=result.merge)
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _persist_story_landing(_sprint_state, slug, result)
+            # The queued PR resolved while this sprint was still running, so
+            # this process is the observer. A PR that resolves *after* exit is
+            # closed out by ``reconcile_landing_evidence`` instead.
+            _record_landing_evidence(
+                _sprint_state,
+                slug,
+                result,
+                landing_mode="merge-pr",
+                observer=LANDING_OBSERVER_QUEUED_PR,
+                attempt_outcome=_QUEUED_PR_ATTEMPT_OUTCOME.get(poll_result["status"], "failed"),
+            )
             _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             del _sprint_state.queued_prs[slug]
             # The landing verdict is in: end the claim outright rather than
