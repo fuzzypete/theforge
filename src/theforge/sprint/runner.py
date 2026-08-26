@@ -4505,6 +4505,57 @@ def _publish_sibling_artifacts(state: SprintExecutionState, slug: str) -> bool:
     return published
 
 
+def _publish_terminal_story_artifacts(
+    state: SprintExecutionState,
+    slug: str,
+    *,
+    lands_locally: bool,
+    needs_quiescence: bool,
+) -> bool:
+    """Publish the run artifacts of a story that terminated without integrating.
+
+    Every terminal outcome writes a canonical run record into the shared
+    project-root checkout, but only the ones that reach ``_attempt_integration``
+    publish it (``_publish_sibling_artifacts``, #2602). A story refused or
+    cancelled *before* approval — a blocked preflight, an auth or budget
+    cancellation, a collision stand-down, an abnormal worker exit — never gets
+    there, and under ``max_parallel > 1`` the pass-level publish is gated on a
+    quiescent pass that a live sibling denies. Its record then stands untracked
+    in the project root and refuses every later story at WORKSPACE entry, for
+    dirt the sprint itself created and no operator can be asked to reconcile
+    (#2755).
+
+    Publishing here closes that window. Where the sprint lands into the
+    project-root checkout, the publish is serialized through ``integration_lock``
+    — the same lock the merge path takes — so committing the index can never run
+    underneath a concurrent merge. That is what makes it safe to publish while
+    workers are still in flight, which the quiescence gate exists to prevent.
+
+    **This helper acquires ``integration_lock`` itself and must never be called
+    with that lock already held** — it is a bounded non-blocking flock and is not
+    reentrant across file descriptors, so a call from inside
+    ``_attempt_integration``'s locked block would spin until the lock times out.
+
+    Idempotent by construction: the publish commits whatever is pending and is a
+    no-op when nothing is. A failure is logged against the slug and reported,
+    never raised — the terminal sweep at sprint exit is the fatal one.
+    """
+    try:
+        if needs_quiescence:
+            with integration_lock(state.context.config.project_root):
+                published = publish_pending_story_run_audits(state, lands_locally=lands_locally)
+        else:
+            published = publish_pending_story_run_audits(state, lands_locally=lands_locally)
+    except TimeoutError as exc:
+        # Another process holds the integration lock. Deferring is correct: the
+        # next quiescent pass, or the terminal sweep, publishes the same record.
+        _log(f"WARN {slug}: terminal story run artifact publish could not take the lock: {exc}")
+        return False
+    if not published:
+        _log(f"WARN {slug}: terminal story run artifact publish did not complete")
+    return published
+
+
 def _attempt_integration(
     state: SprintExecutionState,
     slug: str,
@@ -5020,6 +5071,23 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         )
     except Exception as exc:  # noqa: BLE001 - adoption is hygiene, never a launch blocker
         _log(f"WARN could not read this sprint's story ownership records: {exc}")
+
+    def _publish_after_terminal_outcome(_slug: str) -> None:
+        """Publish a terminated story's run artifacts before more work is admitted.
+
+        Called from every scheduler-owned terminal outcome that writes a
+        canonical story audit without attempting integration. See
+        ``_publish_terminal_story_artifacts`` for why this cannot wait for a
+        quiescent pass, and for the rule that it must never run while
+        ``integration_lock`` is already held — every call site below is in the
+        scheduler thread, outside ``_attempt_integration``.
+        """
+        _publish_terminal_story_artifacts(
+            _sprint_state,
+            _slug,
+            lands_locally=_sprint_lands_locally,
+            needs_quiescence=_publish_needs_quiescence,
+        )
 
     # Sprint-level structured logger
     _sprint_state.sprint_run_id = _generate_run_id()
@@ -6853,6 +6921,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     finished_at=_failed_at,
                 )
                 _sprint_state.dag.mark_skipped(_slug)
+            # One publish for the batch: every record above was written into the
+            # shared checkout, and dispatch continues after this returns (#2755).
+            _publish_after_terminal_outcome(slugs_to_claim[0] if slugs_to_claim else "")
             return False
         return True
 
@@ -7526,6 +7597,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             finished_at=timed_out_at,
                         )
                         _sprint_state.dag.mark_skipped(affected_slug)
+                        _publish_after_terminal_outcome(affected_slug)
                     _sprint_state.budget.publish_live_status(
                         recovered_snapshot.spent_including_in_flight
                     )
@@ -7660,6 +7732,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             finished_at=failed_at,
                         )
                         _sprint_state.dag.mark_skipped(affected_slug)
+                        _publish_after_terminal_outcome(affected_slug)
                     _sprint_state.budget.publish_live_status(
                         _recovered_cost.spent_including_in_flight
                     )
@@ -7751,6 +7824,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         _sprint_state.state_writer.update(slug, status="skipped")
                     _sprint_state.dag.mark_skipped(slug)
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+                    _publish_after_terminal_outcome(slug)
                     _print_worker_status(
                         _sprint_state.active, worker_phases, _sprint_state.dag, total
                     )
@@ -7774,6 +7848,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         _sprint_state.state_writer.update(slug, status="skipped")
                     _sprint_state.dag.mark_skipped(slug)
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+                    _publish_after_terminal_outcome(slug)
                     _print_worker_status(
                         _sprint_state.active, worker_phases, _sprint_state.dag, total
                     )
@@ -7800,6 +7875,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         _sprint_state.state_writer.update(slug, status="skipped")
                     _sprint_state.dag.mark_skipped(slug)
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+                    _publish_after_terminal_outcome(slug)
                     _print_worker_status(
                         _sprint_state.active, worker_phases, _sprint_state.dag, total
                     )
@@ -7916,7 +7992,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                                     )
                                 changed = True
                 else:
+                    # No integration for this story — a refusal, an escalation,
+                    # a skip. The record just written is the sprint's own dirt in
+                    # the project root until it is published, and nothing else on
+                    # this path will publish it while a sibling is in flight
+                    # (#2755).
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+                    _publish_after_terminal_outcome(slug)
 
                 # The landing verdict — not the worker exiting — is what ends a
                 # collision claim (#2234). Re-check every live claim, not just
