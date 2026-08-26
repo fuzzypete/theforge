@@ -284,7 +284,10 @@ def test_admissible_bug_keeps_advisory_reasons_in_result() -> None:
     assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
-def test_advisory_only_done_state_is_admissible() -> None:
+def test_criteria_without_a_listed_verb_are_admissible() -> None:
+    # The closed observable-verb vocabulary is retired as an admission input
+    # (ADR-0009 clause 5): criteria exist, so the structural question is
+    # answered and no finding is raised at all.
     verdict = classify_admissibility(
         "Add a flag",
         _ADVISORY_DONE_STATE_BODY,
@@ -296,7 +299,7 @@ def test_advisory_only_done_state_is_admissible() -> None:
     assert verdict.reason_codes == ()
     assert verdict.result is not None
     assert verdict.result.verdict is ShapeVerdict.RUNNABLE
-    assert any(r.code == "no_observable_done_state" for r in verdict.result.reasons)
+    assert not any(r.code == "no_observable_done_state" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: local-check refusals ────────────────────────────
@@ -330,7 +333,15 @@ def test_enhancement_with_bug_shape_prefers_type_shape_verdict() -> None:
     assert verdict.admissible is False
     assert verdict.source == "local_check"
     assert verdict.verdict == ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE.value
-    assert verdict.reason_codes == ("needs_diagnosis", "type_shape_contradiction")
+    # The refusal is the contradiction plus the sections the *declared* type
+    # requires. It no longer also demands a Diagnosis section: the enhancement
+    # specification forbids that section, so demanding it would contradict the
+    # very refusal being reported.
+    assert verdict.reason_codes == (
+        "type_shape_contradiction",
+        "missing_acceptance_criteria",
+        "no_observable_done_state",
+    )
     assert verdict.detail.startswith("enhancement body carries bug-report-shape sections")
 
 

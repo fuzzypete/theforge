@@ -1,7 +1,10 @@
-"""Declarative spec for the bug Diagnosis section the shape gate requires.
+"""The bug ``## Diagnosis`` section, as seen by its long-standing consumers.
 
-Single source of truth for the components a well-formed ``## Diagnosis`` section
-must contain. Four consumers derive from this list rather than restating it:
+The components themselves now live in the single declarative issue
+specification (:mod:`theforge.shape_check.issue_spec`) alongside every other
+type's sections; this module is the bug-specific *view* of that contract, and
+the renderers that publish it. Four consumers derive from it rather than
+restating it:
 
 - the shape-gate validator
   (:func:`theforge.shape_check.heuristics.diagnosis_completeness`),
@@ -26,92 +29,34 @@ Stdlib only — pure-data types in a low-dependency module (project convention 4
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 
-#: Repo-relative path of the published shape reference derived from this spec.
-BUG_SHAPE_REFERENCE_PATH = "docs/reference/bug-shape.md"
-
-#: The heading a bug's diagnosis lives under.
-DIAGNOSIS_HEADING = "## Diagnosis"
-
-
-@dataclass(frozen=True)
-class DiagnosisComponent:
-    """One required component of a bug's Diagnosis section.
-
-    Attributes:
-        key: stable machine identifier.
-        label: the bolded label an operator writes as the bullet lead-in
-            (e.g. ``"Confirmed cause"``). The validator matches it
-            case-insensitively; the finding message, remediation prompt, and
-            skeleton all quote it verbatim. The lowercased label is also the
-            substring the validator scans for — see :attr:`token`.
-        satisfies: human description of what content satisfies the component.
-        example: a concrete example value, quoted verbatim into the finding
-            message, the remediation prompt, and the skeleton.
-    """
-
-    key: str
-    label: str
-    satisfies: str
-    example: str
-
-    @property
-    def token(self) -> str:
-        """The lowercased substring the validator scans the section for.
-
-        Kept identical to ``label.lower()`` so a skeleton bullet built from
-        :meth:`bullet` always contains the token the validator matches — the
-        drift the spec exists to eliminate.
-        """
-        return self.label.lower()
-
-    def bullet(self) -> str:
-        """Render the component as a skeleton bullet: ``- **Label:** example``."""
-        return f"- **{self.label}:** {self.example}"
-
-
-REQUIRED_DIAGNOSIS_COMPONENTS: tuple[DiagnosisComponent, ...] = (
-    DiagnosisComponent(
-        key="observed_symptom",
-        label="Observed symptom",
-        satisfies='bolded bullet lead-in or heading inside "## Diagnosis"',
-        example=(
-            "sprint resume false-skips zero-delta APPROVE stories, reporting them "
-            "merged when no commit landed."
-        ),
-    ),
-    DiagnosisComponent(
-        key="evidence",
-        label="Evidence",
-        satisfies='bolded bullet lead-in or heading inside "## Diagnosis"',
-        example="run id `1ff6b0bb7992`, story #1102 — resume log shows the false skip.",
-    ),
-    DiagnosisComponent(
-        key="confirmed_cause",
-        label="Confirmed cause",
-        satisfies=(
-            "bolded bullet lead-in or heading; its value may be a specific claim "
-            'or an honest non-assertion ("unknown", "not yet identified")'
-        ),
-        example=(
-            "`_is_already_merged` requires at least one commit ahead, so a "
-            "zero-delta APPROVE is misclassified as unmerged."
-        ),
-    ),
-    DiagnosisComponent(
-        key="affected_code_path",
-        label="Affected code path",
-        satisfies="bolded bullet lead-in or heading naming the module/function",
-        example="`sprint.runner._is_already_merged`.",
-    ),
-    DiagnosisComponent(
-        key="fix_success_criterion",
-        label="Fix-success criterion",
-        satisfies="bolded bullet lead-in or heading stating the observable pass condition",
-        example="resume identifies a zero-delta APPROVE story as already merged.",
-    ),
+from theforge.shape_check.issue_spec import (
+    BUG_SHAPE_REFERENCE_PATH,
+    DIAGNOSIS_SECTION,
+    FieldSpec,
 )
+
+__all__ = [
+    "BUG_SHAPE_REFERENCE_PATH",
+    "DIAGNOSIS_HEADING",
+    "REQUIRED_DIAGNOSIS_COMPONENTS",
+    "DiagnosisComponent",
+    "component_for_token",
+    "describe_missing",
+    "render_bug_shape_reference",
+    "render_bug_skeleton_body",
+    "render_diagnosis_requirements_block",
+    "required_diagnosis_tokens",
+]
+
+#: The heading a bug's diagnosis lives under, in its canonical spelling.
+DIAGNOSIS_HEADING = DIAGNOSIS_SECTION.canonical_heading_line
+
+#: A diagnosis component is an ordinary specification field; the historical
+#: name is kept because four modules and the audit trail use it.
+DiagnosisComponent = FieldSpec
+
+REQUIRED_DIAGNOSIS_COMPONENTS: tuple[DiagnosisComponent, ...] = DIAGNOSIS_SECTION.fields
 
 
 def required_diagnosis_tokens() -> tuple[str, ...]:

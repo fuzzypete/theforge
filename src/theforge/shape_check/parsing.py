@@ -1,10 +1,24 @@
-"""Parsing utilities for issue bodies. Stdlib only."""
+"""Parsing utilities for issue bodies.
+
+Stdlib plus the declarative issue specification, which is itself pure data:
+the heading vocabularies these parsers probe with are stated once, in
+:mod:`theforge.shape_check.issue_spec`, and read from there rather than
+restated here.
+"""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from theforge.shape_check.issue_spec import (
+    ACCEPTANCE_CRITERIA_SECTION,
+    EXPECTED_SECTION,
+    OBSERVED_SECTION,
+    REPRODUCTION_SECTION,
+    normalize_heading_text,
+)
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 # Indentation is not restricted to CommonMark's 0-3 spaces: fences nested under
@@ -25,7 +39,7 @@ _EXAMPLE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
-ACCEPTANCE_CRITERIA_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
+ACCEPTANCE_CRITERIA_HEADING_PATTERN = ACCEPTANCE_CRITERIA_SECTION.recognition_pattern
 
 
 @dataclass(frozen=True)
@@ -214,14 +228,10 @@ def extract_ac_section(body: str) -> str | None:
     return extract_section(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN)
 
 
-def _normalize_heading_text(text: str) -> str:
-    """Strip a heading's text down to its bare wording for canonical comparison.
-
-    Trailing label punctuation (``:``, ``.``, ``-``, em dash) and surrounding
-    whitespace are removed so ``"Diagnosis"``, ``"Diagnosis:"`` and
-    ``"Diagnosis —"`` all normalize the same way.
-    """
-    return re.sub(r"[\s:.\-—]+$", "", text.strip()).strip().lower()
+#: Heading-text normalization lives with the specification, because the
+#: renderer's notion of "this heading is that section" and the gate's must be
+#: the same one. Re-exported under the private name this module has always used.
+_normalize_heading_text = normalize_heading_text
 
 
 def find_authoritative_heading(
@@ -302,14 +312,13 @@ def extract_authoritative_section(
 
 
 # The bug-report shape is a symptom heading paired with an expectation heading.
-# `docs/guides/authoring.md` mandates the spelling "What happened" / "What was
-# expected"; the corpus overwhelmingly writes "Observed" / "Expected". Both are
-# the same contract, so both are recognised here — and recognised in exactly one
-# place, because intake decides "is this a bug body?" in more than one gate and
-# a body admitted by one gate must not be refused by another (#2139).
-_BUG_SYMPTOM_HEADING = r"what happened|observed|actual behaviou?r"
-_BUG_EXPECTATION_HEADING = r"what was expected|expected"
-_BUG_REPRODUCTION_HEADING = r"steps to reproduce"
+# Both the canonical spelling and the legacy one are recognised, in exactly one
+# place — the specification — because intake decides "is this a bug body?" in
+# more than one gate and a body admitted by one gate must not be refused by
+# another (#2139, ADR-0003).
+_BUG_SYMPTOM_HEADING = OBSERVED_SECTION.recognition_pattern
+_BUG_EXPECTATION_HEADING = EXPECTED_SECTION.recognition_pattern
+_BUG_REPRODUCTION_HEADING = REPRODUCTION_SECTION.recognition_pattern
 
 # Public aliases for other readers that need to recognize the same bug-body
 # sections. The accepted heading spellings must stay in one place.
