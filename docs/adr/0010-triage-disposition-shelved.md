@@ -1,6 +1,6 @@
 # ADR-0010: Backlog Triage Disposition Shelved; Semantic Verification Retained
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-26
 - **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
 - **Affected milestones:** v0.16.0
