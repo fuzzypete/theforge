@@ -31,6 +31,7 @@ from ..shape_check.heuristics import (
 )
 from ..shape_check.parsing import ACCEPTANCE_CRITERIA_HEADING_PATTERN, find_heading
 from ..shape_check.placeholders import PLACEHOLDER_MARKER
+from ..shape_check.producer import ProducerValidationError, require_conforming_body
 from .diagnosis_staleness import StalenessReport, evaluate_staleness
 
 # ── Types ─────────────────────────────────────────────────────────────────
@@ -591,6 +592,30 @@ def run_groom(
 
     applied = False
     if apply_changes and proposed != body:
+        # Validate before mutating. Groom declares the state it intends the
+        # repaired body to occupy: a cause-unknown bug stays investigation-ready
+        # (groom must never move it to runnable), and every other repair claims
+        # only that it does not change the lifecycle state for the worse —
+        # groom scaffolds structure, it does not supply the content that would
+        # clear a finding. A repair that introduces a refusal the body did not
+        # carry, or that turns an admissible body inadmissible, is reported
+        # here rather than written and discovered by the next gate run.
+        investigation_ready = (
+            bug_state is BugDiagnosisState.CAUSE_UNKNOWN
+            and pre_verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+        )
+        try:
+            require_conforming_body(
+                producer="forge-groom",
+                title=title,
+                body=proposed,
+                labels=shape_labels,
+                declared=(ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN if investigation_ready else None),
+                previous_body=body,
+                strict=investigation_ready,
+            )
+        except ProducerValidationError as exc:
+            raise GroomError(str(exc)) from exc
         if loaded.number is not None:
             applied = edit(loaded.number, proposed, project_root)
             if not applied:

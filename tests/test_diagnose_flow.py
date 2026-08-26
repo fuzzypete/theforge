@@ -1348,6 +1348,7 @@ class TestDiagnoseFlow:
             "title": "broken",
             "body": "# Original\n\nBody content\n",
             "state": "OPEN",
+            "labels": [{"name": "bug"}],
         }
         mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
 
@@ -1459,9 +1460,17 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_explicit_body_section_override_still_writes_non_bug_issue_body(
+    def test_explicit_body_section_override_reports_rather_than_writing_non_bug_body(
         self, mock_agent, mock_fetch, mock_edit, mock_post, tmp_path
     ):
+        """An explicit override does not license writing a body the gate refuses.
+
+        Landing a Diagnosis section with file:line citations into an enhancement
+        makes an admissible body inadmissible — the citations read as an
+        implementation plan (#2136). Diagnose declares the state it intends the
+        landing to produce, and when the rendered body would not occupy it,
+        reports rather than writes.
+        """
         config = self._setup_config(tmp_path)
         mock_fetch.return_value = {
             "number": 44,
@@ -1488,10 +1497,11 @@ class TestDiagnoseFlow:
             output_destination="body_section",
         )
 
-        assert result.success
-        assert result.state.landing_destination == "body_section"
-        assert mock_edit.called
+        assert not result.success
+        assert not mock_edit.called
         assert not mock_post.called
+        assert "forge-diagnose" in (result.state.error or "")
+        assert "implementation_plan_in_body" in (result.state.error or "")
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -2363,6 +2373,7 @@ class TestPremiseVerification:
             "title": "buggy func miscounts",
             "body": "The buggy_func reserves the wrong number of slots.\n",
             "state": "OPEN",
+            "labels": [{"name": "bug"}],
         }
         mock_agent.return_value = _fake_agent_result(
             _agent_yaml_with_anchor(

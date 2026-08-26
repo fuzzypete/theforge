@@ -179,7 +179,7 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
     mock_run.side_effect = [
         _proc(),
         _proc(),
-        _proc(stdout='{"body": "existing body"}'),
+        _proc(stdout='{"title": "a todo", "body": "existing body", "labels": []}'),
         _proc(returncode=0),
         _proc(),
         _proc(),
@@ -195,7 +195,7 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
     calls = [call.args[0] for call in mock_run.call_args_list]
     assert calls[0] == ["gh", "issue", "edit", "12", "--add-label", "bug,backend"]
     assert calls[1] == ["gh", "issue", "edit", "12", "--milestone", "Sprint 12"]
-    assert calls[2] == ["gh", "issue", "view", "12", "--json", "body"]
+    assert calls[2] == ["gh", "issue", "view", "12", "--json", "title,body,labels"]
     assert calls[3][0] == "nano"
     assert calls[3][1].endswith(".md")
     assert calls[4][0:4] == ["gh", "issue", "edit", "12"]

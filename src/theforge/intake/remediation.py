@@ -23,6 +23,8 @@ from enum import Enum
 from pathlib import Path
 
 from ..shape_check import check as shape_check
+from ..shape_check.producer import label_names, validate_issue_body
+from ..shape_check.types import ShapeVerdict
 from ..task import TaskStory
 from .agent_rewrite import AgentRewriteResult
 from .findings import (
@@ -545,6 +547,45 @@ def _remediate_one(
                     candidate_artifact_path=artifact_path,
                 ),
             )
+        # Auto-fix reached its rerun gate clean, so it declares the rewrite
+        # admissible — runnable, or the investigation-ready state a bug with no
+        # asserted cause legitimately occupies. Validate that claim against the
+        # exact bytes about to be written; a rewrite that lands anywhere else,
+        # or that introduces a refusal the original body did not carry, is
+        # dropped with the candidate preserved rather than written.
+        edit_validation = validate_issue_body(
+            producer="forge-intake-autofix",
+            title=title,
+            body=proposed_body,
+            labels=patched_labels,
+            declared=(ShapeVerdict.RUNNABLE, ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
+            previous_body=body,
+            strict=True,
+        )
+        if not edit_validation.conforms:
+            artifact_path = _write_candidate_artifact(
+                issue_number=issue_number,
+                candidate_body=proposed_body,
+                findings=rerun_blocking or blocking,
+                project_root=project_root,
+            )
+            detail = f"declared-state validation refused the edit: {edit_validation.report()}"
+            if artifact_path is not None:
+                detail += f"; candidate persisted to {artifact_path}"
+            return IntakeOutcome(
+                slug=slug,
+                kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+                findings=tuple(blocking),
+                proposed_replacement=proposed_body,
+                detail=detail,
+                audit=_build_audit(
+                    consumed=_consumed,
+                    semantic_remaining=semantic_remaining,
+                    agent_attempts=agent_attempts,
+                    remediation_source=("agent" if agent_result is not None else "mechanical"),
+                    candidate_artifact_path=artifact_path,
+                ),
+            )
         if not edit_body(issue_number, proposed_body, project_root):
             return IntakeOutcome(
                 slug=slug,
@@ -708,6 +749,27 @@ def remediate_shape_gate_skip(
             reason_codes=reason_codes,
             kind=ShapeGateSkipRemediationKind.DROPPED_AFTER_FIX,
             detail="reopen-context block already present; body edit would be a no-op",
+            new_body=new_body,
+        )
+
+    # Folding the reopen-context comment into the body is an addition to an
+    # object the operator owns, so the state declared here is "unchanged, or
+    # cleared": the fold-in may clear the stale-contract refusal, but it must
+    # not introduce one the body did not already carry.
+    fold_validation = validate_issue_body(
+        producer="forge-intake-reopen-context",
+        title=detail.get("title", "") or "",
+        body=new_body,
+        labels=label_names(detail.get("labels")),
+        declared=None,
+        previous_body=detail.get("body", "") or "",
+    )
+    if not fold_validation.conforms:
+        return ShapeGateSkipRemediation(
+            issue_number=issue_number,
+            reason_codes=reason_codes,
+            kind=ShapeGateSkipRemediationKind.DROPPED_AFTER_FIX,
+            detail=fold_validation.report(),
             new_body=new_body,
         )
 

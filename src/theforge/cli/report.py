@@ -43,6 +43,8 @@ from theforge.reporting.target_gate import (
     TargetGateVerdict,
     evaluate_target_gate,
 )
+from theforge.shape_check.producer import ProducerValidation, compare_declaration
+from theforge.shape_check.types import Reason, Severity, ShapeVerdict
 
 GH_TIMEOUT_SECONDS = 60
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -114,6 +116,60 @@ def _evaluate_gate(
     except TargetGateError as exc:
         print(f"{target}'s shape gate could not be evaluated: {exc}", file=sys.stderr)
         return None
+
+
+def _declared_verdict(diagnosis: Diagnosis) -> ShapeVerdict:
+    """The lifecycle state this report declares its body will occupy.
+
+    Read off the ``Diagnosis`` the operator supplied, not off the rendered
+    body: a report filed the moment a defect is seen asserts no cause and
+    intends the investigation-ready state; one filed with ``--cause`` asserts
+    one and intends an admissible bug.
+    """
+    defaults = Diagnosis(symptom=diagnosis.symptom)
+    if diagnosis.cause == defaults.cause:
+        return ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+    return ShapeVerdict.RUNNABLE
+
+
+def _as_reasons(verdict: TargetGateVerdict) -> tuple[Reason, ...]:
+    """Adapt the target gate's reason payload to the shared Reason type."""
+    out: list[Reason] = []
+    for reason in verdict.reasons:
+        severity = (
+            Severity.BLOCKING
+            if (reason.severity or "").lower() == "blocking"
+            else Severity.ADVISORY
+        )
+        out.append(Reason(code=reason.code, severity=severity, detail=reason.detail or ""))
+    return tuple(out)
+
+
+def _check_declaration(
+    *, producer: str, declared: ShapeVerdict, verdict: TargetGateVerdict
+) -> ProducerValidation | None:
+    """Judge the target gate's verdict against ``declared``; None if unreadable.
+
+    A verdict string the shared vocabulary does not know is not a soft pass:
+    the caller refuses, because a state nobody can name is not a state this
+    producer can have declared.
+    """
+    try:
+        actual = ShapeVerdict(verdict.verdict)
+    except ValueError:
+        print(
+            f"{producer}: {verdict.source} returned verdict {verdict.verdict!r}, which is not a "
+            "state this producer can declare against.",
+            file=sys.stderr,
+        )
+        return None
+    return compare_declaration(
+        producer=producer,
+        declared=declared,
+        actual=actual,
+        reasons=_as_reasons(verdict),
+        strict=True,
+    )
 
 
 def _write_temp(text: str) -> Path:
@@ -255,6 +311,18 @@ def cmd_report(args: argparse.Namespace) -> int:
     _print_gate(verdict)
     _print_summary(evidence, chunks)
 
+    declared = _declared_verdict(diagnosis)
+    validation = _check_declaration(
+        producer="forge-report-create", declared=declared, verdict=verdict
+    )
+    if validation is None:
+        print(f"refusing to file: the report body's state in {target} cannot be named.")
+        return 1
+    if not validation.conforms:
+        print(validation.report(), file=sys.stderr)
+        print(f"refusing to file: the report body would not occupy {declared.value} in {target}.")
+        return 1
+
     if args.dry_run:
         print("\n--dry-run: nothing filed. Report body follows.\n")
         print(body)
@@ -284,7 +352,30 @@ def cmd_report(args: argparse.Namespace) -> int:
     final_body = render_issue_body(
         evidence, description=description, diagnosis=diagnosis, publication=final
     )
-    body_updated = _update_body(target=target, issue=issue_ref, body=final_body, cwd=project_root)
+    # The publication-state rewrite is a second body write, so it is declared
+    # and validated like the first: recording which evidence comments landed
+    # must not move the issue out of the state the report was filed in.
+    final_verdict = _evaluate_gate(target=target, title=title, body=final_body, labels=labels)
+    final_validation = (
+        None
+        if final_verdict is None
+        else _check_declaration(
+            producer="forge-report-update", declared=declared, verdict=final_verdict
+        )
+    )
+    if final_validation is not None and final_validation.conforms:
+        body_updated = _update_body(
+            target=target, issue=issue_ref, body=final_body, cwd=project_root
+        )
+    else:
+        if final_validation is not None:
+            print(final_validation.report(), file=sys.stderr)
+        print(
+            "publication   : the body was left as filed — the publication-state rewrite "
+            f"would not occupy {declared.value} in {target}",
+            file=sys.stderr,
+        )
+        body_updated = False
 
     print(f"filed         : {issue_url}")
     if failed:

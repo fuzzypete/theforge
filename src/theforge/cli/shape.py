@@ -26,6 +26,7 @@ from theforge.coordinator.shape_audit import emit_shape_event
 from theforge.intake.shape_classify import (
     Classification,
     Confidence,
+    DiagnosisState,
     ShapeProposal,
     classify,
 )
@@ -36,6 +37,8 @@ from theforge.intake.shape_render import (
     render_proposal,
     restructure_body,
 )
+from theforge.shape_check.producer import validate_issue_body
+from theforge.shape_check.types import ShapeVerdict
 
 
 def _project_root(args: argparse.Namespace) -> Path | None:
@@ -171,6 +174,33 @@ def _apply_to_github(
     return True
 
 
+def _final_labels(proposal: ShapeProposal, labels: list[str]) -> list[str]:
+    """Labels the issue will carry once this proposal is applied."""
+    removed = {label.strip().lower() for label in proposal.removed_labels}
+    kept = [label for label in labels if label.strip().lower() not in removed]
+    return list(dict.fromkeys([*kept, *proposal.proposed_labels]))
+
+
+def _declared_verdict(proposal: ShapeProposal) -> ShapeVerdict | None:
+    """The lifecycle state ``forge shape`` intends its restructure to produce.
+
+    Derived from the classification the proposal already committed to — not
+    from re-reading the rendered body — so a restructure that lands somewhere
+    else is a mismatch rather than a self-fulfilling answer. ``None`` means
+    this classification has no body restructure to declare for; a body write
+    under it would be unvalidatable, so the caller refuses.
+    """
+    if proposal.classification is Classification.BUG:
+        if proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE:
+            return ShapeVerdict.RUNNABLE
+        # The scaffold shape adds is a Diagnosis section nobody has filled in:
+        # investigation-ready, explicitly not implementation-runnable.
+        return ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+    if proposal.classification is Classification.ENHANCEMENT:
+        return ShapeVerdict.RUNNABLE
+    return None
+
+
 def _classify_input_source(args: argparse.Namespace) -> str:
     """Return the canonical input_source for this invocation up-front.
 
@@ -284,6 +314,32 @@ def cmd_shape(args: argparse.Namespace) -> int:
             has_delta = bool(
                 proposal.proposed_labels or proposal.removed_labels or new_body != body
             )
+            # Validate before mutating: a body this command would write must
+            # occupy the state this command declared for it. Only a real body
+            # delta is validated — a no-op write asserts nothing new about the
+            # issue, and the label-only path does not touch the body at all.
+            if new_body != body:
+                final_labels = _final_labels(proposal, labels)
+                declared = _declared_verdict(proposal)
+                if declared is None:
+                    print(
+                        f"--apply refused: forge shape has no declared lifecycle state for a "
+                        f"{proposal.classification.value} body restructure, so the result "
+                        "cannot be validated before writing.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                validation = validate_issue_body(
+                    producer="forge-shape",
+                    title=title,
+                    body=new_body,
+                    labels=final_labels,
+                    declared=declared,
+                    previous_body=body,
+                )
+                if not validation.conforms:
+                    print(validation.report(), file=sys.stderr)
+                    return 1
             ok = _apply_to_github(issue_number, proposal, new_body, body, project_root)
             if not ok:
                 return 1

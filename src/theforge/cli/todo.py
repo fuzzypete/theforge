@@ -12,8 +12,17 @@ import tempfile
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
+from theforge.shape_check.producer import label_names, validate_issue_body
+from theforge.shape_check.types import ShapeVerdict
 
 TODO_DRAFT_LABEL = "todo:draft"
+
+#: A todo draft is a deliberately non-admissible object: it carries no type
+#: label, so the shared gate answers ``needs_type``. That is the state
+#: ``forge todo`` declares, pinned to the literal verdict rather than to
+#: whatever the gate happens to return — a label-set change that moved the
+#: draft to some other state should trip this, not be absorbed by it.
+TODO_DRAFT_VERDICT = ShapeVerdict.NEEDS_TYPE
 
 
 def _project_root_from_args(args: argparse.Namespace) -> Path | None:
@@ -54,6 +63,13 @@ def _format_provenance_block(args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def _merge_labels(fetched: object, added: str) -> list[str]:
+    """Post-triage label set: what the issue carries plus what triage adds."""
+    names = label_names(fetched)
+    names.extend(part.strip() for part in added.split(",") if part.strip())
+    return list(dict.fromkeys(names))
+
+
 def _editor_command() -> list[str]:
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if editor:
@@ -72,6 +88,17 @@ def _create_todo(args: argparse.Namespace) -> int:
         return 1
 
     body = _format_provenance_block(args)
+    validation = validate_issue_body(
+        producer="forge-todo-create",
+        title=text,
+        body=body,
+        labels=[TODO_DRAFT_LABEL],
+        declared=TODO_DRAFT_VERDICT,
+        strict=True,
+    )
+    if not validation.conforms:
+        print(validation.report(), file=sys.stderr)
+        return 1
     command = [
         "gh",
         "issue",
@@ -179,16 +206,24 @@ def _triage_todo(args: argparse.Namespace) -> int:
             return 1
 
     if edit_body:
-        view_proc = _run_gh(["gh", "issue", "view", issue_number, "--json", "body"], project_root)
+        view_proc = _run_gh(
+            ["gh", "issue", "view", issue_number, "--json", "title,body,labels"], project_root
+        )
         if view_proc.returncode != 0:
             err = view_proc.stderr.strip() or view_proc.stdout.strip() or "gh issue view failed"
             print(err, file=sys.stderr)
             return 1
         try:
-            current_body = json.loads(view_proc.stdout or "{}").get("body", "")
+            viewed = json.loads(view_proc.stdout or "{}")
         except json.JSONDecodeError as exc:
             print(f"gh issue view returned malformed JSON: {exc}", file=sys.stderr)
             return 1
+        current_body = viewed.get("body", "") or ""
+        current_title = viewed.get("title", "") or ""
+        # The label edits above have already landed, so the fetched set is the
+        # post-triage one; union in the requested adds anyway in case the view
+        # raced them.
+        post_triage_labels = _merge_labels(viewed.get("labels"), labels)
 
         with tempfile.NamedTemporaryFile(
             "w+", encoding="utf-8", suffix=".md", delete=False
@@ -203,6 +238,24 @@ def _triage_todo(args: argparse.Namespace) -> int:
             )
             if editor_proc.returncode != 0:
                 print("editor exited with a non-zero status", file=sys.stderr)
+                return 1
+
+            edited_body = temp_path.read_text(encoding="utf-8")
+            # Triage edits an object somebody else owns, so the state declared
+            # here is "unchanged, or better": the edit may move the draft to
+            # runnable, but it must not introduce a refusal the draft did not
+            # already carry. Refusal leaves the body exactly as it was.
+            validation = validate_issue_body(
+                producer="forge-todo-triage",
+                title=current_title,
+                body=edited_body,
+                labels=post_triage_labels,
+                declared=None,
+                previous_body=current_body,
+            )
+            if not validation.conforms:
+                print(validation.report(), file=sys.stderr)
+                print(f"todo #{issue_number} body left unchanged.", file=sys.stderr)
                 return 1
 
             edit_proc = _run_gh(
