@@ -1,18 +1,18 @@
-"""Deterministic Reason → ShapeVerdict mapping.
+"""Deterministic Reason → sprint-admission verdict mapping.
 
-Stable precedence: highest-precedence verdict wins when multiple Reasons
-fire. Identifiers are part of the audit/summary contract — do not rename
-without updating ADR-0001 and the downstream surfaces.
+Stable precedence: highest-precedence admission-refusing verdict wins when
+multiple Reasons fire. Advisory-only findings stay in ``ShapeResult.reasons``
+for rendering, but they do not decide admission unless explicitly listed as a
+lifecycle refusal. Identifiers are part of the audit/summary contract — do
+not rename without updating ADR-0001 and the downstream surfaces.
 """
 
 from __future__ import annotations
 
-from theforge.shape_check.types import Reason, ShapeVerdict
+from theforge.shape_check.types import Reason, Severity, ShapeVerdict
 
-# Precedence order: earlier entries win over later. The list is closed —
-# if a Reason.code is unmapped, callers fall back to NEEDS_OPERATOR_ACTION
-# so a new code never silently downgrades to RUNNABLE.
-_PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
+# Precedence order: earlier entries win over later.
+_BLOCKING_PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("superseded", ShapeVerdict.DUPLICATE_OR_STALE),
     ("epic_or_tracking", ShapeVerdict.NEEDS_OPERATOR_ACTION),
     ("untriaged_finding", ShapeVerdict.NEEDS_OPERATOR_ACTION),
@@ -21,29 +21,43 @@ _PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("missing_type", ShapeVerdict.NEEDS_TYPE),
     ("type_shape_contradiction", ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE),
     ("needs_diagnosis", ShapeVerdict.NEEDS_DIAGNOSIS),
-    ("diagnosis_cause_unknown", ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
     ("too_many_behavioral_clusters", ShapeVerdict.NEEDS_GROOMING_SCOPE_SPLIT),
     ("missing_acceptance_criteria", ShapeVerdict.NEEDS_GROOMING_MISSING_AC),
     ("no_observable_done_state", ShapeVerdict.NEEDS_GROOMING_MISSING_AC),
     ("missing_example", ShapeVerdict.NEEDS_GROOMING_MISSING_EXAMPLE),
-    ("implementation_plan_in_body", ShapeVerdict.ADR_CANDIDATE),
-    ("implementation_design_dump", ShapeVerdict.ADR_CANDIDATE),
-    ("bug_fix_location_prescription", ShapeVerdict.RUNNABLE),
-    ("bug_test_requirement", ShapeVerdict.RUNNABLE),
+)
+
+_EXPLICIT_LIFECYCLE_REFUSALS: tuple[tuple[str, ShapeVerdict], ...] = (
+    ("diagnosis_cause_unknown", ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
 )
 
 
 def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
     """Return the single ShapeVerdict implied by ``reasons``.
 
-    No reasons → RUNNABLE. Otherwise the highest-precedence mapped verdict
-    wins; an unmapped code falls back to NEEDS_OPERATOR_ACTION rather than
-    silently passing as RUNNABLE.
+    ``RUNNABLE`` is the default. A non-runnable verdict is selected only from:
+
+    - blocking reasons mapped to an admission-refusing verdict,
+    - explicit lifecycle refusals such as ``diagnosis_cause_unknown``, or
+    - the closed-table fallback for an unmapped blocking reason.
+
+    Advisory-only reason sets that contain no explicit refusal stay runnable.
     """
     if not reasons:
         return ShapeVerdict.RUNNABLE
-    codes = {r.code for r in reasons}
-    for code, verdict in _PRECEDENCE:
-        if code in codes:
+    by_code: dict[str, list[Reason]] = {}
+    for reason in reasons:
+        by_code.setdefault(reason.code, []).append(reason)
+
+    blocking_codes = {reason.code for reason in reasons if reason.severity is Severity.BLOCKING}
+    for code, verdict in _BLOCKING_PRECEDENCE:
+        if code in blocking_codes:
             return verdict
-    return ShapeVerdict.NEEDS_OPERATOR_ACTION
+
+    for code, verdict in _EXPLICIT_LIFECYCLE_REFUSALS:
+        if code in by_code:
+            return verdict
+
+    if blocking_codes:
+        return ShapeVerdict.NEEDS_OPERATOR_ACTION
+    return ShapeVerdict.RUNNABLE

@@ -249,13 +249,14 @@ def evaluate_readiness(
     here means exactly what "runnable" means everywhere else — there is no
     second, shape-private definition of readiness to drift from it.
     """
-    verdict = shape_gate_check(title or "", body or "", list(labels)).verdict
+    result = shape_gate_check(title or "", body or "", list(labels))
+    verdict = result.verdict
     ready = (
         proposal.classification is not Classification.UNRESOLVED
         and not proposal.proposed_labels
         and not proposal.removed_labels
         and restructure_body(proposal, body or "") == (body or "")
-        and verdict is ShapeVerdict.RUNNABLE
+        and result.admits_implementation_sprint
     )
     return ShapeReadiness(verdict=verdict, ready=ready)
 

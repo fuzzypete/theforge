@@ -92,11 +92,10 @@ needs_grooming_missing_ac
 needs_grooming_missing_example
 needs_grooming_scope_split
 needs_operator_action
-adr_candidate
 duplicate_or_stale
 ```
 
-Each verdict is a *clean refusal with a route*: it names precisely what is unready and maps to a single recommended operator command. `needs_diagnosis` routes to `forge diagnose`; `needs_grooming_missing_ac` routes to `forge groom`; `adr_candidate` routes to a human writing durable architecture. The gate refuses — but the refusal is legible and actionable, which is exactly the property the one-line test demands. The operator is never left with bypass as the only move.
+Each verdict is a *clean refusal with a route*: it names precisely what is unready and maps to a single recommended operator command. `needs_diagnosis` routes to `forge diagnose`; `needs_grooming_missing_ac` routes to `forge groom`; `needs_operator_action` carries refusal reason codes when the blocking condition is broader than the narrowed typed verdict list. The gate refuses — but the refusal is legible and actionable, which is exactly the property the one-line test demands. The operator is never left with bypass as the only move. The stable string `adr_candidate` remains only for historical audit compatibility; architecture-routing recommendations are no longer emitted as admission verdicts.
 
 **The three-state diagnosis taxonomy.** For bugs, ADR-0001 adopts a three-state vocabulary that is the sharpest expression of refusal-capability in the codebase:
 

@@ -42,6 +42,32 @@ Tests sometimes fail flakily on CI.
 Tests pass deterministically.
 """
 
+_ADVISORY_DONE_STATE_BODY = """\
+## What
+
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+```text
+Before:
+$ forge sprint
+[forge] 2 issue(s) flagged by shape gate
+
+After:
+$ forge sprint --force
+[forge] sprint started with every issue
+```
+
+## Acceptance Criteria
+
+- The toggle is available to operators.
+"""
+
 
 def _build_args(issue: str, project_root: Path, *, apply: bool = False, want_next: bool = False):
     forge_yaml = project_root / "forge.yaml"
@@ -152,6 +178,23 @@ def test_cli_next_flag_for_cause_unknown_never_says_ready(tmp_path, monkeypatch,
     assert "investigation-ready, not implementation-ready" in captured.out
     # rc is 2 (proposal made, not applied) — that's fine.
     assert rc in (0, 2)
+
+
+def test_cli_reports_runnable_pre_verdict_for_advisory_only_done_state(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _patch_fetch(
+        monkeypatch,
+        {"title": "t", "body": _ADVISORY_DONE_STATE_BODY, "labels": ["enhancement"]},
+    )
+    rc = cli_groom.cmd_groom(_build_args("2123", tmp_path, want_next=True))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Pre-groom verdict:  runnable" in captured.err
+    assert "Post-groom verdict: runnable" in captured.err
+    assert "No body changes needed." in captured.out
 
 
 def test_cli_groom_appears_in_help():
