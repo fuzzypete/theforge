@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +32,8 @@ from typing import Any
 import yaml
 
 from theforge.shape_check.issue_spec import RECOGNIZED_TYPE_LABELS
+from theforge.shape_check.producer import validate_issue_body
+from theforge.shape_check.types import ShapeVerdict
 
 from .config import ForgeConfig
 
@@ -465,6 +468,19 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
     title = f"Advisory convention debt: {entry['rule']} in {entry['file']}"
     body = _render_issue_body(entry, percent_over)
     labels = _resolve_issue_labels(issue_cfg.label)
+    # This filer authors a whole body and claims it is sprint-runnable, so the
+    # claim is checked before the issue exists rather than discovered when a
+    # sprint refuses the object forge itself filed.
+    validation = validate_issue_body(
+        producer="forge-advisory-finding",
+        title=title,
+        body=body,
+        labels=labels,
+        declared=ShapeVerdict.RUNNABLE,
+    )
+    if not validation.conforms:
+        print(validation.report(), file=sys.stderr)
+        return None
     command = ["gh", "issue", "create", "--title", title, "--body", body]
     for label in labels:
         command.extend(["--label", label])

@@ -56,6 +56,21 @@ def _explicit_lifecycle_refusals() -> tuple[tuple[str, ShapeVerdict], ...]:
 _EXPLICIT_LIFECYCLE_REFUSALS: tuple[tuple[str, ShapeVerdict], ...] = _explicit_lifecycle_refusals()
 
 
+def blocking_codes(reasons: tuple[Reason, ...]) -> frozenset[str]:
+    """Return the blocking reason codes in ``reasons``.
+
+    Producers compare this across an edit to answer a question the verdict
+    alone cannot: did *my* edit add a defect? The verdict can hide one — a
+    finding added underneath a higher-precedence one leaves the summary word
+    unchanged — and it can also move for a good reason, since resolving
+    ``needs_diagnosis`` by writing an open Diagnosis section trades a blocking
+    finding for the advisory ``diagnosis_cause_unknown``. Counting blocking
+    findings distinguishes those two: the first grows the set, the second
+    shrinks it.
+    """
+    return frozenset(reason.code for reason in reasons if reason.severity is Severity.BLOCKING)
+
+
 def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
     """Return the single ShapeVerdict implied by ``reasons``.
 
@@ -73,15 +88,15 @@ def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
     for reason in reasons:
         by_code.setdefault(reason.code, []).append(reason)
 
-    blocking_codes = {reason.code for reason in reasons if reason.severity is Severity.BLOCKING}
+    blocking = blocking_codes(reasons)
     for code, verdict in _BLOCKING_PRECEDENCE:
-        if code in blocking_codes:
+        if code in blocking:
             return verdict
 
     for code, verdict in _EXPLICIT_LIFECYCLE_REFUSALS:
         if code in by_code:
             return verdict
 
-    if blocking_codes:
+    if blocking:
         return ShapeVerdict.NEEDS_OPERATOR_ACTION
     return ShapeVerdict.RUNNABLE
