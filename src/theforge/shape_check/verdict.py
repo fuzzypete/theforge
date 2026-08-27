@@ -68,9 +68,7 @@ def blocking_codes(reasons: tuple[Reason, ...]) -> frozenset[str]:
     findings distinguishes those two: the first grows the set, the second
     shrinks it.
     """
-    return frozenset(
-        reason.code for reason in reasons if reason.severity is Severity.BLOCKING
-    )
+    return frozenset(reason.code for reason in reasons if reason.severity is Severity.BLOCKING)
 
 
 def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
@@ -90,15 +88,15 @@ def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
     for reason in reasons:
         by_code.setdefault(reason.code, []).append(reason)
 
-    blocking_codes = {reason.code for reason in reasons if reason.severity is Severity.BLOCKING}
+    blocking = blocking_codes(reasons)
     for code, verdict in _BLOCKING_PRECEDENCE:
-        if code in blocking_codes:
+        if code in blocking:
             return verdict
 
     for code, verdict in _EXPLICIT_LIFECYCLE_REFUSALS:
         if code in by_code:
             return verdict
 
-    if blocking_codes:
+    if blocking:
         return ShapeVerdict.NEEDS_OPERATOR_ACTION
     return ShapeVerdict.RUNNABLE

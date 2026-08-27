@@ -291,9 +291,7 @@ def _edit_issue(result: AuthorResult, loaded: _LoadedDraft, cwd: Path) -> bool:
     body_changed = result.title != loaded.title or result.body_for_storage() != loaded.body
 
     if body_changed:
-        if not _validated(
-            result, producer="forge-author-edit", previous_body=loaded.body
-        ):
+        if not _validated(result, producer="forge-author-edit", previous_body=loaded.body):
             return False
         with tempfile.NamedTemporaryFile(
             "w+",
