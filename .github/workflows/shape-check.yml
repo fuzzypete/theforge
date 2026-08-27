@@ -1,25 +1,55 @@
 name: Story shape check
 
 # Runs the TheForge shape_check module (#806) against every issue when it is
-# opened or edited. On failures it labels the issue (needs-grooming / epic) and
-# posts a single bot-owned comment with the findings. The comment is updated in
-# place on subsequent edits — we never spam new comments.
-#
-# This Action NEVER rejects the create event. A malformed issue is always
-# created; the Action only labels and comments.
+# opened or edited. When policy files change, preview the resulting sweep on the
+# pull request and apply it against main after merge. Manual preview/apply runs
+# are also available through workflow_dispatch.
 
 on:
   issues:
     types: [opened, edited]
-
-# Least-privilege: the token can label and comment, nothing else.
-permissions:
-  issues: write
-  contents: read
+  pull_request:
+    branches: [main]
+    paths:
+      - src/theforge/shape_check/_mapping.py
+      - src/theforge/shape_check/check.py
+      - src/theforge/shape_check/classifier.py
+      - src/theforge/shape_check/diagnosis_spec.py
+      - src/theforge/shape_check/heuristics.py
+      - src/theforge/shape_check/issue_spec.py
+      - src/theforge/shape_check/parsing.py
+      - src/theforge/shape_check/placeholders.py
+      - src/theforge/shape_check/types.py
+      - src/theforge/shape_check/verdict.py
+  push:
+    branches: [main]
+    paths:
+      - src/theforge/shape_check/_mapping.py
+      - src/theforge/shape_check/check.py
+      - src/theforge/shape_check/classifier.py
+      - src/theforge/shape_check/diagnosis_spec.py
+      - src/theforge/shape_check/heuristics.py
+      - src/theforge/shape_check/issue_spec.py
+      - src/theforge/shape_check/parsing.py
+      - src/theforge/shape_check/placeholders.py
+      - src/theforge/shape_check/types.py
+      - src/theforge/shape_check/verdict.py
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Sweep mode
+        required: true
+        default: preview
+        type: choice
+        options: [preview, apply]
 
 jobs:
-  shape-check:
+  shape-check-issue-event:
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
     steps:
       - name: Check out TheForge
         uses: actions/checkout@v4
@@ -41,10 +71,69 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           SHAPE_CHECK_BOT_LOGIN: "github-actions[bot]"
-          # Per-repo configurable labels:
           SHAPE_CHECK_NEEDS_GROOMING_LABEL: "needs-grooming"
           SHAPE_CHECK_TRACKING_LABEL: "epic"
-          # Default: comment-only on superseded; do not auto-close (avoids
-          # racing with a human who may still be editing).
           SHAPE_CHECK_AUTO_CLOSE_SUPERSEDED: "0"
+        run: python -m theforge.shape_check
+
+  shape-check-preview:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'preview')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      contents: read
+    steps:
+      - name: Check out TheForge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shape_check package
+        # Install in place — shape_check is stdlib-only, so this does not pull
+        # in coordinator/provider runtime deps.
+        run: pip install -e .
+
+      - name: Preview shape-check sweep
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHAPE_CHECK_BOT_LOGIN: "github-actions[bot]"
+          SHAPE_CHECK_NEEDS_GROOMING_LABEL: "needs-grooming"
+          SHAPE_CHECK_TRACKING_LABEL: "epic"
+          SHAPE_CHECK_AUTO_CLOSE_SUPERSEDED: "0"
+          SHAPE_CHECK_MODE: "preview"
+        run: python -m theforge.shape_check
+
+  shape-check-apply:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'apply')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Check out TheForge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shape_check package
+        # Install in place — shape_check is stdlib-only, so this does not pull
+        # in coordinator/provider runtime deps.
+        run: pip install -e .
+
+      - name: Apply shape-check sweep
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHAPE_CHECK_BOT_LOGIN: "github-actions[bot]"
+          SHAPE_CHECK_NEEDS_GROOMING_LABEL: "needs-grooming"
+          SHAPE_CHECK_TRACKING_LABEL: "epic"
+          SHAPE_CHECK_AUTO_CLOSE_SUPERSEDED: "0"
+          SHAPE_CHECK_MODE: "apply"
         run: python -m theforge.shape_check
