@@ -274,7 +274,9 @@ def test_gated_body_is_the_body_that_gets_filed(mock_run, tmp_path, stub_target_
     mock_run.side_effect = capture
 
     assert cmd_report(_args(root)) == 0
-    assert created[0] == stub_target_gate.call_args.kwargs["body"]
+    # The first gate evaluation is the one the filing decision was made on; the
+    # publication-state rewrite is gated separately before it is written.
+    assert created[0] == stub_target_gate.call_args_list[0].kwargs["body"]
 
 
 @patch("theforge.cli.report.subprocess.run")
@@ -343,3 +345,71 @@ def test_empty_description_is_rejected(mock_run, tmp_path, capsys):
     assert cmd_report(_args(root, description=None)) == 1
     assert not mock_run.called
     assert "--description" in capsys.readouterr().err
+
+
+@patch("theforge.cli.report.subprocess.run")
+def test_report_refuses_to_file_a_body_that_would_not_hold_its_declared_state(
+    mock_run, tmp_path, stub_target_gate, capsys
+):
+    """The report declares the state its rendered body should occupy.
+
+    A default-cause report intends the investigation-ready state. When the
+    target repository's gate places the body somewhere else, nothing is filed —
+    the mismatch is reported instead of discovered on the created issue.
+    """
+    root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
+    stub_target_gate.return_value = TargetGateVerdict(
+        repo="fuzzypete/theforge",
+        ref="main",
+        sha="1a2b3c4d5e6f7788",
+        verdict="needs_diagnosis",
+        shape="needs_grooming",
+        reasons=(
+            GateReason(code="needs_diagnosis", severity="blocking", detail="no Diagnosis section"),
+        ),
+    )
+    mock_run.side_effect = _gh_success
+
+    rc = cmd_report(_args(root))
+
+    assert rc == 1
+    assert not mock_run.called
+    captured = capsys.readouterr()
+    assert "forge-report-create" in captured.err
+    assert "needs_diagnosis" in captured.err
+    assert "refusing to file" in captured.out
+
+
+@patch("theforge.cli.report.subprocess.run")
+def test_publication_rewrite_is_gated_before_it_is_written(
+    mock_run, tmp_path, stub_target_gate, capsys
+):
+    """The publication-state rewrite is a second body write, so it is validated too."""
+    root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
+    degraded = TargetGateVerdict(
+        repo="fuzzypete/theforge",
+        ref="main",
+        sha="1a2b3c4d5e6f7788",
+        verdict="needs_diagnosis",
+        shape="needs_grooming",
+        reasons=(GateReason(code="needs_diagnosis", severity="blocking", detail="lost it"),),
+    )
+    # First evaluation (filing) passes; the publication-state rewrite does not.
+    stub_target_gate.side_effect = [TARGET_VERDICT, degraded]
+    edits: list[list[str]] = []
+
+    def capture(*call_args, **_kwargs):
+        command = call_args[0]
+        if command[1:3] == ["issue", "edit"]:
+            edits.append(command)
+        return _gh_success(*call_args)
+
+    mock_run.side_effect = capture
+
+    rc = cmd_report(_args(root))
+
+    assert rc == 1
+    assert edits == []
+    err = capsys.readouterr().err
+    assert "forge-report-update" in err
+    assert "the body was left as filed" in err

@@ -26,6 +26,29 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
 }
 ```
 
+## Finding validation before filing
+
+Every finding body the hook renders is validated against the lifecycle state the
+hook declares for it — `needs_operator_action`, the state an untriaged
+`bug` + `forge-finding` + `needs-triage` object occupies — before `gh issue
+create` runs. A finding whose rendered body would land anywhere else is **not
+filed**; the mismatch and its reason codes go to stderr instead. This is what
+keeps forge from filing issues its own shape gate refuses.
+
+The check runs `python -m theforge.shape_check.producer`. The hook finds an
+interpreter that can import `theforge` by reading the shebang of the installed
+`forge` executable, falling back to `python3`/`python` on PATH. Set
+`FORGE_PYTHON` to override:
+
+```bash
+FORGE_PYTHON=/path/to/venv/bin/python .forge/hooks/post_run.sh < payload.json
+```
+
+The check fails closed: **any** nonzero exit — a verdict mismatch, a missing
+interpreter, `theforge` not importable — skips that finding. If findings stop
+appearing, read the hook's stderr; it names the producer, the declared state and
+what could not be satisfied.
+
 ## Hook contract
 
 - **stdin**: JSON payload (schema above)

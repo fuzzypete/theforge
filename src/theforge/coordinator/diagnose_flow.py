@@ -54,7 +54,9 @@ from theforge.diagnose_types import (
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
-from theforge.shape_check.heuristics import is_bug_format_issue
+from theforge.shape_check.heuristics import _diagnosis_cause_unknown, is_bug_format_issue
+from theforge.shape_check.producer import require_conforming_body
+from theforge.shape_check.types import ShapeVerdict
 from theforge.task.diagnose_prompts import (
     DiagnoseParseOutcome,
     build_diagnose_prompt,
@@ -1027,12 +1029,27 @@ def _resolve_output_destination(
     return "comment"
 
 
+def _declared_diagnosis_verdict(artifact: DiagnosisArtifact, section: str) -> ShapeVerdict:
+    """The lifecycle state the landed Diagnosis section is meant to produce.
+
+    Read off the artifact and its own rendered section — not off the merged
+    issue body the validator then evaluates — so a landing that moves the issue
+    somewhere else is a mismatch rather than a restatement of the answer.
+    """
+    if artifact.partial:
+        return ShapeVerdict.NEEDS_DIAGNOSIS
+    if _diagnosis_cause_unknown(section):
+        return ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+    return ShapeVerdict.RUNNABLE
+
+
 def _land_artifact(
     state: DiagnoseState,
     artifact: DiagnosisArtifact,
     destination: str,
     project_root: Path,
     *,
+    issue_labels: list[str] | None = None,
     dry_run: bool = False,
 ) -> str:
     """Land the artifact at the configured destination; return location string."""
@@ -1054,6 +1071,20 @@ def _land_artifact(
             _emit_dry_run(section)
             return "<dry-run: body_section>"
         new_body = upsert_diagnosis_section(state.issue_body, section)
+        # Validate before mutating. A Diagnosis section carrying file:line
+        # citations reads as an implementation plan on a non-bug issue, so the
+        # very landing that makes a bug fix-ready can make an enhancement
+        # inadmissible (#2136). Refuse before the edit and name what the body
+        # would fail, rather than writing it and leaving the next gate run to
+        # find out.
+        require_conforming_body(
+            producer="forge-diagnose",
+            title=state.issue_title,
+            body=new_body,
+            labels=list(issue_labels or []),
+            declared=_declared_diagnosis_verdict(artifact, section),
+            previous_body=state.issue_body,
+        )
         _gh_edit_body(state.issue_number, new_body, project_root)
         return f"issue #{state.issue_number} body updated"
 
@@ -1757,7 +1788,14 @@ def _run_diagnose_flow_body(
                 write_diagnose_audit(state, project_root)
                 return DiagnoseResult(success=False, state=state, message=msg)
         try:
-            location = _land_artifact(state, artifact, destination, project_root, dry_run=dry_run)
+            location = _land_artifact(
+                state,
+                artifact,
+                destination,
+                project_root,
+                issue_labels=issue_labels,
+                dry_run=dry_run,
+            )
             state.landing_destination = destination
             state.landed_location = location
         except Exception as exc:
@@ -1792,7 +1830,14 @@ def _run_diagnose_flow_body(
             return DiagnoseResult(success=False, state=state, message=msg)
 
     try:
-        location = _land_artifact(state, artifact, destination, project_root, dry_run=dry_run)
+        location = _land_artifact(
+            state,
+            artifact,
+            destination,
+            project_root,
+            issue_labels=issue_labels,
+            dry_run=dry_run,
+        )
     except Exception as exc:
         state.error = f"LAND failed: {exc}"
         emit_phase(DiagnosePhase.FAILED)

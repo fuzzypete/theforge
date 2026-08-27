@@ -31,6 +31,7 @@ from ..shape_check.heuristics import (
 )
 from ..shape_check.parsing import ACCEPTANCE_CRITERIA_HEADING_PATTERN, find_heading
 from ..shape_check.placeholders import PLACEHOLDER_MARKER
+from ..shape_check.producer import ProducerValidationError, require_conforming_body
 from .diagnosis_staleness import StalenessReport, evaluate_staleness
 
 # ── Types ─────────────────────────────────────────────────────────────────
@@ -591,6 +592,31 @@ def run_groom(
 
     applied = False
     if apply_changes and proposed != body:
+        # Validate before mutating. A cause-unknown bug is declared concretely
+        # — it stays investigation-ready, because groom must never move it to
+        # runnable — and that declaration is matched exactly. Every other repair
+        # declares PRESERVE, which is groom's honest claim rather than a weaker
+        # one: groom scaffolds structure into a body it does not own and does
+        # not supply the content that would clear a finding, so it promises the
+        # lifecycle state is unchanged (or cleared to runnable) and that it adds
+        # no refusal the body did not already carry. Declaring RUNNABLE here
+        # instead would be a promise groom cannot keep on an issue whose
+        # remaining findings are the operator's to resolve.
+        investigation_ready = (
+            bug_state is BugDiagnosisState.CAUSE_UNKNOWN
+            and pre_verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+        )
+        try:
+            require_conforming_body(
+                producer="forge-groom",
+                title=title,
+                body=proposed,
+                labels=shape_labels,
+                declared=(ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN if investigation_ready else None),
+                previous_body=body,
+            )
+        except ProducerValidationError as exc:
+            raise GroomError(str(exc)) from exc
         if loaded.number is not None:
             applied = edit(loaded.number, proposed, project_root)
             if not applied:
