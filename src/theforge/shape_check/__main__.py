@@ -1,4 +1,4 @@
-"""Module entrypoint: ``python -m theforge.shape_check`` runs the GitHub Action."""
+"""Module entrypoint for issue-event and sweep runs."""
 
 from __future__ import annotations
 
