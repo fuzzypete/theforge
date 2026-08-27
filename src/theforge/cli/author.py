@@ -18,6 +18,8 @@ from theforge.intake.author_flow import (
     run_author_flow,
 )
 from theforge.shape_check.issue_spec import IssueTypeSpec, spec_for_label, spec_for_labels
+from theforge.shape_check.producer import validate_issue_body
+from theforge.shape_check.types import ShapeVerdict
 
 
 @dataclass(frozen=True)
@@ -225,7 +227,32 @@ def _apply_labels(
     return True
 
 
+def _validated(result: AuthorResult, *, producer: str, previous_body: str | None = None) -> bool:
+    """Check the bytes about to be written against what author declared.
+
+    ``forge author`` submits only a runnable body, so ``RUNNABLE`` is the state
+    it declares. The check is not a restatement of the flow's own answer: the
+    flow gates ``result.body``, while both writers persist
+    ``body_for_storage()``, which rewrites the draft marker afterwards. This
+    validates the string that actually lands.
+    """
+    validation = validate_issue_body(
+        producer=producer,
+        title=result.title,
+        body=result.body_for_storage(),
+        labels=result.labels,
+        declared=ShapeVerdict.RUNNABLE,
+        previous_body=previous_body,
+    )
+    if validation.conforms:
+        return True
+    print(validation.report(), file=sys.stderr)
+    return False
+
+
 def _create_issue(result: AuthorResult, cwd: Path) -> bool:
+    if not _validated(result, producer="forge-author-create"):
+        return False
     with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".md", delete=False) as tmp:
         tmp.write(result.body_for_storage())
         tmp.flush()
@@ -264,6 +291,10 @@ def _edit_issue(result: AuthorResult, loaded: _LoadedDraft, cwd: Path) -> bool:
     body_changed = result.title != loaded.title or result.body_for_storage() != loaded.body
 
     if body_changed:
+        if not _validated(
+            result, producer="forge-author-edit", previous_body=loaded.body
+        ):
+            return False
         with tempfile.NamedTemporaryFile(
             "w+",
             encoding="utf-8",

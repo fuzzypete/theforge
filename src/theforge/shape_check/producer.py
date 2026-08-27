@@ -74,6 +74,8 @@ from theforge.shape_check.verdict import blocking_codes
 #: that cannot validate must not mutate. Adding a body-writing surface means
 #: adding it here and declaring what state it intends.
 PRODUCERS: dict[str, str] = {
+    "forge-author-create": "forge author --create interactive issue filing",
+    "forge-author-edit": "forge author --create body update on an existing issue",
     "forge-shape": "forge shape --apply body restructure",
     "forge-groom": "forge groom readiness repair (issue body or local story file)",
     "forge-diagnose": "forge diagnose Diagnosis section landed into the issue body",

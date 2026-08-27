@@ -34,6 +34,7 @@ _STRIP_RE = re.compile(r"[\"'\\,\[\]]")
 #: Every file holding an issue-body mutation seam, mapped to the producer ids
 #: that account for it. Adding a seam without adding it here fails the scan.
 APPROVED_SEAMS: dict[str, tuple[str, ...]] = {
+    "src/theforge/cli/author.py": ("forge-author-create", "forge-author-edit"),
     "src/theforge/cli/shape.py": ("forge-shape",),
     "src/theforge/cli/todo.py": ("forge-todo-create", "forge-todo-triage"),
     "src/theforge/cli/report.py": ("forge-report-create", "forge-report-update"),
@@ -643,3 +644,69 @@ class TestGeneratedHookFailsClosed:
         assert proc.returncode == 0, proc.stderr
         assert "issue\ncreate" in log
         assert "bug" in log.splitlines()
+
+
+class TestAuthorValidatesBeforeWriting:
+    """``forge author`` submits only a runnable body, so it declares RUNNABLE.
+
+    The declaration is not a restatement of the flow's own verdict: the flow
+    gates ``AuthorResult.body`` while both writers persist
+    ``body_for_storage()``, so the string that lands is not the string that was
+    checked. These cover the seam that closes the gap.
+    """
+
+    def _result(self, body, *, labels=("task",), title="Add the widget"):
+        from theforge.intake.author_flow import AuthoringStatus, AuthorResult
+        from theforge.shape_check.issue_spec import spec_for_label
+
+        return AuthorResult(
+            title=title,
+            labels=tuple(labels),
+            body=body,
+            type_spec=spec_for_label("task"),
+            status=AuthoringStatus.RUNNABLE,
+            reasons=(),
+            missing_parts=(),
+        )
+
+    def test_a_conforming_body_is_created(self, tmp_path):
+        from theforge.cli import author as author_cli
+
+        with patch.object(author_cli, "_gh") as mock_gh:
+            mock_gh.return_value = type(
+                "P", (), {"returncode": 0, "stdout": "url", "stderr": ""}
+            )()
+            assert author_cli._create_issue(self._result(_RUNNABLE_TASK_BODY), tmp_path)
+        assert mock_gh.called
+
+    def test_a_body_that_is_not_runnable_is_not_created(self, tmp_path, capsys):
+        from theforge.cli import author as author_cli
+
+        with patch.object(author_cli, "_gh") as mock_gh:
+            created = author_cli._create_issue(self._result("Prose only.\n"), tmp_path)
+        assert not created
+        assert not mock_gh.called
+        err = capsys.readouterr().err
+        assert "forge-author-create" in err
+        assert "declared : runnable" in err
+
+    def test_an_edit_that_would_degrade_the_issue_is_not_written(self, tmp_path, capsys):
+        from theforge.cli import author as author_cli
+
+        degraded = _RUNNABLE_TASK_BODY + (
+            "\n## Implementation plan\n\n"
+            "1. Patch `src/a.py:42`\n2. Patch `src/b.py:17`\n3. Patch `src/c.py:9`\n"
+        )
+        loaded = author_cli._LoadedDraft(
+            title="Add the widget",
+            body=_RUNNABLE_TASK_BODY,
+            labels=("task",),
+            issue_number=12,
+        )
+        with patch.object(author_cli, "_gh") as mock_gh:
+            ok = author_cli._edit_issue(self._result(degraded), loaded, tmp_path)
+        assert not ok
+        assert not mock_gh.called, "no gh call at all — not even the label edits"
+        err = capsys.readouterr().err
+        assert "forge-author-edit" in err
+        assert "implementation_plan_in_body" in err
