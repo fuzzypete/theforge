@@ -69,7 +69,7 @@ class HttpGitHubAPI:
         path: str,
         body: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
-        url = f"{self._base}{path}"
+        url = path if path.startswith(("https://", "http://")) else f"{self._base}{path}"
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urlrequest.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self._token}")
@@ -104,7 +104,8 @@ class HttpGitHubAPI:
             path = parsed.path
             if path.startswith(repo_prefix):
                 path = path[len(repo_prefix) :]
-            return f"{path}?{parsed.query}" if parsed.query else path
+                return f"{path}?{parsed.query}" if parsed.query else path
+            return url
         return None
 
     def _get_paginated(self, path: str) -> list[dict[str, Any]]:
@@ -265,8 +266,6 @@ def _label_mutations(
 
     if desired_tracking and config.tracking_label not in existing:
         add_labels.append(config.tracking_label)
-    elif not desired_tracking and config.tracking_label in existing:
-        remove_labels.append(config.tracking_label)
 
     return tuple(add_labels), tuple(remove_labels)
 

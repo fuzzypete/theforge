@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import textwrap
+from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 
@@ -485,7 +486,7 @@ class TestRunActionTrackingOnly:
 
         assert "tracking" in api.labels
 
-    def test_removes_tracking_label_when_issue_is_no_longer_tracking(self):
+    def test_does_not_remove_operator_tracking_label_when_issue_is_no_longer_tracking(self):
         api = FakeGitHubAPI(issue_number=57, labels=["tracking", "enhancement"])
         config = ActionConfig(tracking_label="tracking")
         event = _event(
@@ -498,7 +499,10 @@ class TestRunActionTrackingOnly:
 
         run_action(event, api, config)
 
-        assert "tracking" not in api.labels
+        assert "tracking" in api.labels
+        assert not any(
+            name == "remove_label" and payload == (57, "tracking") for name, payload in api.calls
+        )
 
 
 class TestRunActionSuperseded:
@@ -671,8 +675,46 @@ class TestSweep:
             "0 changes",
         ]
 
+    def test_apply_keeps_epic_label_and_second_run_is_zero_change(self):
+        digest = "sha256:test"
+        api = FakeGitHubAPI(
+            issue_number=1,
+            open_issues=[
+                {
+                    "number": 1,
+                    "title": "Epic: retired initiative",
+                    "body": "Superseded by #999.",
+                    "labels": [{"name": "epic"}],
+                    "comments": [],
+                }
+            ],
+        )
+        first = io.StringIO()
+        second = io.StringIO()
+
+        run_sweep(api, mode="apply", output=first, policy_digest=digest)
+        call_count = len(api.calls)
+        run_sweep(api, mode="apply", output=second, policy_digest=digest)
+
+        assert [label["name"] for label in api.open_issues[0]["labels"]] == ["epic"]
+        assert not any(
+            name == "remove_label" and payload == (1, "epic") for name, payload in api.calls
+        )
+        assert f"- policy digest: `{digest}`" in api.open_issues[0]["comments"][0]["body"]
+        assert len(api.calls) == call_count + 2
+        assert second.getvalue().splitlines() == [
+            "shape-check sweep — apply (1 open issues)",
+            "1 unchanged",
+            "0 changes",
+        ]
+
 
 class TestPolicyDigest:
+    def test_manifest_entries_exist_under_shape_check_package(self):
+        package_dir = Path(__file__).resolve().parents[1] / "src/theforge/shape_check"
+
+        assert all((package_dir / name).is_file() for name in POLICY_SOURCE_FILES)
+
     def test_ignores_unlisted_files(self, tmp_path):
         for name in POLICY_SOURCE_FILES:
             (tmp_path / name).write_text(f"{name}\n", encoding="utf-8")
@@ -710,6 +752,27 @@ class TestHttpGitHubAPI:
                     },
                 ),
                 "/issues?state=open&per_page=100&page=2": ([{"number": 3, "labels": []}], {}),
+            }
+        )
+
+        assert [issue["number"] for issue in api.list_open_issues()] == [2, 3]
+
+    def test_list_open_issues_follows_repositories_pagination_links(self):
+        api = _PagedHttpGitHubAPI(
+            responses={
+                "/issues?state=open&per_page=100": (
+                    [{"number": 2, "labels": []}],
+                    {
+                        "Link": (
+                            "<https://api.github.com/repositories/123/issues?"
+                            'state=open&per_page=100&page=2>; rel="next"'
+                        )
+                    },
+                ),
+                "https://api.github.com/repositories/123/issues?state=open&per_page=100&page=2": (
+                    [{"number": 3, "labels": []}],
+                    {},
+                ),
             }
         )
 
