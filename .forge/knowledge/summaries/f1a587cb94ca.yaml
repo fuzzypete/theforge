@@ -1,0 +1,148 @@
+schema_version: 2
+run_id: f1a587cb94ca
+authoritative_run_record: .forge/audits/runs/f1a587cb94ca.json
+generated_at: '2026-08-27T16:52:44.476094+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.013195
+story:
+  slug: issue-2667
+  name: Nothing re-evaluates existing issues when shape policy changes, so labels
+    stamped under superseded rules stay applied
+  github_issue: 2667
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- ci
+- backend
+- api
+domains_provenance: *id001
+changed_files: &id002
+- .github/workflows/shape-check.yml
+- src/theforge/shape_check/__main__.py
+- src/theforge/shape_check/action.py
+- src/theforge/shape_check/policy_digest.py
+- tests/test_shape_check_action.py
+- tests/test_shape_check_workflow.py
+what_changed:
+  description: This run added a shape-check sweep that can preview or apply reconciliations
+    across all open issues when shape policy changes, and threaded a policy digest
+    into bot comment reconciliation. It also wired policy-change workflows so pull
+    requests show the projected delta and post-merge/manual runs can execute the sweep.
+  approach: The change separated pure sweep planning from write operations, kept single-issue
+    event handling in place, and used workflow triggers plus digest-based comment
+    comparison to make reconciliations idempotent and scoped to actual drift.
+  files_modified: *id002
+what_was_learned:
+- claim: When consuming GitHub pagination during repository-wide sweeps, future runs
+    should treat Link-header URLs as authoritative only after validating scheme and
+    host, because endpoint-shape assumptions and unchecked absolute links each caused
+    distinct failure modes.
+  evidence:
+  - type: review_finding
+    finding_id: 4841cb0cca954943
+    description: Review found that rewriting a paginated /repositories URL into a
+      repository-relative /repos path broke page-2 retrieval for repos with more than
+      100 issues, showing that pagination code cannot assume one endpoint shape.
+  - type: review_finding
+    finding_id: 9d8e4a6f3687cc81
+    description: Review found the helper would follow an absolute http:// Link URL
+      while attaching the bearer token, demonstrating that pagination handling must
+      validate scheme before reusing authenticated requests.
+  - type: review_finding
+    finding_id: 50f03eced166bd9d
+    description: Review found that off-host or wrong-scheme pagination links caused
+      a silent early stop with partial results, showing validation must be paired
+      with explicit signaling so incomplete sweeps are distinguishable from complete
+      ones.
+- claim: For reconciler-style automation, future runs should preserve operator-owned
+    labels unless policy explicitly owns them end-to-end; otherwise the automation
+    can erase manual state and change its own future inputs.
+  evidence:
+  - type: review_finding
+    finding_id: d64701d00535401a
+    description: Review showed that removing the configured tracking label from issues
+      whose computed shape was not tracking-only deleted an operator-applied epic
+      label and altered the next evaluation's reason set, demonstrating feedback-loop
+      risk when automation clears labels it does not fully own.
+  - type: review_finding
+    finding_id: baa8cc01e5226371
+    description: Review later noted a reporting branch for '(no longer tracking)'
+      had become unreachable after reconciliation stopped emitting that removal, reinforcing
+      that ownership of that label path had been intentionally withdrawn.
+- claim: If policy digests and workflow path filters depend on a manifest of policy
+    files, future runs should treat that manifest as a checked contract rather than
+    a best-effort list, because file moves can simultaneously break runtime evaluation
+    and stop CI from noticing policy changes.
+  evidence:
+  - type: review_finding
+    finding_id: 47408b58758a6330
+    description: Review found the hardcoded policy-file list had no existence guard,
+      so renaming or splitting a policy module would raise FileNotFoundError at runtime
+      while the workflow path filter silently stopped matching the moved code, showing
+      the manifest boundary itself needs protection.
+  - type: plan_step
+    step_id: '1'
+    description: 'The plan explicitly centered the digest boundary in step 1, which
+      makes the later failure mode meaningful: future work that defines such a boundary
+      must also verify the referenced files remain valid.'
+- claim: Repository-wide apply operations that create per-issue comments can produce
+    backlog-sized notification bursts on first rollout, so future runs should account
+    for side effects of initializing previously untouched issues separately from steady-state
+    reconciliation.
+  evidence:
+  - type: review_finding
+    finding_id: c78f43183c7d6407
+    description: Review found that the first apply sweep would post a bot comment
+      on every open issue lacking one, creating roughly one notification per issue
+      across the backlog, which demonstrates a rollout-specific side effect not visible
+      from idempotent steady-state behavior alone.
+learned_patterns:
+- validated-pagination-links
+- preserve-operator-owned-labels
+- guard-policy-manifest-boundary
+- backlog-comment-fanout
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 4841cb0cca954943
+    severity: P1
+    file: src/theforge/shape_check/action.py
+    description: When GitHub returns a paginated issue Link URL under /repositories,
+      the sweep builds the next request as a repository-relative path under /repos/<owner>/<repo>,
+      so page 2 of the issue listing is requested from the wrong endpoint and the
+      sweep cannot cover repositories with more than 100 open issues.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: d64701d00535401a
+    severity: P1
+    file: src/theforge/shape_check/action.py
+    description: Reconciliation now removes the configured tracking label (epic) from
+      any open issue whose computed shape is not tracking-only, which for an epic-labelled
+      issue that also declares itself superseded deletes the operator-applied label
+      and changes the reason set the next evaluation produces, so the following consecutive
+      sweep rewrites that issue's bot comment instead of reporting zero changes.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly surfaced edge cases at scale boundaries: paginated
+    issue enumeration, ownership of pre-existing labels, and first-run effects across
+    the existing backlog.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 11.59467245
+  dominant_difficulty: Making a repository-wide reconciler authoritative and idempotent
+    without breaking on scale, ownership, or workflow-boundary edge cases.
