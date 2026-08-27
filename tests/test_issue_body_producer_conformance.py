@@ -13,7 +13,10 @@ import argparse
 import ast
 import json
 import re
+from collections.abc import Mapping
+from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 import pytest
@@ -131,14 +134,22 @@ def _scan_sources() -> list[Path]:
     )
 
 
-def _all_seams() -> dict[tuple[str, str], int]:
-    """Seam counts across the repository, keyed by ``(path, function)``."""
+@lru_cache(maxsize=1)
+def _all_seams() -> Mapping[tuple[str, str], int]:
+    """Seam counts across the repository, keyed by ``(path, function)``.
+
+    Cached because the scan AST-parses every module under ``src/theforge`` —
+    around two seconds — and two of the tests below are parametrized over the
+    whole registry. Recomputing it per case burned roughly a minute of CPU
+    across the suite, which is real contention for the process and timing
+    tests sharing the same ``-n auto`` workers.
+    """
     counts: dict[tuple[str, str], int] = {}
     for path in _scan_sources():
         for _line, function in discover_seams(path):
             key = (str(path.relative_to(REPO_ROOT)), function)
             counts[key] = counts.get(key, 0) + 1
-    return counts
+    return MappingProxyType(counts)
 
 
 # ── Seam registry ─────────────────────────────────────────────────────
@@ -180,11 +191,18 @@ SEAM_GUARDS: dict[tuple[str, str], dict[str, str]] = {
 EXPECTED_SEAM_COUNT = 1
 
 
+@lru_cache(maxsize=None)
+def _read(path: str) -> str:
+    return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=None)
 def _function_source(path: str, name: str) -> str | None:
-    tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
+    """Source of one function, read once per file rather than once per case."""
+    text = _read(path)
+    for node in ast.walk(ast.parse(text)):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return ast.get_source_segment((REPO_ROOT / path).read_text(encoding="utf-8"), node)
+            return ast.get_source_segment(text, node)
     return None
 
 
@@ -229,7 +247,7 @@ class TestSeamRegistry:
     @pytest.mark.parametrize("key", sorted(SEAM_GUARDS))
     def test_each_seam_is_guarded_by_the_function_that_declares_its_producer(self, key):
         path, function = key
-        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        text = _read(path)
         for producer, guard in SEAM_GUARDS[key].items():
             if function in (SCRIPT, EMBEDDED_HOOK):
                 # Shell: the guard must be defined, must name the producer, and
@@ -269,7 +287,7 @@ class TestSeamScannerDetectsNewSeams:
     """
 
     def test_a_second_seam_in_an_already_guarded_function_is_detected(self):
-        original = (REPO_ROOT / "src/theforge/cli/todo.py").read_text(encoding="utf-8")
+        original = _read("src/theforge/cli/todo.py")
         before = _python_seams(ast.parse(original))
         # Derived from the registry rather than hard-coded, so this test cannot
         # drift out of agreement with the thing it is checking.
@@ -299,7 +317,7 @@ class TestSeamScannerDetectsNewSeams:
         )
 
     def test_a_seam_in_a_new_function_of_an_approved_file_is_detected(self):
-        original = (REPO_ROOT / "src/theforge/cli/todo.py").read_text(encoding="utf-8")
+        original = _read("src/theforge/cli/todo.py")
         injected = original + (
             "\n\ndef _quietly_file_something(project_root):\n"
             "    return _run_gh(\n"
@@ -322,7 +340,7 @@ class TestSeamScannerDetectsNewSeams:
         assert _python_seams(ast.parse(prose)) == []
 
     def test_a_shell_seam_added_to_a_hook_is_detected(self):
-        hook = (REPO_ROOT / ".forge/hooks/post_run.sh").read_text(encoding="utf-8")
+        hook = _read(".forge/hooks/post_run.sh")
         assert len(_shell_seams(hook)) == 1
         injected = hook + '\ngh issue create --title "t" --body "b"\n'
         assert len(_shell_seams(injected)) == 2
