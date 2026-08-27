@@ -10,6 +10,7 @@ validation fails this suite rather than being discovered in the corpus.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 from pathlib import Path
@@ -21,34 +22,104 @@ from theforge.shape_check.producer import PRODUCERS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# ── Static scan ───────────────────────────────────────────────────────
-# Tolerant of both spellings a mutation seam is written in: a shell command
-# (`gh issue create --body ...`) and a Python argv list, where the same tokens
-# are quoted, comma-separated and split across lines. Quotes, commas and
-# brackets are erased before matching so one pattern reads both.
-_MUTATION_RE = re.compile(
-    r"gh\s+issue\s+(?:create|edit)(?:(?!gh\s+issue).){0,400}?--body(?:-file)?\b", re.S
-)
-_STRIP_RE = re.compile(r"[\"'\\,\[\]]")
+# ── Seam discovery ────────────────────────────────────────────────────
+# The unit is one `gh issue create|edit` invocation carrying a body flag, not
+# one file. A file-level scan cannot answer the question the acceptance
+# criterion actually asks — it reports a file as covered the moment any
+# registered producer id appears anywhere in it, so a *second* seam added
+# beside an existing one is absorbed silently.
+#
+# Python argv is read through the AST rather than as text, because the tokens
+# are separate string constants there. That distinguishes a real invocation
+# from prose: a docstring or an error message reading "gh issue edit
+# --body-file failed" is a single string constant, never the four separate
+# constants a real argv list holds.
 
-#: Every file holding an issue-body mutation seam, mapped to the producer ids
-#: that account for it. Adding a seam without adding it here fails the scan.
-APPROVED_SEAMS: dict[str, tuple[str, ...]] = {
-    "src/theforge/cli/author.py": ("forge-author-create", "forge-author-edit"),
-    "src/theforge/cli/shape.py": ("forge-shape",),
-    "src/theforge/cli/todo.py": ("forge-todo-create", "forge-todo-triage"),
-    "src/theforge/cli/report.py": ("forge-report-create", "forge-report-update"),
-    "src/theforge/cli/hooks.py": ("post-run-hook-finding",),
-    "src/theforge/intake/groom_flow.py": ("forge-groom",),
-    "src/theforge/intake/remediation.py": (
-        "forge-intake-autofix",
-        "forge-intake-reopen-context",
-    ),
-    "src/theforge/advisory_conventions.py": ("forge-advisory-finding",),
-    "src/theforge/coordinator/diagnose_flow.py": ("forge-diagnose",),
-    ".forge/hooks/post_run.sh": ("post-run-hook-finding",),
-    ".forge/hooks/post-run-gh-issues.sh": ("post-run-hook-finding",),
-}
+_GH_TOKENS = frozenset({"gh", "issue"})
+_VERBS = frozenset({"create", "edit"})
+_BODY_FLAGS = frozenset({"--body", "--body-file"})
+#: Backslash-continued shell lines, joined so one command reads as one line.
+_SHELL_CONTINUATION_RE = re.compile(r"\\+\n\s*")
+_SHELL_INVOCATION_RE = re.compile(r"\bgh\s+issue\s+(?:create|edit)\b[^\n]*")
+_SHELL_BODY_FLAG_RE = re.compile(r"--body(?:-file)?\b")
+
+
+def _string_constants(node: ast.AST) -> set[str]:
+    return {
+        n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    }
+
+
+def _python_seams(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(line, enclosing function)`` for each Python argv body seam."""
+    seams: list[tuple[int, str]] = []
+    functions = [
+        n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for fn in functions:
+        # `command = ["gh", "issue", "create", ...]` followed by
+        # `command += ["--body-file", path]` is one seam split over two lists.
+        extended = {
+            node.target.id
+            for node in ast.walk(fn)
+            if isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and _string_constants(node.value) & _BODY_FLAGS
+        }
+        for lst in [n for n in ast.walk(fn) if isinstance(n, ast.List)]:
+            literals = {e.value for e in lst.elts if isinstance(e, ast.Constant)}
+            if not (_GH_TOKENS <= literals and literals & _VERBS):
+                continue
+            if literals & _BODY_FLAGS:
+                seams.append((lst.lineno, fn.name))
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and node.value is lst:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id in extended:
+                            seams.append((lst.lineno, fn.name))
+    return sorted(set(seams))
+
+
+def _shell_seams(text: str) -> list[int]:
+    """Return the line of each shell `gh issue create|edit` carrying a body."""
+    joined = _SHELL_CONTINUATION_RE.sub(" ", text)
+    return sorted(
+        {
+            joined.count("\n", 0, m.start()) + 1
+            for m in _SHELL_INVOCATION_RE.finditer(joined)
+            if _SHELL_BODY_FLAG_RE.search(m.group(0))
+        }
+    )
+
+
+def _embedded_shell(tree: ast.AST) -> list[str]:
+    """Shell scripts embedded in Python as string constants — hook templates."""
+    return [
+        n.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and n.value.lstrip().startswith("#!")
+        and "bash" in n.value[:60]
+    ]
+
+
+#: Pseudo-function names for seams that are not inside a Python function.
+SCRIPT = "<script>"
+EMBEDDED_HOOK = "<embedded-hook>"
+
+
+def discover_seams(path: Path) -> list[tuple[int, str]]:
+    """Every issue-body mutation seam in one file, as ``(line, function)``."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix != ".py":
+        return [(line, SCRIPT) for line in _shell_seams(text)]
+    tree = ast.parse(text)
+    seams = _python_seams(tree)
+    for template in _embedded_shell(tree):
+        seams += [(line, EMBEDDED_HOOK) for line in _shell_seams(template)]
+    return sorted(seams)
 
 
 def _scan_sources() -> list[Path]:
@@ -60,58 +131,201 @@ def _scan_sources() -> list[Path]:
     )
 
 
-def _has_mutation_seam(text: str) -> bool:
-    return bool(_MUTATION_RE.search(re.sub(r"\s+", " ", _STRIP_RE.sub(" ", text))))
+def _all_seams() -> dict[tuple[str, str], int]:
+    """Seam counts across the repository, keyed by ``(path, function)``."""
+    counts: dict[tuple[str, str], int] = {}
+    for path in _scan_sources():
+        for _line, function in discover_seams(path):
+            key = (str(path.relative_to(REPO_ROOT)), function)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
-class TestStaticSeamScan:
+# ── Seam registry ─────────────────────────────────────────────────────
+#: Every issue-body mutation seam, keyed by the file and the function holding
+#: it, mapped to ``{producer id: the function that validates for it}``. The
+#: guard is named separately because it is not always the function holding the
+#: seam: `cmd_shape` validates before calling `_apply_to_github`, and
+#: `_land_artifact` validates before calling `_gh_edit_body`. Naming it makes
+#: that indirection reviewable instead of implicit.
+SEAM_GUARDS: dict[tuple[str, str], dict[str, str]] = {
+    (".forge/hooks/post_run.sh", SCRIPT): {"post-run-hook-finding": "forge_validate_body"},
+    (".forge/hooks/post-run-gh-issues.sh", SCRIPT): {
+        "post-run-hook-finding": "forge_validate_body"
+    },
+    ("src/theforge/cli/hooks.py", EMBEDDED_HOOK): {"post-run-hook-finding": "forge_validate_body"},
+    ("src/theforge/advisory_conventions.py", "_maybe_file_issue"): {
+        "forge-advisory-finding": "_maybe_file_issue"
+    },
+    ("src/theforge/cli/author.py", "_create_issue"): {"forge-author-create": "_create_issue"},
+    ("src/theforge/cli/author.py", "_edit_issue"): {"forge-author-edit": "_edit_issue"},
+    ("src/theforge/cli/report.py", "_create_issue"): {"forge-report-create": "cmd_report"},
+    ("src/theforge/cli/report.py", "_update_body"): {"forge-report-update": "cmd_report"},
+    ("src/theforge/cli/shape.py", "_apply_to_github"): {"forge-shape": "cmd_shape"},
+    ("src/theforge/cli/todo.py", "_create_todo"): {"forge-todo-create": "_create_todo"},
+    ("src/theforge/cli/todo.py", "_triage_todo"): {"forge-todo-triage": "_triage_todo"},
+    ("src/theforge/coordinator/diagnose_flow.py", "_gh_edit_body"): {
+        "forge-diagnose": "_land_artifact"
+    },
+    ("src/theforge/intake/groom_flow.py", "_default_edit"): {"forge-groom": "run_groom"},
+    ("src/theforge/intake/remediation.py", "_default_edit_body"): {
+        "forge-intake-autofix": "_remediate_one",
+        "forge-intake-reopen-context": "remediate_shape_gate_skip",
+    },
+}
+
+#: How many seams each registered site is expected to hold. Every entry here is
+#: one, and a second seam appearing in the same function must fail rather than
+#: hide behind its neighbour — that is the hole a file-level scan leaves open.
+EXPECTED_SEAM_COUNT = 1
+
+
+def _function_source(path: str, name: str) -> str | None:
+    tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_source_segment((REPO_ROOT / path).read_text(encoding="utf-8"), node)
+    return None
+
+
+class TestSeamRegistry:
     def test_scan_is_not_vacuous(self):
-        """A broken matcher must fail loudly, not report zero producers."""
-        found = [p for p in _scan_sources() if _has_mutation_seam(p.read_text(encoding="utf-8"))]
-        assert len(found) >= len(APPROVED_SEAMS), (
-            "the mutation-seam scan matched fewer files than the approved set — "
-            f"the matcher is broken. matched: {[str(p) for p in found]}"
+        """A broken matcher must fail loudly, not report zero seams."""
+        found = _all_seams()
+        assert len(found) >= len(SEAM_GUARDS), (
+            "the seam scan found fewer sites than the registry — the matcher is "
+            f"broken. found: {sorted(found)}"
         )
 
-    def test_every_mutation_seam_is_an_approved_producer(self):
-        found = {
-            str(p.relative_to(REPO_ROOT))
-            for p in _scan_sources()
-            if _has_mutation_seam(p.read_text(encoding="utf-8"))
-        }
-        unaccounted = found - set(APPROVED_SEAMS)
-        assert not unaccounted, (
-            "these files create or edit an issue body but no registered producer "
-            f"accounts for them: {sorted(unaccounted)}. Register a producer in "
+    def test_discovered_seams_match_the_registry_exactly(self):
+        """Seam-level, not file-level: a new seam beside an existing one fails.
+
+        Keying on ``(file, function)`` and comparing counts is what closes the
+        hole a per-file scan leaves: adding a second body write to a file that
+        already holds one no longer inherits its neighbour's coverage.
+        """
+        found = _all_seams()
+        unregistered = sorted(set(found) - set(SEAM_GUARDS))
+        stale = sorted(set(SEAM_GUARDS) - set(found))
+        assert not unregistered, (
+            "these sites create or edit an issue body but no registered producer "
+            f"accounts for them: {unregistered}. Register a producer in "
             "shape_check.producer.PRODUCERS, validate before the mutation, and add "
-            "the file to APPROVED_SEAMS."
+            "the seam to SEAM_GUARDS."
+        )
+        assert not stale, f"SEAM_GUARDS lists sites that no longer hold a seam: {stale}"
+
+    @pytest.mark.parametrize("key", sorted(SEAM_GUARDS))
+    def test_each_registered_site_holds_exactly_one_seam(self, key):
+        path, function = key
+        count = _all_seams().get(key, 0)
+        assert count == EXPECTED_SEAM_COUNT, (
+            f"{path}::{function} holds {count} issue-body mutation seams, expected "
+            f"{EXPECTED_SEAM_COUNT}. A second body write in the same function needs "
+            "its own producer and its own validation — it does not inherit the "
+            "coverage of the one already there."
         )
 
-    def test_every_approved_seam_still_exists(self):
-        found = {
-            str(p.relative_to(REPO_ROOT))
-            for p in _scan_sources()
-            if _has_mutation_seam(p.read_text(encoding="utf-8"))
-        }
-        assert set(APPROVED_SEAMS) - found == set()
-
-    @pytest.mark.parametrize(("path", "producers"), sorted(APPROVED_SEAMS.items()))
-    def test_each_seam_names_its_producer(self, path, producers):
+    @pytest.mark.parametrize("key", sorted(SEAM_GUARDS))
+    def test_each_seam_is_guarded_by_the_function_that_declares_its_producer(self, key):
+        path, function = key
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
-        for producer in producers:
-            assert producer in text, (
-                f"{path} holds an issue-body mutation seam but never names producer "
-                f"{producer!r} — it cannot be validating through the shared boundary."
+        for producer, guard in SEAM_GUARDS[key].items():
+            if function in (SCRIPT, EMBEDDED_HOOK):
+                # Shell: the guard must be defined, must name the producer, and
+                # must be invoked — the hook calls it in the `if` that decides
+                # whether the create runs at all.
+                assert f"{guard}()" in text, f"{path}: no {guard}() definition"
+                assert producer in text, f"{path}: never names producer {producer!r}"
+                assert text.count(guard) >= 2, (
+                    f"{path}: {guard} is defined but never invoked before the seam"
+                )
+                continue
+            source = _function_source(path, guard)
+            assert source is not None, (
+                f"{path}: seam in {function} names guard {guard}, which does not exist"
+            )
+            assert f'producer="{producer}"' in source, (
+                f"{path}: {guard} guards the seam in {function} but never declares "
+                f"producer={producer!r} — the seam is not routed through the boundary."
             )
 
     def test_every_registered_producer_owns_a_seam(self):
         registered = set(PRODUCERS)
-        accounted = {p for producers in APPROVED_SEAMS.values() for p in producers}
+        accounted = {p for guards in SEAM_GUARDS.values() for p in guards}
         assert registered == accounted, (
-            "PRODUCERS and APPROVED_SEAMS disagree; "
+            "PRODUCERS and SEAM_GUARDS disagree; "
             f"unmapped: {sorted(registered - accounted)}, "
             f"unregistered: {sorted(accounted - registered)}"
         )
+
+
+class TestSeamScannerDetectsNewSeams:
+    """The guard's own guard.
+
+    The registry is only as good as the scanner behind it, so these prove the
+    scanner sees a seam added where the previous file-level scan would have
+    absorbed it: beside an existing one, inside an already approved file.
+    """
+
+    def test_a_second_seam_in_an_already_guarded_function_is_detected(self):
+        original = (REPO_ROOT / "src/theforge/cli/todo.py").read_text(encoding="utf-8")
+        before = _python_seams(ast.parse(original))
+        # Derived from the registry rather than hard-coded, so this test cannot
+        # drift out of agreement with the thing it is checking.
+        registered = sum(
+            count
+            for (path, _fn), count in _all_seams().items()
+            if path == "src/theforge/cli/todo.py"
+        )
+        assert len(before) == registered
+        assert "_create_todo" in [fn for _, fn in before]
+
+        # A second body write appended inside the function that already holds one.
+        injected = original.replace(
+            "    proc = _run_gh(command, project_root)",
+            "    _run_gh(\n"
+            '        ["gh", "issue", "edit", "1", "--body", "sneaked in"], project_root\n'
+            "    )\n"
+            "    proc = _run_gh(command, project_root)",
+            1,
+        )
+        assert injected != original, "injection anchor no longer present"
+        after = _python_seams(ast.parse(injected))
+        create_seams = [fn for _, fn in after].count("_create_todo")
+        assert create_seams == 2, (
+            "the scanner missed a second seam added inside a function that already "
+            "holds one — this is exactly the case a file-level scan absorbs"
+        )
+
+    def test_a_seam_in_a_new_function_of_an_approved_file_is_detected(self):
+        original = (REPO_ROOT / "src/theforge/cli/todo.py").read_text(encoding="utf-8")
+        injected = original + (
+            "\n\ndef _quietly_file_something(project_root):\n"
+            "    return _run_gh(\n"
+            '        ["gh", "issue", "create", "--title", "t", "--body", "b"], project_root\n'
+            "    )\n"
+        )
+        functions = [fn for _, fn in _python_seams(ast.parse(injected))]
+        assert "_quietly_file_something" in functions
+        assert ("src/theforge/cli/todo.py", "_quietly_file_something") not in SEAM_GUARDS, (
+            "the injected seam must be unregistered, or this test proves nothing"
+        )
+
+    def test_prose_naming_the_command_is_not_mistaken_for_a_seam(self):
+        """A docstring or error string is one constant, never an argv list."""
+        prose = (
+            "def _unrelated():\n"
+            '    """Replace the body of an issue via ``gh issue edit --body-file``."""\n'
+            '    raise RuntimeError("gh issue edit --body-file failed")\n'
+        )
+        assert _python_seams(ast.parse(prose)) == []
+
+    def test_a_shell_seam_added_to_a_hook_is_detected(self):
+        hook = (REPO_ROOT / ".forge/hooks/post_run.sh").read_text(encoding="utf-8")
+        assert len(_shell_seams(hook)) == 1
+        injected = hook + '\ngh issue create --title "t" --body "b"\n'
+        assert len(_shell_seams(injected)) == 2
 
 
 # ── Per-producer refusal at the mutation seam ─────────────────────────
