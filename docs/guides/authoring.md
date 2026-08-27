@@ -97,6 +97,34 @@ A short shared rule across every use case: the issue body says **what** and
 implementation steps, or test-strategy hints. Those belong in planning, not in
 the input.
 
+## Shared vocabulary
+
+The issue corpus uses a small set of operational terms with specific meanings.
+Use these words consistently in issue bodies so the reader does not have to
+infer which spend mechanism, retry boundary, or run boundary you meant.
+
+- **generation** — one process image of a sprint run. A re-exec starts a new
+  generation of the same run; prior-generation work may still be carried
+  forward into the resumed audit.
+- **seating** — the act of assigning the actual planner, dev, and reviewer
+  agents for a story. An agent is **seated** once that assignment has been
+  made.
+- **allocation** — the per-story spend envelope derived at seating from the
+  story's shape and historical evidence. It is story-local and informational:
+  it explains routing, telemetry, and allocation-shortfall reporting.
+- **budget** — an operator-supplied spend limit. Unqualified, this means the
+  sprint-level `--budget` / `budget_usd` ceiling that governs whether more
+  stories may launch.
+- **ceiling** — a hard upper bound inside a narrower scope than the sprint
+  budget, such as a worker-timeout window, a per-phase accepted-cost bound, or
+  a reviewer-count maximum. Use this when you mean "cannot exceed," not when
+  you mean an estimate.
+- **band** — one of the three complexity buckets `small`, `medium`, or `large`
+  that groups stories for routing and historical comparisons. Do not use
+  **band** for pricing tiers or role strength; those are separate concepts.
+- **invocation** — one discrete agent or command call. A single story run may
+  contain multiple invocations, and a run may span multiple generations.
+
 ---
 
 ## Feature or enhancement
@@ -196,8 +224,8 @@ A bug goes through two states, and the shape gate enforces the boundary:
    — the sprint-entry gate hard-blocks it (`needs_diagnosis`: "Bug has no
    Diagnosis section — not fix-ready").
 2. **Diagnose**: run `forge diagnose --issue <N>` (or investigate manually).
-   The diagnosis lands as a `## Diagnosis` section **in the issue body**, with
-   the required components listed in
+   The diagnosis lands as a `## Diagnosis` section **in the issue body**, after
+   `## Observed` and `## Expected`, with the required components listed in
    [the bug shape reference](../reference/bug-shape.md): observed symptom,
    evidence, confirmed cause, affected code path, fix-success criterion. A
    confirmed cause of `unknown` / `not yet identified` is admissible — the bug
@@ -218,9 +246,10 @@ A bug goes through two states, and the shape gate enforces the boundary:
   expected behavior should generalize past the single triggering case so the
   fix has a defined scope.
 - **Diagnosis** — heading literally `## Diagnosis`, required in the body
-  before sprint entry. Normally landed by `forge diagnose`, not written at
-  capture time. See the [bug shape reference](../reference/bug-shape.md) for
-  the exact component labels and a fileable skeleton.
+  before sprint entry. It sits **after** `## Observed` and `## Expected`.
+  Normally landed by `forge diagnose`, not written at capture time. See the
+  [bug shape reference](../reference/bug-shape.md) for the exact component
+  labels and a fileable skeleton.
 
 ### What to leave out
 
