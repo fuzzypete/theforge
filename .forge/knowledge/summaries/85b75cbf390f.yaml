@@ -1,0 +1,61 @@
+schema_version: 2
+run_id: 85b75cbf390f
+authoritative_run_record: .forge/audits/runs/85b75cbf390f.json
+generated_at: '2026-08-27T16:07:28.568188+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0047525
+story:
+  slug: issue-2510
+  name: No canonical bug-heading spelling is declared, so the guide, the renderer
+    and the corpus each follow a different one
+  github_issue: 2510
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 4
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/authoring.md
+- tests/test_authoring_guide.py
+- tests/test_intake/test_shape_classify.py
+what_changed:
+  description: The run aligned the authoring guide with a single canonical bug-heading
+    spelling, fixed the documented placement of the Diagnosis section, and added glossary
+    definitions for the operational terms the issue corpus relies on. It also aligned
+    shape-classification expectations so legacy headings remain admissible on input
+    while documented and emitted surfaces use the canonical form.
+  approach: The change was made by updating the guide's literal content and examples,
+    then pinning that documentation contract with focused guide tests and a small
+    classifier expectation adjustment so the guide, validator behaviour, and emitted
+    structure stay in sync.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- shared-doc-validator-contract
+- literal-doc-guard
+- admit-legacy-emit-canonical
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The single review cycle approved the documentation-contract approach without surfacing
+    further corrections.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.7482277499999999
+  dominant_difficulty: Keeping documentation, rendered structure, and admission rules
+    synchronized while preserving compatibility for legacy input.
