@@ -162,12 +162,12 @@ def test_no_signal_returns_unresolved():
 # rather than opening with a marker word (#2139).
 DOCUMENTED_FORMAT_BRIEF = textwrap.dedent(
     """\
-    ## What happened
+    ## Observed
 
     Ran `forge sprint --resume` on a sprint where two of three stories had
     already been merged. The resume run re-entered both at the dev phase.
 
-    ## What was expected
+    ## Expected
 
     Resuming a sprint should never repeat work that has already reached a
     terminal merged state, regardless of the last phase in the audit log.
