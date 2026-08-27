@@ -62,6 +62,17 @@ class HttpGitHubAPI:
         self._token = token
         self._bot_login = bot_login
         self._base = f"https://api.github.com/repos/{repo}"
+        parsed_base = urlparse(self._base)
+        self._api_scheme = parsed_base.scheme
+        self._api_host = parsed_base.netloc
+
+    def _resolve_request_url(self, path: str) -> str:
+        parsed = urlparse(path)
+        if not parsed.scheme:
+            return f"{self._base}{path}"
+        if parsed.scheme != self._api_scheme or parsed.netloc != self._api_host:
+            raise ValueError(f"refusing to request non-GitHub API URL: {path}")
+        return path
 
     def _request_with_headers(
         self,
@@ -69,7 +80,7 @@ class HttpGitHubAPI:
         path: str,
         body: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
-        url = path if path.startswith(("https://", "http://")) else f"{self._base}{path}"
+        url = self._resolve_request_url(path)
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urlrequest.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self._token}")
@@ -105,7 +116,9 @@ class HttpGitHubAPI:
             if path.startswith(repo_prefix):
                 path = path[len(repo_prefix) :]
                 return f"{path}?{parsed.query}" if parsed.query else path
-            return url
+            if parsed.scheme == self._api_scheme and parsed.netloc == self._api_host:
+                return url
+            return None
         return None
 
     def _get_paginated(self, path: str) -> list[dict[str, Any]]:
@@ -383,7 +396,7 @@ def _label_summary(
         return "(now runnable)"
 
     if label == config.tracking_label:
-        return "(tracking only)" if action == "add" else "(no longer tracking)"
+        return "(tracking only)"
 
     return _reason_codes(reconciliation.result)
 

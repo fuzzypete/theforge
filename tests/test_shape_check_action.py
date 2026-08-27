@@ -778,6 +778,42 @@ class TestHttpGitHubAPI:
 
         assert [issue["number"] for issue in api.list_open_issues()] == [2, 3]
 
+    def test_list_open_issues_stops_on_plaintext_pagination_link(self):
+        api = _RecordingPagedHttpGitHubAPI(
+            responses={
+                "/issues?state=open&per_page=100": (
+                    [{"number": 2, "labels": []}],
+                    {
+                        "Link": (
+                            "<http://api.github.com/repositories/123/issues?"
+                            'state=open&per_page=100&page=2>; rel="next"'
+                        )
+                    },
+                )
+            }
+        )
+
+        assert [issue["number"] for issue in api.list_open_issues()] == [2]
+        assert api.requested_paths == ["/issues?state=open&per_page=100"]
+
+    def test_list_open_issues_stops_on_cross_host_pagination_link(self):
+        api = _RecordingPagedHttpGitHubAPI(
+            responses={
+                "/issues?state=open&per_page=100": (
+                    [{"number": 2, "labels": []}],
+                    {
+                        "Link": (
+                            "<https://example.invalid/repositories/123/issues?"
+                            'state=open&per_page=100&page=2>; rel="next"'
+                        )
+                    },
+                )
+            }
+        )
+
+        assert [issue["number"] for issue in api.list_open_issues()] == [2]
+        assert api.requested_paths == ["/issues?state=open&per_page=100"]
+
     def test_list_comments_paginates_to_existing_marker_on_second_page(self):
         api = _PagedHttpGitHubAPI(
             responses={
@@ -841,3 +877,13 @@ class _PagedHttpGitHubAPI(HttpGitHubAPI):
         del method, body
         payload, headers = self._responses[path]
         return payload, headers
+
+
+class _RecordingPagedHttpGitHubAPI(_PagedHttpGitHubAPI):
+    def __init__(self, *, responses):
+        super().__init__(responses=responses)
+        self.requested_paths: list[str] = []
+
+    def _request_with_headers(self, method, path, body=None):
+        self.requested_paths.append(path)
+        return super()._request_with_headers(method, path, body)
