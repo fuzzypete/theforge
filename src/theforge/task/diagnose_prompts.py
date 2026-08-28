@@ -68,6 +68,9 @@ Mode: {mode}
    ``confirmed_cause: ""`` and explain in ``notes`` what evidence is missing.
    **Do NOT guess** — partial honest output is more valuable than a confident
    wrong diagnosis.
+   If you have an unverified repair idea, fix location guess, or implementation
+   suggestion, put it in ``advisory_repair_proposal`` instead of ``notes``,
+   ``fix_success_criterion``, or ``related_findings``.
 7. Before confirming a cause, verify the bug's premise still exists in the
    current baseline.  A bug's premise can be silently deleted by an intervening
    commit — the code it describes may already be gone.  List the concrete,
@@ -158,11 +161,14 @@ Emit a single fenced YAML block.  Required keys:
 
 ```yaml
 observed_symptom: |
+  Content class: confirmed symptom/evidence.
   Plain-language description of what is going wrong.
 reproduction_or_evidence: |
+  Content class: confirmed symptom/evidence.
   Exact reproduction steps OR a citation of evidence already on disk
   (audit file, log line, failing test).
 hypotheses:
+  # Content class: investigated hypotheses and their support.
   - statement: "Hypothesis A — what could be causing it"
     status: ruled_out      # or: confirmed | inconclusive | unverifiable
     evidence: "What you observed that ruled this out / confirmed it"
@@ -183,26 +189,40 @@ hypotheses:
       source_type: prior_assertion
       detail: "Commit 858ec73a already asserted the cause; this is not independent corroboration."
 confirmed_cause: |
+  Content class: confirmed localization.
   The single root cause supported by the evidence.  Empty string if
   no cause was confirmed.
 confirmed_cause_support: |
+  Content class: confirmed localization support.
   The strongest support for the confirmed cause. If this support comes from
   material that already states the cause, say that plainly as a restatement.
 confirmed_cause_verification:
+  # Content class: verification metadata for the confirmed localization claim.
   verification_type: source_and_attached_evidence
   detail: "Confirmed by reading the inspected repository file and the attached run log."
 confirmed_cause_support_provenance:
+  # Content class: provenance metadata for the confirmed localization support.
   source_type: observed    # or: prior_assertion | mixed | unknown
   detail: "Short source note: what was observed directly, or where the prior assertion lived."
 affected_code_path: |
+  Content class: confirmed localization.
   File path(s) and function/line locations involved in the bug.
 fix_success_criterion: |
+  Content class: behavioral requirement for the eventual fix.
   An observable, verifiable criterion the fix must satisfy.  Phrased so
   a reviewer can check whether the symptom is actually gone.
+advisory_repair_proposal: |
+  Content class: advisory, unverified repair proposal.
+  Optional — implementation suggestion, likely fix location, or repair guess
+  that the investigation did not verify. Do NOT restate confirmed cause or
+  behavioral fix-success content here.
 notes: |
-  Optional — any caveats, unresolved threads, or partial-investigation
-  context the operator should see.
+  Content class: investigation caveats/context.
+  Optional — any caveats, unresolved threads, missing evidence, or
+  partial-investigation context the operator should see. Do NOT put repair
+  proposals here.
 inspected_files:
+  # Content class: baseline/audit traceability.
   # REQUIRED. List every file path you read or grepped during the
   # investigation, one repo-relative path per entry. This anchors the
   # diagnosis to a baseline so a later `forge groom` can detect when the
@@ -211,6 +231,7 @@ inspected_files:
   - "<repo-relative path to a file you inspected>"
   - "<repo-relative path to another file you inspected>"
 premise_anchors:
+  # Content class: baseline premise verification anchors.
   # REQUIRED when confirmed_cause is non-empty. Each entry names a file and a
   # literal code substring the bug's premise depends on and that you verified
   # is present at HEAD. These are checked mechanically: if a file or pattern
@@ -219,6 +240,7 @@ premise_anchors:
   - file: "<repo-relative path the bug lives in>"
     pattern: "<exact code substring that must exist for the bug to be live>"
 related_findings:
+  # Content class: adjacent but out-of-scope defects.
   # OPTIONAL. Adjacent, real defects you noticed in nearby code that are NOT
   # the cause of THIS issue's stated symptom. Recording them here keeps them
   # OUT of the fix scope (confirmed_cause) so the dev does not build them as
@@ -227,6 +249,7 @@ related_findings:
   - summary: "<one-line description of a separate adjacent defect>"
     related: "<owning/related issue ref, e.g. '#1649', or empty>"
 symptom_scope_coverage:
+  # Content class: categorical symptom-scope accounting.
   # REQUIRED when the issue's stated symptom is categorical ("every", "any",
   # "regardless", etc.). Keep the default non-categorical record for symptoms
   # scoped to one concrete instance. Do NOT invent a broader scope than the
@@ -264,6 +287,7 @@ Preserve your previous output verbatim:
   - Keep EVERY hypothesis, with the same statement, status, evidence, and evidence_provenance.
   - Keep EVERY inspected_files entry, premise_anchors entry,
     related_findings entry, and symptom_scope_coverage entry.
+  - Keep the same advisory_repair_proposal.
   - Keep the same notes.
 
 Dropping or altering a value to make the parse error go away is a WRONG
@@ -739,6 +763,12 @@ def _normalize_root_error(root_type: str) -> str:
     return f"YAML block did not parse to a mapping of diagnosis keys (root was {root_type})."
 
 
+def _optional_yaml_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _parse_support_provenance(raw: object) -> SupportProvenance:
     def _yaml_scalar_text(value: object, *, default: str) -> str:
         if value is None:
@@ -945,14 +975,15 @@ def parse_diagnose_output_result(
 
     artifact = DiagnosisArtifact(
         issue_number=issue_number,
-        observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
-        reproduction_or_evidence=str(parsed.get("reproduction_or_evidence", "")).strip(),
+        observed_symptom=_optional_yaml_text(parsed.get("observed_symptom", "")),
+        reproduction_or_evidence=_optional_yaml_text(parsed.get("reproduction_or_evidence", "")),
         hypotheses=tuple(hypotheses),
-        confirmed_cause=str(parsed.get("confirmed_cause", "")).strip(),
-        affected_code_path=str(parsed.get("affected_code_path", "")).strip(),
-        fix_success_criterion=str(parsed.get("fix_success_criterion", "")).strip(),
+        confirmed_cause=_optional_yaml_text(parsed.get("confirmed_cause", "")),
+        affected_code_path=_optional_yaml_text(parsed.get("affected_code_path", "")),
+        fix_success_criterion=_optional_yaml_text(parsed.get("fix_success_criterion", "")),
         partial=partial,
-        notes=str(parsed.get("notes", "")).strip(),
+        advisory_repair_proposal=_optional_yaml_text(parsed.get("advisory_repair_proposal", "")),
+        notes=_optional_yaml_text(parsed.get("notes", "")),
         inspected_files=tuple(inspected),
         premise_anchors=tuple(anchors),
         related_findings=tuple(related),
@@ -961,7 +992,7 @@ def parse_diagnose_output_result(
             stated_scope=scope_text,
             examined_locations=tuple(scope_locations),
         ),
-        confirmed_cause_support=str(parsed.get("confirmed_cause_support", "")).strip(),
+        confirmed_cause_support=_optional_yaml_text(parsed.get("confirmed_cause_support", "")),
         confirmed_cause_verification=_parse_claim_verification(
             parsed.get("confirmed_cause_verification")
         ),

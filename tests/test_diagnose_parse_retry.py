@@ -81,6 +81,9 @@ def _payload(*, with_related: bool = True) -> dict:
         },
         "affected_code_path": "src/theforge/sprint/scheduler.py:142",
         "fix_success_criterion": "Running with --parallel 3 completes all 3 stories",
+        "advisory_repair_proposal": (
+            "Likely repair in the scheduler reservation helper; this is not verified."
+        ),
         "notes": _LONG_NOTES,
         "inspected_files": ["src/theforge/sprint/scheduler.py"],
         "premise_anchors": [
@@ -288,6 +291,7 @@ class TestReformatPrompt:
             "confirmed_cause",
             "confirmed_cause_support",
             "confirmed_cause_support_provenance",
+            "advisory_repair_proposal",
             "evidence_provenance",
             "premise_anchors",
             "inspected_files",

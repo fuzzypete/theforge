@@ -346,7 +346,11 @@ DIAGNOSIS_SECTION = SectionSpec(
     # heading — a body whose analysis lives under "## Root cause" must not read
     # as diagnosed to one and missing to the other (#2263).
     recognition_pattern=r"diagnosis|root cause",
-    summary="the investigated account of the defect: symptom, evidence, cause, code path",
+    summary=(
+        "the investigated account of the defect: confirmed symptom, evidence, "
+        "cause, code path, and behavioral fix-success criterion; unverified "
+        "repair proposals stay advisory rather than reading as diagnosis"
+    ),
     fields=(
         FieldSpec(
             key="observed_symptom",

@@ -279,7 +279,9 @@ class DiagnosisArtifact:
 
     All fields required by the diagnose AC: observed symptom, reproduction or
     evidence, hypotheses tested, confirmed cause, affected code path, and
-    fix-success criterion.
+    fix-success criterion. Advisory repair guesses live separately from the
+    confirmed-localization fields so speculative implementation advice does not
+    read like established diagnosis.
     """
 
     issue_number: int
@@ -291,6 +293,11 @@ class DiagnosisArtifact:
     fix_success_criterion: str
     partial: bool = False  # True when the agent ran out of time/budget
     partial_reason: DiagnosePartialReason = DiagnosePartialReason.UNCLASSIFIED
+    # Unverified implementation advice or fix-location guesses. This is
+    # intentionally separate from confirmed_cause / affected_code_path /
+    # fix_success_criterion so a dev can distinguish verified localization from
+    # advisory repair speculation at a glance.
+    advisory_repair_proposal: str = ""
     notes: str = ""
     baseline_sha: str = ""
     baseline_captured_at: str = ""
@@ -372,9 +379,10 @@ class DiagnosisArtifact:
         artifact with no substantive content is a failure to diagnose — not a
         partial diagnosis — and must never be landed into operator-visible
         state, because the only thing such a section would carry is its own
-        headings (structurally complete but content-empty).  ``notes`` is
-        deliberately excluded: an investigation that produced only a caveat and
-        no diagnosis content has still diagnosed nothing.
+        headings (structurally complete but content-empty).  ``notes`` and the
+        advisory repair proposal are deliberately excluded: an investigation
+        that produced only caveats or a speculative fix guess and no diagnosis
+        content has still diagnosed nothing.
 
         A hypotheses tuple counts only when at least one entry carries real
         content (a non-blank statement or evidence).  The parser turns an empty
@@ -762,6 +770,20 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             else:
                 lines.append(f"- {summary}")
         lines.append("")
+    if artifact.advisory_repair_proposal.strip():
+        lines.extend(
+            [
+                "### Advisory repair proposal",
+                "",
+                (
+                    "> Advisory only: this is an unverified repair idea from the "
+                    "investigation, not part of the confirmed diagnosis contract."
+                ),
+                "",
+                artifact.advisory_repair_proposal.strip(),
+                "",
+            ]
+        )
     if artifact.symptom_scope_coverage.symptom_is_categorical:
         lines.extend(
             [

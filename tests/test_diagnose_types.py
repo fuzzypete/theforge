@@ -228,6 +228,65 @@ class TestRelatedFindingsField:
         assert "### Related findings" not in md
 
 
+class TestAdvisoryRepairProposalField:
+    def _make(self, **overrides) -> DiagnosisArtifact:
+        defaults = dict(
+            issue_number=2501,
+            observed_symptom="renderer publishes notes into the diagnosis body",
+            reproduction_or_evidence="issue body shows speculative fix prose under Notes",
+            hypotheses=(
+                Hypothesis(
+                    "notes is the only free-text slot",
+                    "confirmed",
+                    "artifact schema has no typed field for repair advice",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
+            confirmed_cause="DiagnosisArtifact has no advisory-typed repair field.",
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion=(
+                "Confirmed diagnosis renders without fix guesses reading as spec."
+            ),
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+        )
+        defaults.update(overrides)
+        return DiagnosisArtifact(**defaults)
+
+    def test_advisory_repair_proposal_default_empty(self):
+        assert self._make().advisory_repair_proposal == ""
+
+    def test_advisory_repair_proposal_does_not_count_as_substantive_content(self):
+        artifact = self._make(
+            observed_symptom="",
+            reproduction_or_evidence="",
+            hypotheses=(),
+            confirmed_cause="",
+            affected_code_path="",
+            fix_success_criterion="",
+            advisory_repair_proposal="Likely belongs in the landing renderer.",
+        )
+        assert not artifact.has_substantive_content()
+
+    def test_render_marks_advisory_repair_proposal_explicitly(self):
+        artifact = self._make(
+            advisory_repair_proposal=(
+                "Likely belongs in the tool-free single-shot API dispatch layer."
+            ),
+        )
+        md = render_artifact_markdown(artifact)
+        assert "### Advisory repair proposal" in md
+        assert "Advisory only" in md
+        assert "unverified repair idea" in md
+        assert "tool-free single-shot API dispatch layer" in md
+
+    def test_no_advisory_section_when_empty(self):
+        assert "### Advisory repair proposal" not in render_artifact_markdown(self._make())
+
+
 class TestDiagnoseOutputDestinations:
     def test_three_destinations_exposed(self):
         assert DIAGNOSE_OUTPUT_DESTINATIONS == frozenset({"comment", "body_section", "pr_to_body"})
@@ -900,6 +959,7 @@ class TestRenderArtifactMarkdown:
         rendered = render_artifact_markdown(with_notes)
         assert "### Notes" in rendered
         assert "Tuesdays" in rendered
+        assert "### Advisory repair proposal" not in rendered
 
     def test_scope_coverage_section_only_emitted_for_categorical_symptoms(self):
         non_categorical = DiagnosisArtifact(
