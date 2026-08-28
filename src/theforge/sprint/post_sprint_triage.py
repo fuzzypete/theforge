@@ -1,22 +1,21 @@
-"""The opt-in headless triage pass a finished sprint may trigger (#2231).
+"""The opt-in post-sprint triage hook a finished sprint may trigger (#2231).
 
-A sprint that just changed the backlog is the moment a triage pass is worth the
-most, and the moment nobody is at the keyboard. So this pass runs only the
-stages that are safe with no operator: it collects a backlog report, proposes
-and adversarially reviews dispositions, and persists the reviewed package as a
-pending operator decision. It never ratifies and never touches a tracker.
+ADR-0010 shelved the headless proposal path this hook once ran. When a project
+opts into ``sprint.post_sprint_triage``, this module now emits the same
+terminal guidance as any other shelved headless triage invocation and returns
+that refusal outcome to the sprint runner. It does not collect a report,
+dispatch proposers, persist a pending triage decision, or touch a tracker.
 
 Three properties this module is responsible for:
 
 * **Opt-in.** It runs only when ``sprint.post_sprint_triage`` is true. The
   caller checks the flag; this module refuses to guess a default.
-* **Best effort.** Every failure inside the pass is caught here and returned as
-  a reported outcome. A triage stage that breaks must not turn a sprint that
-  succeeded into one that failed — the sprint's result was already terminal
-  when this ran.
-* **Loud.** A pass that produced nothing says why in the sprint log, including
-  the supersession case: skipping because an earlier decision is still pending
-  is only useful if the operator can see it happened and which record blocked it.
+* **Best effort.** The hook never turns a sprint that already reached its
+  terminal result into a failed sprint. It logs the shelving refusal and
+  returns the corresponding outcome instead.
+* **Loud.** The sprint log records the ADR-0010 refusal lines so an operator
+  can see why the post-sprint pass did nothing and what command remains
+  supported.
 
 Like :mod:`theforge.sprint.audit_publish`, this module does not import the
 runner; it takes the execution state object and reads ``state.context`` off it.
@@ -42,24 +41,10 @@ def run_post_sprint_triage(state: Any) -> Any:
     the pass produced, or a failure outcome describing why it produced none.
     """
     from ..coordinator.triage_headless_flow import (  # noqa: PLC0415
-        HEADLESS_FAILED,
-        HeadlessTriageOutcome,
-        run_headless_triage,
+        shelved_headless_outcome,
     )
 
-    config = state.context.config
-    try:
-        outcome = run_headless_triage(config, project_root=config.project_root)
-    except Exception as exc:  # noqa: BLE001 - a broken triage pass never fails a sprint
-        message = f"post-sprint triage pass failed: {exc}"
-        _log(f"triage: {message} (the sprint result is unaffected)")
-        return HeadlessTriageOutcome(
-            status=HEADLESS_FAILED,
-            message=message,
-            error=str(exc),
-            lines=(f"triage: {message}",),
-        )
-
+    outcome = shelved_headless_outcome()
     for line in outcome.lines:
         _log(line)
     return outcome

@@ -62,6 +62,10 @@ from theforge.triage_proposal import (
     parse_triage_punt_review,
     stable_triage_digest,
 )
+from theforge.triage_shelved import (
+    TriageProposalsShelvedError,
+    raise_triage_proposals_shelved,
+)
 
 from . import util as _cu
 
@@ -611,6 +615,19 @@ def run_triage_proposals(
     current_milestone: str | None = None,
     record: bool = True,
 ) -> ProposalRunSummary:
+    """Reject the shelved public proposal entry point (ADR-0010)."""
+
+    raise_triage_proposals_shelved()
+
+
+def _run_triage_proposals_impl(
+    report: "BacklogReport",
+    config: "ForgeConfig",
+    *,
+    project_root: "Path | None" = None,
+    current_milestone: str | None = None,
+    record: bool = True,
+) -> ProposalRunSummary:
     """Propose a disposition for every finding in ``report``.
 
     Returns a :class:`ProposalRunSummary` carrying one result per finding plus
@@ -754,6 +771,8 @@ def run_triage_proposals(
 
 __all__ = [
     "MAX_ATTEMPTS",
+    "TriageProposalsShelvedError",
+    "_run_triage_proposals_impl",
     "build_finding_packet",
     "proposer_secrets",
     "run_triage_proposals",

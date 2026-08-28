@@ -175,7 +175,7 @@ def _seed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, findings: int 
     monkeypatch.setattr(
         proposal_flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
     )
-    summary = proposal_flow.run_triage_proposals(
+    summary = proposal_flow._run_triage_proposals_impl(
         _proposal_report(findings=findings),
         _config(tmp_path),
         record=True,
@@ -199,7 +199,7 @@ def _seed_run_from_generated_report(
         report,
         output_path=tmp_path / ".forge" / "triage" / "backlog.yaml",
     )
-    summary = proposal_flow.run_triage_proposals(
+    summary = proposal_flow._run_triage_proposals_impl(
         load_backlog_report(artifact),
         _config(tmp_path),
         record=True,

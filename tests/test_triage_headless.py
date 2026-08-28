@@ -23,6 +23,15 @@ from theforge.triage_proposal import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _use_private_headless_impl(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    if request.node.name == "test_public_headless_entry_rejects_with_the_adr_message":
+        return
+    monkeypatch.setattr(headless, "run_headless_triage", headless._run_headless_triage_impl)
+
+
 def _packet() -> FindingPacket:
     return FindingPacket(
         finding_id="1312:audit-count",
@@ -166,9 +175,15 @@ def _stub_flow(
         return summary
 
     recorded = [_RECORDED_EVENT] if events is None else events
-    monkeypatch.setattr(flow, "run_triage_proposals", _run)
+    monkeypatch.setattr(flow, "_run_triage_proposals_impl", _run)
     monkeypatch.setattr(headless, "_recorded_events", lambda root, run_id: recorded)
     return calls
+
+
+class TestPublicHeadlessShelf:
+    def test_public_headless_entry_rejects_with_the_adr_message(self, tmp_path: Path) -> None:
+        with pytest.raises(headless.HeadlessTriageError, match="ADR-0010"):
+            headless.run_headless_triage(_FakeConfig(tmp_path), project_root=tmp_path)
 
 
 class TestHeadlessFlow:
@@ -584,30 +599,24 @@ class TestUnratifiableRuns:
         assert "run123" in message
         assert "1 finding(s)" in message
 
-    def test_a_recording_failure_never_fails_the_sprint_that_triggered_it(
+    def test_post_sprint_triage_rejects_before_any_proposal_recording(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        import theforge.triage_backlog_report as backlog_mod
-        import theforge.triage_report as report_mod
         from theforge.sprint.post_sprint_triage import run_post_sprint_triage
 
         monkeypatch.setattr(
-            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
+            headless,
+            "run_headless_triage",
+            lambda *a, **k: pytest.fail("post-sprint triage must reject before headless dispatch"),
         )
-        monkeypatch.setattr(
-            backlog_mod,
-            "write_backlog_report",
-            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
-        )
-        monkeypatch.setattr(report_mod, "load_backlog_report", lambda path: _StubReport())
-        _stub_flow(monkeypatch, _summary(audit_error="disk full"))
 
         outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
         assert outcome.status == headless.HEADLESS_FAILED
-        assert "disk full" in outcome.error
-        assert _pending.find_triage_pending("run123", tmp_path) is None
+        assert "ADR-0010" in outcome.message
+        assert outcome.error == outcome.message
+        assert _pending.unresolved_triage_pending(tmp_path) is None
         combined = capsys.readouterr()
-        assert "disk full" in (combined.out + combined.err)
+        assert "forge diagnose --dry-run --issue A,B --parallel 2" in (combined.out + combined.err)
 
 
 # ── Status rendering ─────────────────────────────────────────────────────────
@@ -728,57 +737,32 @@ class _StubState:
 
 
 class TestPostSprintHelper:
-    def test_enabled_pass_writes_a_pending_decision(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import theforge.triage_backlog_report as backlog_mod
-        import theforge.triage_report as report_mod
-        from theforge.sprint.post_sprint_triage import run_post_sprint_triage
-
-        monkeypatch.setattr(
-            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
-        )
-        monkeypatch.setattr(
-            backlog_mod,
-            "write_backlog_report",
-            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
-        )
-        monkeypatch.setattr(report_mod, "load_backlog_report", lambda path: _StubReport())
-        _stub_flow(monkeypatch, _summary())
-
-        outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
-        assert outcome.status == headless.HEADLESS_WRITTEN
-        assert _pending.find_triage_pending("run123", tmp_path) is not None
-
-    def test_supersession_is_reported_in_the_sprint_log(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    def test_enabled_pass_reports_the_shelved_message_and_writes_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         from theforge.sprint.post_sprint_triage import run_post_sprint_triage
 
-        _pending.write_triage_pending("earlier", {"findings_count": 4}, project_root=tmp_path)
-        calls = _stub_flow(monkeypatch, _summary())
-
         outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
-        assert outcome.status == headless.HEADLESS_SUPERSEDED
-        assert calls == []
+        assert outcome.status == headless.HEADLESS_FAILED
+        assert "ADR-0010" in outcome.message
+        assert _pending.find_triage_pending("run123", tmp_path) is None
         combined = capsys.readouterr()
-        assert "triage-earlier" in (combined.out + combined.err)
+        assert "forge diagnose --dry-run --issue A,B --parallel 2" in (combined.out + combined.err)
 
-    def test_a_failing_pass_is_reported_and_never_escapes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    def test_post_sprint_rejection_does_not_call_headless_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from theforge.sprint.post_sprint_triage import run_post_sprint_triage
 
         monkeypatch.setattr(
             headless,
             "run_headless_triage",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("substrate exploded")),
+            lambda *a, **k: pytest.fail("post-sprint triage must reject before headless dispatch"),
         )
+
         outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
         assert outcome.status == headless.HEADLESS_FAILED
-        assert "substrate exploded" in outcome.error
-        combined = capsys.readouterr()
-        assert "substrate exploded" in (combined.out + combined.err)
+        assert "ADR-0010" in outcome.message
 
     def test_runner_calls_the_helper_only_when_the_flag_is_on(self) -> None:
         """The trigger is opt-in at the call site, not a default inside the helper."""
