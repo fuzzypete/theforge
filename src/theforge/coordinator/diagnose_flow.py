@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1894,14 +1895,20 @@ def _confirm_landing_with_scope_requirement(
 ) -> bool:
     """Call the landing confirmer, preserving one-arg test hooks."""
     try:
+        parameters = inspect.signature(confirm_landing).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+
+    accepts_scope_requirement = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "issue_requires_categorical_scope"
+        for parameter in parameters
+    )
+    if accepts_scope_requirement:
         return bool(
             confirm_landing(
                 artifact,
                 issue_requires_categorical_scope=issue_requires_categorical_scope,
             )
         )
-    except TypeError as exc:
-        try:
-            return bool(confirm_landing(artifact))
-        except TypeError:
-            raise exc
+    return bool(confirm_landing(artifact))
