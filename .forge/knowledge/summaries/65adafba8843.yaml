@@ -1,0 +1,97 @@
+schema_version: 2
+run_id: 65adafba8843
+authoritative_run_record: .forge/audits/runs/65adafba8843.json
+generated_at: '2026-08-28T15:50:11.197935+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0077375
+story:
+  slug: issue-2511
+  name: Diagnosis evidence and speculative repair advice share untyped fields, so
+    an investigator's fix guess lands in the body the dev reads as spec
+  github_issue: 2511
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- src/theforge/shape_check/issue_spec.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The diagnosis artifact contract and rendering path were updated to
+    separate speculative repair advice from confirmed diagnosis content by giving
+    advisory repair proposals their own typed field and distinct rendering behavior.
+    The issue-body output preserves confirmed localization content as before, while
+    optional unverified repair suggestions are only surfaced as explicitly advisory
+    and omitted when empty.
+  approach: 'The change was made end-to-end: the diagnosis schema and shape checks
+    were extended with a typed advisory field, diagnose prompts were updated to direct
+    investigators into that field, and the coordinator/rendering flow was threaded
+    to carry and conditionally emit the advisory content distinctly from confirmed
+    diagnosis material.'
+  files_modified: *id002
+what_was_learned:
+- claim: Optional free-text YAML fields need explicit null normalization before rendering,
+    because a present-but-empty key can otherwise survive parsing as a literal placeholder
+    string and leak into user-facing output.
+  evidence:
+  - type: review_finding
+    finding_id: c36b020adedb5d93
+    description: The review reproduced a bare 'advisory_repair_proposal:' YAML key
+      loading as null, then being stored as the literal string 'None' and rendered
+      into the landed issue body, showing that optional text fields cannot rely on
+      generic parsing if empty values must emit nothing.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 records that the null optional-field bug was fixed by normalising
+      YAML nulls to empty, confirming that the corrective mechanism was explicit optional-text
+      normalization rather than a rendering-only change.
+  - type: file
+    path: src/theforge/task/diagnose_prompts.py
+    description: The prompt/parsing layer is where the fix was applied, demonstrating
+      that this class of bug arises at the boundary where YAML output is converted
+      into typed text fields and should be handled there for future optional prose
+      fields.
+learned_patterns:
+- optional-yaml-text-normalization
+- typed-advisory-vs-confirmed-content
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: c36b020adedb5d93
+    severity: P1
+    file: src/theforge/task/diagnose_prompts.py
+    description: When a diagnosis emits the optional advisory repair key with no value
+      (a bare 'advisory_repair_proposal:' line, which YAML loads as null), the parser
+      stores the literal string None and the landed issue body gains an advisory section
+      whose entire content is the word None, instead of emitting no advisory apparatus
+      at all.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop surfaced one concrete failure mode: optional advisory prose needed
+    null-safe parsing so empty YAML keys would disappear rather than render placeholder
+    text.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.2990022
+  dominant_difficulty: Separating advisory and confirmed diagnosis content without
+    changing the established issue-body treatment of confirmed localization details.
