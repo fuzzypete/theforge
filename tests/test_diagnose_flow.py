@@ -45,6 +45,7 @@ def _agent_yaml_output(
     *,
     hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed"),
     symptom_scope_coverage: dict | None = None,
+    advisory_repair_proposal: str = "",
 ) -> str:
     confirmed = "confirmed" in hypothesis_statuses
     hypotheses = []
@@ -89,6 +90,7 @@ def _agent_yaml_output(
         "fix_success_criterion": (
             "Running with --parallel 3 schedules and completes all 3 stories"
         ),
+        "advisory_repair_proposal": advisory_repair_proposal,
         "notes": "",
         "confirmed_cause_verification": {
             "verification_type": "source",
@@ -829,6 +831,37 @@ class TestDiagnoseFlow:
             "source_type": "prior_assertion",
             "detail": "Diagnosis hdp#342 already asserted the cause.",
         }
+
+    def test_audit_persists_advisory_repair_proposal(self):
+        from theforge.coordinator.diagnose_flow import _artifact_to_dict
+
+        artifact = DiagnosisArtifact(
+            issue_number=43,
+            observed_symptom="symptom",
+            reproduction_or_evidence="evidence",
+            hypotheses=(
+                Hypothesis(
+                    "hypothesis",
+                    "confirmed",
+                    "support",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
+            confirmed_cause="root cause",
+            affected_code_path="src/theforge/task/diagnose_prompts.py",
+            fix_success_criterion="confirmed content stays unchanged",
+            advisory_repair_proposal="Likely belongs in the renderer, not the body field.",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+        )
+
+        payload = _artifact_to_dict(artifact)
+        assert payload["advisory_repair_proposal"] == (
+            "Likely belongs in the renderer, not the body field."
+        )
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -2539,6 +2572,32 @@ class TestParseRelatedFindings:
         assert artifact is not None
         assert len(artifact.related_findings) == 1
         assert artifact.related_findings[0].summary == "dup"
+
+
+class TestParseAdvisoryRepairProposal:
+    def test_parses_advisory_repair_proposal(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "advisory_repair_proposal: |\n"
+            "  Likely belongs in runners/api.py instead of knowledge_summary.py.\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=2501)
+        assert artifact is not None
+        assert artifact.advisory_repair_proposal.startswith("Likely belongs in runners/api.py")
+
+    def test_missing_advisory_repair_proposal_is_empty_string(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.advisory_repair_proposal == ""
+
+    def test_prompt_contract_types_advisory_field_and_notes_boundary(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        assert "advisory_repair_proposal" in prompt
+        assert "Content class: advisory, unverified repair proposal." in prompt
+        assert "Do NOT put repair" in prompt
+        assert "proposals here." in prompt
 
 
 class TestParseSupportProvenance:

@@ -839,6 +839,7 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "fix_success_criterion": artifact.fix_success_criterion,
         "partial": artifact.partial,
         "partial_reason": artifact.partial_reason.value,
+        "advisory_repair_proposal": artifact.advisory_repair_proposal,
         "notes": artifact.notes,
         "baseline_sha": artifact.baseline_sha,
         "baseline_captured_at": artifact.baseline_captured_at,
