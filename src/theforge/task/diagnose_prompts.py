@@ -763,6 +763,12 @@ def _normalize_root_error(root_type: str) -> str:
     return f"YAML block did not parse to a mapping of diagnosis keys (root was {root_type})."
 
 
+def _optional_yaml_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _parse_support_provenance(raw: object) -> SupportProvenance:
     def _yaml_scalar_text(value: object, *, default: str) -> str:
         if value is None:
@@ -969,15 +975,15 @@ def parse_diagnose_output_result(
 
     artifact = DiagnosisArtifact(
         issue_number=issue_number,
-        observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
-        reproduction_or_evidence=str(parsed.get("reproduction_or_evidence", "")).strip(),
+        observed_symptom=_optional_yaml_text(parsed.get("observed_symptom", "")),
+        reproduction_or_evidence=_optional_yaml_text(parsed.get("reproduction_or_evidence", "")),
         hypotheses=tuple(hypotheses),
-        confirmed_cause=str(parsed.get("confirmed_cause", "")).strip(),
-        affected_code_path=str(parsed.get("affected_code_path", "")).strip(),
-        fix_success_criterion=str(parsed.get("fix_success_criterion", "")).strip(),
+        confirmed_cause=_optional_yaml_text(parsed.get("confirmed_cause", "")),
+        affected_code_path=_optional_yaml_text(parsed.get("affected_code_path", "")),
+        fix_success_criterion=_optional_yaml_text(parsed.get("fix_success_criterion", "")),
         partial=partial,
-        advisory_repair_proposal=str(parsed.get("advisory_repair_proposal", "")).strip(),
-        notes=str(parsed.get("notes", "")).strip(),
+        advisory_repair_proposal=_optional_yaml_text(parsed.get("advisory_repair_proposal", "")),
+        notes=_optional_yaml_text(parsed.get("notes", "")),
         inspected_files=tuple(inspected),
         premise_anchors=tuple(anchors),
         related_findings=tuple(related),
@@ -986,7 +992,7 @@ def parse_diagnose_output_result(
             stated_scope=scope_text,
             examined_locations=tuple(scope_locations),
         ),
-        confirmed_cause_support=str(parsed.get("confirmed_cause_support", "")).strip(),
+        confirmed_cause_support=_optional_yaml_text(parsed.get("confirmed_cause_support", "")),
         confirmed_cause_verification=_parse_claim_verification(
             parsed.get("confirmed_cause_verification")
         ),

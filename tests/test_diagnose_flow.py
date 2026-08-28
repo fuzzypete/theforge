@@ -2592,6 +2592,21 @@ class TestParseAdvisoryRepairProposal:
         assert artifact is not None
         assert artifact.advisory_repair_proposal == ""
 
+    def test_null_advisory_repair_proposal_is_empty_string(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "advisory_repair_proposal:\n"
+            "notes:\n"
+            "confirmed_cause_support:\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert artifact.advisory_repair_proposal == ""
+        assert artifact.notes == ""
+        assert artifact.confirmed_cause_support == ""
+
     def test_prompt_contract_types_advisory_field_and_notes_boundary(self):
         prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
         assert "advisory_repair_proposal" in prompt
