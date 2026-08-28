@@ -1,0 +1,156 @@
+schema_version: 2
+run_id: a87567342eea
+authoritative_run_record: .forge/audits/runs/a87567342eea.json
+generated_at: '2026-08-26T19:12:05.134463+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011381249999999999
+story:
+  slug: issue-2725
+  name: 'Declarative typed issue specification: one contract the checker validates
+    against, producers render through, and documentation is generated from'
+  github_issue: 2725
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 9
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- backend
+- ci
+- docs
+- testing
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/adr/0009-typed-intake-contract.md
+- docs/architecture.md
+- docs/guides/authoring.md
+- docs/reference/issue-shape.md
+- src/theforge/admissibility.py
+- src/theforge/advisory_conventions.py
+- src/theforge/intake/shape_render.py
+- src/theforge/shape_check/__init__.py
+- src/theforge/shape_check/diagnosis_spec.py
+- src/theforge/shape_check/document.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/issue_spec.py
+- src/theforge/shape_check/parsing.py
+- src/theforge/shape_check/spec_reference.py
+- src/theforge/shape_check/verdict.py
+- src/theforge/task/story.py
+- tests/test_admissibility.py
+- tests/test_intake/test_shape_render.py
+- tests/test_issue_spec.py
+- tests/test_shape_check.py
+- tests/test_sprint_shape_gate.py
+what_changed:
+  description: This run introduced a declarative per-type issue specification as the
+    structural contract for issue bodies, together with typed parse/render support,
+    checker retargeting to that contract, and generated reference documentation derived
+    from the same source. It also updated intake rendering and related docs so canonical
+    Markdown, parsing aliases, structural validation, and published shape documentation
+    all flow through the specification.
+  approach: 'The change was done by defining the issue shape as data, then wiring
+    each consumer around that data: parsing existing bodies into typed documents,
+    rendering typed documents back to canonical Markdown, deriving checker behavior
+    from specification rules instead of duplicated logic, and generating reference
+    docs from the contract with drift checks in tests/CI.'
+  files_modified: *id002
+what_was_learned:
+- claim: When structural rules are moved into a declarative contract, forbidden-section
+    enforcement must be driven entirely from the parsed section-rule data path; leaving
+    any contradiction list or type-specific fallback as a second source of truth causes
+    drift that review will expose through admissible-but-forbidden shapes.
+  evidence:
+  - type: review_finding
+    finding_id: 3aeb8146ce3c71f7
+    description: This finding showed that a section marked forbidden in a type's section
+      rules was still admitted unless it also appeared in a separate contradiction
+      block, demonstrating that partial migration to the declarative spec leaves an
+      old authority behind.
+  - type: review_finding
+    finding_id: e65b1f932c3e942e
+    description: 'This follow-on finding showed the same problem surviving in a concrete
+      enhancement shape: Diagnosis was documented as forbidden by the specification
+      yet still treated as runnable, confirming enforcement must come from the per-type
+      rules themselves rather than a parallel mechanism.'
+  - type: review_cycle
+    cycle: '1'
+    description: The first review explicitly called out forbidden-section enforcement
+      as still having a second source of truth, showing that future runs should look
+      for hidden duplicated rule paths whenever a checker is retargeted to a declarative
+      contract.
+- claim: Alias spellings have to participate in prohibition checks the same way they
+    participate in parsing; otherwise legacy headings become a bypass around declarative
+    forbidden-section rules.
+  evidence:
+  - type: review_finding
+    finding_id: 32bbf9b67e4d401d
+    description: This finding showed that top-level Reproduction was admitted for
+      feature-shaped types because it parsed as the modeled Steps to reproduce section
+      but the forbidden check did not normalize through that alias, demonstrating
+      a concrete escape hatch through legacy spellings.
+  - type: review_cycle
+    cycle: '3'
+    description: The third review stated that canonical forbidden headings were fixed
+      but a declared legacy spelling was still admitted, showing that future verification
+      must test both canonical and legacy heading spellings against the same rule
+      outcomes.
+  - type: file
+    path: src/theforge/shape_check/heuristics.py
+    description: The repeated findings were anchored in the checker heuristics path,
+      indicating that alias normalization and forbidden-section evaluation meet there
+      and must be unified there for the contract to hold.
+learned_patterns:
+- single-source-shape-contract
+- alias-normalized-forbidden-checks
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 3aeb8146ce3c71f7
+    severity: P1
+    file: src/theforge/shape_check/heuristics.py
+    description: When a section is marked forbidden in a type's section rules but
+      is not also listed in the type-shape contradiction block, the shape gate still
+      admits bodies containing that section.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: e65b1f932c3e942e
+    severity: P1
+    file: src/theforge/shape_check/heuristics.py
+    description: 'An enhancement body with ## Acceptance criteria and a top-level
+      ## Diagnosis was reported runnable even though the enhancement specification
+      marks Diagnosis as forbidden.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 32bbf9b67e4d401d
+    severity: P1
+    file: src/theforge/shape_check/issue_spec.py
+    description: A task or enhancement body with acceptance criteria and a top-level
+      Reproduction section is reported runnable even though Reproduction parses as
+      the modeled Steps to reproduce section and that section is forbidden for feature-shaped
+      types.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced hidden second-source-of-truth behavior in
+    forbidden-section enforcement, first for rule storage and then for legacy heading
+    aliases.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 52.674499100000006
+  dominant_difficulty: Eliminating drift between specification, parser aliases, and
+    checker enforcement so every spelling and type shape is judged by one normalized
+    contract.

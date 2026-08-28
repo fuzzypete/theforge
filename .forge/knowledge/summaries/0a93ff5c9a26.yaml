@@ -1,0 +1,82 @@
+schema_version: 2
+run_id: 0a93ff5c9a26
+authoritative_run_record: .forge/audits/runs/0a93ff5c9a26.json
+generated_at: '2026-08-27T12:06:43.244971+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0055987499999999996
+story:
+  slug: issue-2726
+  name: No producer validates the issue body it writes, so forge files and edits issues
+    its own gate refuses
+  github_issue: 2726
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+- testing
+domains_provenance: *id001
+changed_files: &id002
+- .forge/hooks/README.md
+- .forge/hooks/post-run-gh-issues.sh
+- .forge/hooks/post_run.sh
+- src/theforge/advisory_conventions.py
+- src/theforge/cli/author.py
+- src/theforge/cli/hooks.py
+- src/theforge/cli/report.py
+- src/theforge/cli/shape.py
+- src/theforge/cli/todo.py
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/intake/groom_flow.py
+- src/theforge/intake/remediation.py
+- src/theforge/shape_check/producer.py
+- src/theforge/shape_check/verdict.py
+- tests/test_cli_report.py
+- tests/test_cli_todo.py
+- tests/test_diagnose_flow.py
+- tests/test_issue_body_producer_conformance.py
+- tests/test_shape_check_producer.py
+what_changed:
+  description: This run introduced a shared producer-validation path for issue-body
+    writers so commands and hooks declare an intended lifecycle state, render through
+    the shared specification, evaluate the result before mutating, and refuse writes
+    that do not match the declared state. It applied that boundary across CLI producers,
+    intake/remediation flows, diagnose, report/todo/shape paths, and post-run issue
+    filing.
+  approach: The change centralized producer-side checking in shape-check producer/verdict
+    support, then threaded that contract through each write seam and hook wrapper
+    so body generation and mutation go through the same declaration-and-evaluation
+    boundary. Verification was organized around producer-conformance tests that enumerate
+    body writers and exercise both successful and refusal paths.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- producer-self-validation
+- declared-lifecycle-state
+- enumerated-producer-conformance
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review converged in one cycle with no surfaced findings once validation was wired
+    through the issue-body write seams and exercised by focused producer tests.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 5.8313249
+  dominant_difficulty: Applying one invariant consistently across every body-writing
+    surface, including hooks and partial-body editors, rather than fixing isolated
+    failures.

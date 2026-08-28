@@ -1,0 +1,132 @@
+schema_version: 2
+run_id: cf8bcd628631
+authoritative_run_record: .forge/audits/runs/cf8bcd628631.json
+generated_at: '2026-08-26T17:28:49.516791+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01064875
+story:
+  slug: issue-2723
+  name: shape_check returns two disagreeing readiness answers for one document, so
+    an issue is admissible to a sprint and reported unready to the operator at the
+    same time
+  github_issue: 2723
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/adr/0001-intake-readiness-workflow.md
+- docs/vision/refusal-capability.md
+- src/theforge/admissibility.py
+- src/theforge/intake/shape_render.py
+- src/theforge/shape_check/action.py
+- src/theforge/shape_check/types.py
+- src/theforge/shape_check/verdict.py
+- tests/test_admissibility.py
+- tests/test_cli_groom.py
+- tests/test_ready_queue.py
+- tests/test_shape_check.py
+- tests/test_shape_check_action.py
+- tests/test_shape_terminal_state.py
+- tests/test_sprint_shape_gate.py
+what_changed:
+  description: The run unified readiness/admission decisions around a single verdict
+    path so the same shape_check result no longer yields conflicting answers across
+    scheduling, grooming, CLI, and queue surfaces. It also adjusted verdict precedence
+    so blocking structural findings are not masked by lower-priority lifecycle-style
+    outcomes.
+  approach: The change centered decision-making in shape_check verdict derivation,
+    then rewired downstream admission and rendering surfaces to consume that shared
+    result instead of performing separate reductions over the same reasons. Review-driven
+    refinement focused on precedence ordering within verdict derivation where multiple
+    findings coexist.
+  files_modified: *id002
+what_was_learned:
+- claim: When multiple findings can apply to one document, verdict derivation must
+    prioritize blocking structural conditions before lifecycle or advisory-style classifications;
+    otherwise a narrower code-specific outcome can hide the state that should govern
+    operator and scheduler behavior.
+  evidence:
+  - type: review_finding
+    finding_id: a5cc1de378890eb2
+    description: Review reported that a document with both a blocking structural finding
+      and diagnosis_cause_unknown was surfaced only as diagnosis_cause_unknown, demonstrating
+      that code-based precedence alone can suppress the controlling blocking condition
+      when multiple reasons coexist.
+  - type: review_cycle
+    cycle: '2'
+    description: Approval notes explicitly cite that the P1 was fixed by consulting
+      _BLOCKING_PRECEDENCE before lifecycle refusals, showing that precedence order
+      among reason classes was the mechanism that determined whether the correct governing
+      state emerged.
+  - type: file
+    path: src/theforge/shape_check/verdict.py
+    description: This is the decision point where reason codes are reduced into a
+      single verdict; the review discussion tied the incorrect result to ordering
+      in this reducer, evidencing that future changes here must account for mixed
+      blocking and non-blocking findings.
+- claim: 'Collapsing distinct concerns such as readiness refusal and work-routing
+    guidance into one verdict enum creates a maintenance hazard: simplifying to a
+    shared readiness answer can silently erase specific operator-facing routes unless
+    those semantics are preserved separately.'
+  evidence:
+  - type: review_finding
+    finding_id: c052d308eb6d3f30
+    description: Review flagged that implementation-plan content stopped producing
+      the specific adr_candidate route and fell back to a generic needs_operator_action
+      verdict, showing that unification around one readiness-oriented verdict can
+      discard other meanings previously encoded in the same enum.
+  - type: file
+    path: src/theforge/shape_check/types.py
+    description: The finding points at the verdict/type definitions, indicating the
+      loss arose at the type-model level where multiple semantic questions had been
+      compressed together and then partially flattened during the redesign.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle-1 review notes that readiness surfaces were successfully unified
+      while also surfacing a new lifecycle/refusal concern, demonstrating that consolidating
+      answers fixed one inconsistency but exposed pressure from other semantics sharing
+      the same channel.
+learned_patterns:
+- blocking-before-lifecycle-precedence
+- separate-readiness-from-routing
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: a5cc1de378890eb2
+    severity: P1
+    file: src/theforge/shape_check/verdict.py
+    description: A bug body whose Diagnosis asserts an unknown cause and that also
+      carries a blocking structural finding is reported to the operator only as diagnosis_cause_unknown;
+      a superseded cause-unknown bug now yields verdict diagnosis_cause_unknown with
+      reason codes ('diagnosis_cause_unknown',) instead of duplicate_or_stale with
+      ('superseded',), and the same body with no type label yields diagnosis_cause_unknown
+      instead of needs_type with ('missing_type',), so the blocking finding and its
+      detail vanish fr
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly focused on mixed-case verdict precedence: first on
+    advisory/lifecycle outcomes overriding blocking findings, then on semantic loss
+    where readiness unification flattened a more specific operator route.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: true
+  cost_usd: 8.2392489
+  dominant_difficulty: Reducing one set of findings into a single shared answer without
+    losing precedence correctness or conflating separate decision dimensions.
