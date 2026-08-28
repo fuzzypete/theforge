@@ -1,13 +1,16 @@
 name: Story shape check
 
-# Runs the TheForge shape_check module (#806) against every issue when it is
-# opened or edited. When policy files change, preview the resulting sweep on the
+# Runs the TheForge shape_check module (#806) against every issue whenever
+# anything the verdict depends on can change: the issue is opened, its
+# title/body is edited, its labels change (check() consumes labels, so a
+# bug->enhancement retype changes the verdict with no body edit), or it is
+# reopened. When policy files change, preview the resulting sweep on the
 # pull request and apply it against main after merge. Manual preview/apply runs
 # are also available through workflow_dispatch.
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, labeled, unlabeled, reopened]
   pull_request:
     branches: [main]
     paths:
@@ -46,6 +49,15 @@ on:
 jobs:
   shape-check-issue-event:
     if: github.event_name == 'issues'
+    # Serialize runs per issue so two events for the same issue cannot write
+    # verdicts concurrently. cancel-in-progress is deliberately false: a
+    # cancelled run may already have an API write in flight, whereas letting
+    # the in-flight run finish and running the newer one after it is
+    # monotonic — every run refetches current issue state, so the last run
+    # writes the verdict for the newest state.
+    concurrency:
+      group: ${{ github.workflow }}-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       issues: write

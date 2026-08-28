@@ -8,10 +8,13 @@ required by #811's acceptance criteria.
 from __future__ import annotations
 
 import io
+import json
 import textwrap
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
+
+import pytest
 
 from theforge.shape_check import Reason, Severity, Shape, ShapeResult, SuggestedAction, check
 from theforge.shape_check.action import (
@@ -114,13 +117,26 @@ class FakeGitHubAPI:
         issue_number: int,
         labels: list[str] | None = None,
         open_issues: list[dict[str, Any]] | None = None,
+        issue_payload: dict[str, Any] | None = None,
     ) -> None:
         self.issue_number = issue_number
         self.labels: list[str] = list(labels or [])
         self.comments: list[dict[str, Any]] = []
         self.open_issues: list[dict[str, Any]] = list(open_issues or [])
+        # Current issue state as the API would return it from GET /issues/{n}.
+        # Distinct from any event payload, so a test can make them disagree.
+        self.issue_payload: dict[str, Any] | None = issue_payload
         self._next_comment_id = 1000
         self.calls: list[tuple[str, Any]] = []
+
+    def get_issue(self, issue_number: int) -> dict[str, Any]:
+        self.calls.append(("get_issue", issue_number))
+        if self.issue_payload is not None and int(self.issue_payload["number"]) == issue_number:
+            return dict(self.issue_payload)
+        for issue in self.open_issues:
+            if int(issue["number"]) == issue_number:
+                return dict(issue)
+        raise AssertionError(f"no current issue state seeded for #{issue_number}")
 
     def add_label(self, issue_number: int, label: str) -> None:
         self.calls.append(("add_label", (issue_number, label)))
@@ -208,6 +224,22 @@ def _event(
     }
 
 
+def _run_action(
+    event: dict[str, Any],
+    api: FakeGitHubAPI,
+    config: ActionConfig | None = None,
+):
+    """Run the action with current issue state defaulted to the event snapshot.
+
+    run_action refetches the issue rather than trusting the webhook payload, so
+    the fake needs current state seeded. Tests that care about the difference
+    seed ``api.issue_payload`` themselves before calling.
+    """
+    if api.issue_payload is None:
+        api.issue_payload = event["issue"]
+    return run_action(event, api, config)
+
+
 # ----- render_comment / find_bot_comment ----------------------------------
 
 
@@ -276,7 +308,7 @@ class TestRunActionOpened:
             labels=[],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.NEEDS_GROOMING
         assert "needs-grooming" in api.labels
@@ -293,7 +325,7 @@ class TestRunActionOpened:
             labels=["enhancement"],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.RUNNABLE
         assert "needs-grooming" not in api.labels
@@ -320,7 +352,7 @@ class TestRunActionEdited:
             labels=["needs-grooming", "enhancement"],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.RUNNABLE
         assert "needs-grooming" not in api.labels
@@ -348,7 +380,7 @@ class TestRunActionEdited:
             labels=[],
         )
 
-        run_action(event, api)
+        _run_action(event, api)
 
         assert len(api.comments) == 1
         assert api.comments[0]["id"] == 800
@@ -371,7 +403,7 @@ class TestRunActionEdited:
             labels=["enhancement"],
         )
 
-        run_action(event, api)
+        _run_action(event, api)
 
         assert len(api.comments) == 1
         assert api.comments[0]["id"] == 801
@@ -387,12 +419,12 @@ class TestRunActionEdited:
             body="## What\nDo stuff.",
             labels=[],
         )
-        run_action(event, api)
+        _run_action(event, api)
         first_body = api.comments[0]["body"]
 
         # Replay identical edited event.
         event["action"] = "edited"
-        run_action(event, api)
+        _run_action(event, api)
 
         assert len(api.comments) == 1
         assert api.comments[0]["body"] == first_body
@@ -410,7 +442,7 @@ class TestRunActionEdited:
             labels=["enhancement"],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.RUNNABLE
         assert "needs-grooming" not in api.labels
@@ -425,7 +457,7 @@ class TestRunActionEdited:
             labels=["bug"],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.RUNNABLE
         assert "needs-grooming" in api.labels
@@ -444,7 +476,7 @@ class TestRunActionEdited:
             labels=["bug", "needs-grooming"],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.SUPERSEDED
         assert result.verdict.value == "duplicate_or_stale"
@@ -464,7 +496,7 @@ class TestRunActionTrackingOnly:
             labels=[],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.TRACKING_ONLY
         assert "epic" in api.labels
@@ -482,7 +514,7 @@ class TestRunActionTrackingOnly:
         )
         config = ActionConfig(tracking_label="tracking")
 
-        run_action(event, api, config)
+        _run_action(event, api, config)
 
         assert "tracking" in api.labels
 
@@ -497,7 +529,7 @@ class TestRunActionTrackingOnly:
             labels=["tracking", "enhancement"],
         )
 
-        run_action(event, api, config)
+        _run_action(event, api, config)
 
         assert "tracking" in api.labels
         assert not any(
@@ -516,7 +548,7 @@ class TestRunActionSuperseded:
             labels=[],
         )
 
-        result = run_action(event, api)
+        result = _run_action(event, api)
 
         assert result.shape is Shape.SUPERSEDED
         # Default config: we do NOT auto-close; we only comment + don't label.
@@ -538,7 +570,7 @@ class TestRunActionNeverRejects:
             labels=[],
         )
         # Must not raise even with a maximally bad issue.
-        result = run_action(event, api)
+        result = _run_action(event, api)
         assert result.shape is Shape.NEEDS_GROOMING
 
 
@@ -556,7 +588,7 @@ class TestLogging:
             author="some-bot",
         )
         with caplog.at_level(logging.INFO, logger="shape_check.action"):
-            run_action(event, api)
+            _run_action(event, api)
 
         assert any(
             "shape_check issue=4242" in rec.message
@@ -887,3 +919,240 @@ class _RecordingPagedHttpGitHubAPI(_PagedHttpGitHubAPI):
     def _request_with_headers(self, method, path, body=None):
         self.requested_paths.append(path)
         return super()._request_with_headers(method, path, body)
+
+
+# ----- current-state reconciliation (#2666) --------------------------------
+
+
+BUG_SHAPED_BODY = CAUSE_UNKNOWN_BUG_BODY
+
+
+class TestRunActionUsesCurrentIssueState:
+    """The verdict must come from live issue state, not the event snapshot."""
+
+    def test_stale_event_payload_is_ignored_in_favour_of_fetched_issue(self):
+        # Event snapshot: bug-shaped body with no AC, missing type label.
+        event = _event(
+            action="edited",
+            number=64,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        # Current state: a later edit already fixed the body and typed the issue.
+        api = FakeGitHubAPI(
+            issue_number=64,
+            labels=["needs-grooming"],
+            issue_payload={
+                "number": 64,
+                "title": "Add a flag",
+                "body": WELL_FORMED_BODY,
+                "labels": [{"name": "needs-grooming"}, {"name": "enhancement"}],
+                "user": {"login": "some-user"},
+                "updated_at": "2026-08-28T12:00:00Z",
+            },
+        )
+
+        result = run_action(event, api)
+
+        assert result.shape is Shape.RUNNABLE
+        assert "needs-grooming" not in api.labels
+        assert any(
+            name == "remove_label" and payload == (64, "needs-grooming")
+            for name, payload in api.calls
+        )
+        assert len(api.comments) == 1
+        assert "missing_acceptance_criteria" not in api.comments[0]["body"]
+
+    def test_label_only_retype_changes_verdict_without_body_edit(self):
+        # Body is bug-shaped; the only change is the label swap bug -> enhancement.
+        event = {"action": "labeled", "issue": {"number": 65}}
+        api = FakeGitHubAPI(
+            issue_number=65,
+            labels=["enhancement"],
+            issue_payload={
+                "number": 65,
+                "title": "Queue disagreement",
+                "body": BUG_SHAPED_BODY,
+                "labels": [{"name": "enhancement"}],
+                "user": {"login": "some-user"},
+            },
+        )
+
+        result = run_action(event, api)
+
+        # Retyped as an enhancement, the bug-format body is now a contradiction.
+        assert "needs-grooming" in api.labels
+        assert any(reason.code == "type_shape_contradiction" for reason in result.reasons)
+
+    def test_out_of_order_runs_converge_on_newest_state(self):
+        """Older event processed last must still write the newest verdict."""
+        older = _event(
+            action="edited",
+            number=66,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        newer = _event(
+            action="edited",
+            number=66,
+            title="Add a flag",
+            body=WELL_FORMED_BODY,
+            labels=["enhancement"],
+        )
+        current = {
+            "number": 66,
+            "title": "Add a flag",
+            "body": WELL_FORMED_BODY,
+            "labels": [{"name": "enhancement"}],
+            "user": {"login": "some-user"},
+        }
+        api = FakeGitHubAPI(issue_number=66, issue_payload=current)
+
+        run_action(newer, api)
+        calls_after_newer = len(api.calls)
+        # The run for the older event completes last — it must not regress.
+        run_action(older, api)
+
+        assert "needs-grooming" not in api.labels
+        assert len(api.comments) == 1
+        assert "missing_acceptance_criteria" not in api.comments[0]["body"]
+        # The trailing run is a pure no-op: reads only, no writes.
+        assert all(
+            name in {"list_comments", "get_issue"} for name, _ in api.calls[calls_after_newer:]
+        )
+
+    def test_refetch_happens_after_comments_are_listed(self):
+        """Fetch current state as late as possible before planning."""
+        event = _event(
+            action="edited",
+            number=67,
+            title="Add a flag",
+            body=WELL_FORMED_BODY,
+            labels=["enhancement"],
+        )
+        api = FakeGitHubAPI(issue_number=67, issue_payload=event["issue"])
+
+        run_action(event, api)
+
+        read_calls = [name for name, _ in api.calls if name in {"list_comments", "get_issue"}]
+        assert read_calls == ["list_comments", "get_issue"]
+
+    def test_logs_updated_at_of_the_state_the_verdict_came_from(self, caplog):
+        import logging
+
+        event = _event(
+            action="labeled",
+            number=68,
+            title="stale title",
+            body="",
+            labels=[],
+        )
+        api = FakeGitHubAPI(
+            issue_number=68,
+            issue_payload={
+                "number": 68,
+                "title": "Add a flag",
+                "body": WELL_FORMED_BODY,
+                "labels": [{"name": "enhancement"}],
+                "user": {"login": "some-user"},
+                "updated_at": "2026-08-28T12:34:56Z",
+            },
+        )
+
+        with caplog.at_level(logging.INFO, logger="shape_check.action"):
+            run_action(event, api)
+
+        assert any("updated_at=2026-08-28T12:34:56Z" in rec.message for rec in caplog.records)
+
+
+class TestMainIssueActionDispatch:
+    def _prepare(self, monkeypatch, tmp_path, event, api):
+        event_path = tmp_path / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        monkeypatch.setattr(
+            "theforge.shape_check.action.HttpGitHubAPI",
+            lambda **kwargs: api,  # noqa: ARG005
+        )
+        monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "issues")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        monkeypatch.delenv("SHAPE_CHECK_MODE", raising=False)
+
+    @pytest.mark.parametrize(
+        "action_kind", ["opened", "edited", "labeled", "unlabeled", "reopened"]
+    )
+    def test_verdict_relevant_actions_reach_run_action(self, action_kind, monkeypatch, tmp_path):
+        event = _event(
+            action=action_kind,
+            number=71,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        api = FakeGitHubAPI(issue_number=71, issue_payload=event["issue"])
+        self._prepare(monkeypatch, tmp_path, event, api)
+
+        assert main([]) == 0
+        assert "needs-grooming" in api.labels
+        assert len(api.comments) == 1
+
+    def test_unrelated_issue_action_is_a_no_op(self, monkeypatch, tmp_path):
+        event = _event(
+            action="assigned",
+            number=72,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        api = FakeGitHubAPI(issue_number=72, issue_payload=event["issue"])
+        self._prepare(monkeypatch, tmp_path, event, api)
+
+        assert main([]) == 0
+        assert api.calls == []
+
+    def test_non_issues_event_is_a_no_op(self, monkeypatch, tmp_path):
+        event = _event(
+            action="labeled",
+            number=73,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        api = FakeGitHubAPI(issue_number=73, issue_payload=event["issue"])
+        self._prepare(monkeypatch, tmp_path, event, api)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+
+        assert main([]) == 0
+        assert api.calls == []
+
+    def test_relabel_run_is_idempotent(self, monkeypatch, tmp_path):
+        """The action's own label write re-triggers the workflow; it must settle."""
+        event = _event(
+            action="edited",
+            number=74,
+            title="Do a thing",
+            body="## What\nDo stuff.",
+            labels=[],
+        )
+        api = FakeGitHubAPI(issue_number=74, issue_payload=event["issue"])
+        self._prepare(monkeypatch, tmp_path, event, api)
+        assert main([]) == 0
+
+        # Follow-up 'labeled' event fired by the needs-grooming write above,
+        # with current state now carrying the label the first run applied.
+        api.issue_payload = {
+            "number": 74,
+            "title": "Do a thing",
+            "body": "## What\nDo stuff.",
+            "labels": [{"name": "needs-grooming"}],
+            "user": {"login": "some-user"},
+        }
+        follow_up = dict(event, action="labeled")
+        self._prepare(monkeypatch, tmp_path, follow_up, api)
+        api.calls.clear()
+
+        assert main([]) == 0
+        assert all(name in {"list_comments", "get_issue"} for name, _ in api.calls)
