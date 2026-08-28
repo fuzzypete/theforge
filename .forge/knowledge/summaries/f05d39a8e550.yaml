@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: f05d39a8e550
 authoritative_run_record: .forge/audits/runs/f05d39a8e550.json
-generated_at: '2026-08-28T16:12:31.873261+00:00'
+generated_at: '2026-08-28T17:00:48.190355+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.0082325
+  cost_usd: 0.006026499999999999
 story:
   slug: issue-2674
   name: A diagnosis that reaches a confirmed cause is banner-labelled as having failed
@@ -33,53 +33,52 @@ changed_files: &id002
 - tests/test_diagnose_flow.py
 - tests/test_diagnose_types.py
 what_changed:
-  description: The run corrected the landed diagnose banner for cases where a run
-    has a confirmed cause but remains partial only because symptom scope coverage
-    is unmet. It also threaded the needed state through the diagnose flow so the operator-facing
-    artifact distinguishes scope-only partials from cases that truly lack a confirmed
-    cause.
-  approach: The change split partial-diagnosis rendering by unmet obligation rather
-    than treating all partials alike, passed the scope-requirement context through
-    the landing/render path, and then tightened the compatibility shim after review
-    identified a callable-introspection flaw.
+  description: The run corrected diagnose landing and rendering so scope-coverage-only
+    partials are presented as missing scope coverage rather than falsely claiming
+    no confirmed cause was reached. It also threaded the needed state through the
+    landing path so the landed Markdown can distinguish this case.
+  approach: The implementation separated the scope-requirement failure path from confirmed-cause
+    absence at the artifact-rendering boundary, then propagated the scope requirement
+    context into the landing flow and pinned the behavior with focused flow and renderer
+    tests.
   files_modified: *id002
 what_was_learned:
-- claim: When adapting to optional callback parameters, determine callable compatibility
-    by inspection rather than by invoking the callback and catching TypeError, because
-    trial invocation can duplicate side effects and misclassify real callback failures
-    as signature mismatches.
+- claim: When adapting to optional callback signatures, do not probe support by trial-calling
+    and catching TypeError; inspect the callable signature first, or internal TypeError
+    exceptions can be misclassified as arity mismatch and trigger duplicate side effects.
   evidence:
   - type: review_finding
     finding_id: 4df4916b2f6583ce
-    description: The review finding explains that the confirm_landing shim probed
-      keyword support by calling the callback and rescuing TypeError, which caused
-      a confirmer that raises TypeError internally to be invoked twice; that failure
-      mode shows future runs should prefer signature inspection over trial calls for
-      backward-compatible dispatch.
+    description: The review finding identified that the first implementation determined
+      keyword support by invoking the confirmer and catching TypeError, which caused
+      confirmers that raise TypeError internally to be called twice; this demonstrates
+      that future runs should prefer signature inspection over exception-based probing
+      for callback compatibility.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 records that the iteration replaced the TypeError-sniffing
-      approach with inspect.signature dispatch, showing the review-accepted resolution
-      to the side-effect hazard was introspection rather than another call-based guard.
+    description: Cycle 2 records that the iteration replaced the trial-call TypeError
+      sniffing with inspect.signature dispatch, showing the review loop validated
+      signature inspection as the correct mechanism to avoid duplicate invocation
+      side effects.
   - type: diff
     ref: 5b258c0c168ddfcf1b409c1fea6bbf9b350f7120
-    description: This diff is the follow-up revision that swaps the callback-compatibility
-      check to signature inspection, demonstrating the concrete mechanism used to
-      avoid double invocation and callback-body TypeError masking.
+    description: This follow-up diff is the iteration cited in review cycle 2 that
+      swaps exception-driven probing for signature-based dispatch, evidencing the
+      mechanism change that resolves the double-call hazard.
 learned_patterns:
-- inspect-callback-signatures
-- separate-partial-failure-modes
+- signature-based-callback-dispatch
+- scope-only-partial-bannering
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - The review loop focused on the backward-compatibility shim around confirm_landing,
-    surfacing that call-and-catch probing was unsafe because it could execute operator-facing
-    side effects twice.
+  - The review loop kept surfacing callback-compatibility hazards in the landing-confirmation
+    seam, not in the banner logic itself.
 complexity_signal:
   actual_iterations: 2
   review_cycles: 2
   plan_regenerations: null
   cost_usd: 3.48361215
-  dominant_difficulty: Distinguishing partial-diagnosis states accurately across the
-    landing/render pipeline without breaking existing callback seams.
+  dominant_difficulty: Distinguishing a scope-obligation failure from an absent confirmed
+    cause across the landing/rendering seam without introducing compatibility regressions
+    in the confirmation hook.
