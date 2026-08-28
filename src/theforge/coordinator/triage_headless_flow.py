@@ -25,6 +25,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from theforge import pending as _pending
+from theforge.triage_shelved import (
+    triage_proposals_shelved_lines,
+    triage_proposals_shelved_message,
+)
 
 from . import util as _cu
 
@@ -357,7 +361,44 @@ def _dispatch_failed_outcome(summary: "ProposalRunSummary") -> HeadlessTriageOut
     )
 
 
+def shelved_headless_outcome() -> HeadlessTriageOutcome:
+    """Return the canonical ADR-0010 refusal for headless proposal dispatch."""
+
+    lines = triage_proposals_shelved_lines(
+        first_prefix="triage: ",
+        continuation_prefix="        ",
+    )
+    message = triage_proposals_shelved_message(
+        first_prefix="triage: ",
+        continuation_prefix="        ",
+    )
+    return HeadlessTriageOutcome(
+        status=HEADLESS_FAILED,
+        message=message,
+        error=message,
+        lines=lines,
+    )
+
+
 def run_headless_triage(
+    config: object,
+    *,
+    project_root: Path | None = None,
+    report: object | None = None,
+    current_milestone: str | None = None,
+    output_path: Path | None = None,
+) -> HeadlessTriageOutcome:
+    """Reject the shelved public headless proposal entry point (ADR-0010)."""
+
+    raise HeadlessTriageError(
+        triage_proposals_shelved_message(
+            first_prefix="triage: ",
+            continuation_prefix="        ",
+        )
+    )
+
+
+def _run_headless_triage_impl(
     config: object,
     *,
     project_root: Path | None = None,
@@ -381,7 +422,7 @@ def run_headless_triage(
     )
     from theforge.triage_report import BacklogReportError, load_backlog_report  # noqa: PLC0415
 
-    from .triage_proposal_flow import run_triage_proposals  # noqa: PLC0415
+    from .triage_proposal_flow import _run_triage_proposals_impl  # noqa: PLC0415
 
     root = Path(project_root or getattr(config, "project_root"))
 
@@ -401,7 +442,7 @@ def run_headless_triage(
         except (TriageBacklogReportError, BacklogReportError) as exc:
             raise HeadlessTriageError(f"backlog report could not be produced: {exc}") from exc
 
-    summary = run_triage_proposals(
+    summary = _run_triage_proposals_impl(
         report,
         config,
         project_root=root,
@@ -472,7 +513,9 @@ __all__ = [
     "HEADLESS_WRITTEN",
     "HeadlessTriageError",
     "HeadlessTriageOutcome",
+    "_run_headless_triage_impl",
     "build_pending_payload",
     "run_headless_triage",
+    "shelved_headless_outcome",
     "superseded_outcome",
 ]
