@@ -1,0 +1,66 @@
+schema_version: 2
+run_id: 7e5d0569b0d0
+authoritative_run_record: .forge/audits/runs/7e5d0569b0d0.json
+generated_at: '2026-08-28T15:48:20.834496+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00544375
+story:
+  slug: issue-2666
+  name: 'Ambient shape-check relabeler leaves a stale verdict: it never fires on label
+    changes and evaluates the event snapshot rather than current issue state'
+  github_issue: 2666
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- ci
+- config
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- .github/workflows/shape-check.yml
+- docs/adr/0003-intake-state-authority-and-label-reconciliation.md
+- src/theforge/shape_check/action.py
+- tests/test_shape_check_action.py
+- tests/test_shape_check_workflow.py
+what_changed:
+  description: The ambient shape-check path was updated so issue events that can change
+    the verdict are handled, and verdict computation uses current issue state rather
+    than the triggering event snapshot. Workflow, action logic, ADR text, and regression
+    tests were aligned to this reconciliation behavior.
+  approach: The change widened the event path end-to-end in both workflow and runtime
+    gating, introduced current-state issue retrieval before applying label/comment
+    updates, and verified the stale-verdict cases with targeted action and workflow
+    tests.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- current-state-over-event-snapshot
+- workflow-trigger-and-runtime-gate-must-match
+- verdict-relevant-issue-events
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the end-to-end widening of ambient shape-check events together
+    with refetching current issue state to prevent stale verdict writes.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 4.3040613
+  dominant_difficulty: 'Correctness depended on fixing two coupled stale-state paths
+    together: missing verdict-relevant triggers and out-of-order writes from evaluating
+    event snapshots.'
