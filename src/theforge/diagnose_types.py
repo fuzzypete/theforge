@@ -517,7 +517,9 @@ class DiagnoseResult:
 # ── Markdown rendering ────────────────────────────────────────────────
 
 
-def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
+def render_artifact_markdown(
+    artifact: DiagnosisArtifact, *, issue_requires_categorical_scope: bool = False
+) -> str:
     """Render a DiagnosisArtifact as a Markdown ``## Diagnosis`` section.
 
     Output format intentionally matches the headings expected by the shape gate
@@ -548,6 +550,14 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             warning = (
                 "> ⚠ Partial diagnosis — the investigation timed out before "
                 "reaching a confirmed cause. Operator review required."
+            )
+        elif artifact.confirmed_cause.strip() and artifact.missing_required_fields(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
+        ) == ("symptom_scope_coverage",):
+            warning = (
+                "> ⚠ Partial diagnosis — the investigation confirmed a cause, "
+                "but categorical symptom scope coverage remains incomplete. "
+                "Operator review required."
             )
         else:
             warning = (

@@ -1015,6 +1015,11 @@ class TestDiagnoseFlow:
         assert result.state.artifact is not None
         assert result.state.artifact.partial is True
         assert result.state.artifact.symptom_scope_coverage == SymptomScopeCoverage()
+        assert mock_post.call_count == 1
+        landed_markdown = mock_post.call_args.args[1]
+        assert "confirmed a cause" in landed_markdown
+        assert "categorical symptom scope coverage remains incomplete" in landed_markdown
+        assert "did not reach a confirmed cause" not in landed_markdown
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-44-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())

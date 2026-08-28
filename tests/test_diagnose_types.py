@@ -865,6 +865,40 @@ class TestRenderArtifactMarkdown:
         assert "did not reach a confirmed cause" in md
         assert "budget or timeout" not in md
 
+    def test_scope_only_partial_with_confirmed_cause_names_scope_gap_instead(self):
+        artifact = DiagnosisArtifact(
+            issue_number=2665,
+            observed_symptom="A diagnose banner contradicts the artifact beneath it.",
+            reproduction_or_evidence=(
+                "Raw output shows a confirmed cause plus empty scope coverage."
+            ),
+            hypotheses=(
+                Hypothesis(
+                    "scope coverage was the only missing requirement",
+                    "confirmed",
+                    "missing_required_fields returns only symptom_scope_coverage",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
+            confirmed_cause="The banner renderer keys only on partial_reason.",
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="The banner describes scope coverage, not cause failure.",
+            partial=True,
+            partial_reason=DiagnosePartialReason.UNCLASSIFIED,
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+        )
+        rendered = render_artifact_markdown(
+            artifact,
+            issue_requires_categorical_scope=True,
+        )
+        assert "confirmed a cause" in rendered
+        assert "categorical symptom scope coverage remains incomplete" in rendered
+        assert "did not reach a confirmed cause" not in rendered
+
     def test_budget_partial_artifact_names_budget(self):
         artifact = DiagnosisArtifact(
             issue_number=1,

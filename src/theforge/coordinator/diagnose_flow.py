@@ -1059,7 +1059,10 @@ def _land_artifact(
             f"Unknown diagnose output_destination {destination!r}; "
             f"valid: {sorted(DIAGNOSE_OUTPUT_DESTINATIONS)}"
         )
-    section = render_artifact_markdown(artifact)
+    section = render_artifact_markdown(
+        artifact,
+        issue_requires_categorical_scope=state.issue_scope_is_categorical,
+    )
 
     if destination == "comment":
         if dry_run:
@@ -1784,7 +1787,11 @@ def _run_diagnose_flow_body(
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm
         if interactive and confirm_landing is not None:
-            if not confirm_landing(artifact):
+            if not _confirm_landing_with_scope_requirement(
+                confirm_landing,
+                artifact,
+                issue_requires_categorical_scope=state.issue_scope_is_categorical,
+            ):
                 msg = "Partial artifact — operator declined to land. Audit written."
                 write_diagnose_audit(state, project_root)
                 return DiagnoseResult(success=False, state=state, message=msg)
@@ -1825,7 +1832,11 @@ def _run_diagnose_flow_body(
     if interactive and confirm_landing is None:
         confirm_landing = _stdin_confirm
     if interactive and confirm_landing is not None:
-        if not confirm_landing(artifact):
+        if not _confirm_landing_with_scope_requirement(
+            confirm_landing,
+            artifact,
+            issue_requires_categorical_scope=state.issue_scope_is_categorical,
+        ):
             msg = "Operator declined to land artifact. Audit written."
             write_diagnose_audit(state, project_root)
             return DiagnoseResult(success=False, state=state, message=msg)
@@ -1856,13 +1867,41 @@ def _run_diagnose_flow_body(
     )
 
 
-def _stdin_confirm(artifact: DiagnosisArtifact) -> bool:
+def _stdin_confirm(
+    artifact: DiagnosisArtifact, *, issue_requires_categorical_scope: bool = False
+) -> bool:
     """Default interactive-mode confirmation: prompt on stdin."""
     print()
-    print(render_artifact_markdown(artifact))
+    print(
+        render_artifact_markdown(
+            artifact,
+            issue_requires_categorical_scope=issue_requires_categorical_scope,
+        )
+    )
     print()
     try:
         answer = input("Land this diagnosis? [y/N] ").strip().lower()
     except EOFError:
         return False
     return answer in {"y", "yes"}
+
+
+def _confirm_landing_with_scope_requirement(
+    confirm_landing: "callable",
+    artifact: DiagnosisArtifact,
+    *,
+    issue_requires_categorical_scope: bool,
+) -> bool:
+    """Call the landing confirmer, preserving one-arg test hooks."""
+    try:
+        return bool(
+            confirm_landing(
+                artifact,
+                issue_requires_categorical_scope=issue_requires_categorical_scope,
+            )
+        )
+    except TypeError as exc:
+        try:
+            return bool(confirm_landing(artifact))
+        except TypeError:
+            raise exc
