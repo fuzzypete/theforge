@@ -162,10 +162,20 @@ class TestParser:
         args = build_parser().parse_args(["triage", "--output", ".forge/triage/out.yaml"])
         assert args.output == ".forge/triage/out.yaml"
 
-    def test_triage_help_reports_proposals_as_shelved(self) -> None:
-        help_text = build_parser().format_help()
-        assert "shelved by ADR-0010" in help_text
-        assert "--report or headless runs are shelved" in help_text
+    def test_triage_help_reports_proposals_as_shelved(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        parser = build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["triage", "--help"])
+        assert excinfo.value.code == 0
+        help_text = capsys.readouterr().out
+        normalized = " ".join(help_text.split())
+        assert "shelved by ADR-0010" in normalized
+        assert "consuming reports for disposition proposals is shelved by ADR-0010" in normalized
+        assert (
+            "proposal stage that would consume this override is shelved by ADR-0010" in normalized
+        )
 
 
 class TestCommand:

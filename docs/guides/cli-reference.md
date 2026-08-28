@@ -898,17 +898,17 @@ Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
 
 ## `forge triage`
 
-`forge triage` has four modes, and which one a bare invocation takes depends on
-whether an operator is present (stdin is a TTY):
+`forge triage` has three supported modes, and whether a bare invocation writes a
+report or rejects depends on whether an operator is present (stdin is a TTY):
 
 - With no `--report` **and an operator present**, it generates the deterministic
   backlog report for every open finding-labeled issue.
-- With `--report <path>` and an operator present, it consumes an existing backlog
-  report artifact and runs the advisory proposal stage against it.
 - **Without an operator** (cron, a post-sprint pass, any non-interactive
-  invocation), it runs the report + proposal + punt-review stages and persists
-  the reviewed package as a pending operator decision. See
+  invocation), it rejects because disposition proposals are shelved by
+  ADR-0010. See
   [Headless mode](#headless-mode) below.
+- With `--report <path>`, it rejects because consuming backlog reports for
+  disposition proposals is shelved by ADR-0010.
 - With `--ratify <triage-run-id | pending-id>`, it loads one recorded proposal
   run from the audit substrate, prompts the operator finding-by-finding, and
   applies only the ratified dispositions. Requires a TTY.
@@ -918,9 +918,7 @@ whether an operator is present (stdin is a TTY):
 ```bash
 forge triage
 forge triage --output .forge/triage/report.yaml
-forge triage --report .forge/backlog-report.json
-forge triage --report backlog.json --current-milestone v0.12.0
-forge triage --report backlog.json --no-audit   # print without recording the run
+forge triage --report .forge/backlog-report.json   # rejects; proposals are shelved
 forge triage --ratify 4601fd03e0c7
 forge triage --discard triage-4601fd03e0c7
 ```
@@ -1098,40 +1096,6 @@ true`.
 
 `--ratify` is unchanged: it still refuses without a TTY because ratification is
 an operator action and not part of the shelved proposal paths.
-- **The pending record is the product.** It carries the run summary, the
-  proposals, the punt reviews, the cited evidence refs, the report path, and the
-  finding/flagged counts. Unlike an HITL gate record it has no owning pid and no
-  timeout: it survives the process that wrote it and is never swept as stale. It
-  is removed only by a ratification whose findings all reached a terminal status,
-  or by `forge triage --discard`.
-- **`--no-audit` is refused.** A run recorded nowhere cannot be ratified later,
-  so a headless run that would produce an unusable package is refused before
-  spending.
-- **A run that could not be recorded publishes nothing.** Ratification reads the
-  run and its proposal events out of the audit substrate, so if the proposal
-  stage reports an audit write failure — or its events cannot be read back — the
-  command fails with that reason and writes no pending decision, rather than
-  putting a record on the status surface that `--ratify` would later refuse. The
-  message names the run id and how many findings it proposed, because that spend
-  already happened. (An empty backlog records no events by construction and is
-  persisted normally.)
-- **Repeated runs do not pile up.** A new headless run that would supersede an
-  unresolved pending decision refuses and names the pending one, rather than
-  burying it. Resolve or discard the first before proposing again.
-- **`forge status` surfaces it.** Pending triage decisions appear in the
-  `Pending decisions` section alongside pending HITL gates, with the creation
-  date, finding count, flagged count, age, and the commands that resolve them:
-
-  ```text
-  Pending decisions:
-    triage  2026-08-05  15 findings  (2 flagged)  age 3h
-      id: triage-4601fd03e0c7
-      resolve: forge triage --ratify 4601fd03e0c7
-      discard: forge triage --discard triage-4601fd03e0c7
-  ```
-
-  `forge decide` refuses a triage entry and points at these two commands: a
-  triage decision is not resolved by writing a generic `decision` field.
 
 ### Post-sprint trigger
 
@@ -1143,10 +1107,9 @@ sprint:
   post_sprint_triage: true
 ```
 
-The pass runs only the proposal stages — it never ratifies — and is best effort:
-a triage-stage failure is reported in the sprint log and never fails, blocks, or
-changes the outcome of the sprint that triggered it. Supersession is reported the
-same way, naming the pending decision that blocked the new pass.
+The pass is best effort: it logs the same ADR-0010 shelving guidance and never
+fails, blocks, or changes the outcome of the sprint that triggered it. It does
+not dispatch proposers, spend money, or write a pending triage decision.
 
 ---
 

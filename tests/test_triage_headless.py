@@ -599,30 +599,24 @@ class TestUnratifiableRuns:
         assert "run123" in message
         assert "1 finding(s)" in message
 
-    def test_a_recording_failure_never_fails_the_sprint_that_triggered_it(
+    def test_post_sprint_triage_rejects_before_any_proposal_recording(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        import theforge.triage_backlog_report as backlog_mod
-        import theforge.triage_report as report_mod
         from theforge.sprint.post_sprint_triage import run_post_sprint_triage
 
         monkeypatch.setattr(
-            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
+            headless,
+            "run_headless_triage",
+            lambda *a, **k: pytest.fail("post-sprint triage must reject before headless dispatch"),
         )
-        monkeypatch.setattr(
-            backlog_mod,
-            "write_backlog_report",
-            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
-        )
-        monkeypatch.setattr(report_mod, "load_backlog_report", lambda path: _StubReport())
-        _stub_flow(monkeypatch, _summary(audit_error="disk full"))
 
         outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
         assert outcome.status == headless.HEADLESS_FAILED
-        assert "disk full" in outcome.error
-        assert _pending.find_triage_pending("run123", tmp_path) is None
+        assert "ADR-0010" in outcome.message
+        assert outcome.error == outcome.message
+        assert _pending.unresolved_triage_pending(tmp_path) is None
         combined = capsys.readouterr()
-        assert "disk full" in (combined.out + combined.err)
+        assert "forge diagnose --dry-run --issue A,B --parallel 2" in (combined.out + combined.err)
 
 
 # ── Status rendering ─────────────────────────────────────────────────────────
