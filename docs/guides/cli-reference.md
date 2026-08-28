@@ -1039,6 +1039,12 @@ recorded proposals and punt reviews for exactly that `triage_run_id`, renders
 the reviewed context back to the operator, then prompts per finding for
 `accept`, `override`, or `skip`.
 
+Existing pending triage decisions remain visible in `forge status` under
+`Pending decisions`, including the exact `forge triage --ratify ...` and
+`forge triage --discard ...` commands for that record. `forge decide` does not
+accept triage pending ids; it refuses them and points the operator back to
+those same triage commands.
+
 Properties worth knowing:
 
 - **Nothing is applied without ratification.** Accept applies exactly the stored
