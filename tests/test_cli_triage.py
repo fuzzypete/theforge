@@ -1,11 +1,4 @@
-"""Tests for the ``forge triage`` command layer.
-
-The command now has two read-only modes:
-
-* bare ``forge triage`` generates the deterministic backlog report artifact;
-* ``forge triage --report ...`` consumes an existing artifact for the advisory
-  proposal stage.
-"""
+"""Tests for the ``forge triage`` command layer."""
 
 from __future__ import annotations
 
@@ -18,19 +11,15 @@ import pytest
 
 from theforge.cli import triage as cli_triage
 from theforge.cli.main import build_parser
-from theforge.config import DEFAULT_PREFLIGHT_PROFILE
 from theforge.triage_backlog_report import (
     BacklogFindingRecord,
     BacklogTriageReport,
     EvidenceEntry,
 )
-from theforge.triage_proposal import (
-    FindingPacket,
-    FindingProposalResult,
-    ProposalRunSummary,
-    needs_verification_proposal,
+from theforge.triage_shelved import (
+    TRIAGE_PROPOSALS_SHELVED_EXIT_CODE,
+    triage_proposals_shelved_message,
 )
-from theforge.triage_report import BacklogReport
 
 _REPORT = {
     "current_milestone": "v0.12.0",
@@ -103,63 +92,7 @@ def _stub_config(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> None:
     )
 
 
-def _stub_flow(monkeypatch: pytest.MonkeyPatch, summary: ProposalRunSummary) -> list[dict]:
-    calls: list[dict] = []
-
-    def _run(report: BacklogReport, config: object, **kwargs: object) -> ProposalRunSummary:
-        calls.append({"report": report, **kwargs})
-        return summary
-
-    import theforge.coordinator.triage_headless_flow as headless_flow
-    import theforge.coordinator.triage_proposal_flow as flow
-
-    monkeypatch.setattr(flow, "run_triage_proposals", _run)
-    # The headless path reads the run back out of the audit substrate before it
-    # will publish a pending decision. These tests stub the proposal flow, so
-    # nothing was really recorded — stand in for the reload the real run would
-    # get. Its absence is covered as its own case in test_triage_headless.py.
-    monkeypatch.setattr(
-        headless_flow,
-        "_recorded_events",
-        lambda root, run_id: (
-            [
-                {
-                    "finding_id": "1312:audit-count",
-                    "issue_ref": "#1312",
-                    "disposition": "needs_verification",
-                    "proposal": {"disposition": "needs_verification"},
-                }
-            ]
-            * summary.findings_count
-        ),
-    )
-    return calls
-
-
-def _packet() -> FindingPacket:
-    return FindingPacket(
-        finding_id="1312:audit-count",
-        issue_ref="#1312",
-        finding_body="audit count is off by one",
-    )
-
-
-def _summary(**kwargs: object) -> ProposalRunSummary:
-    result = FindingProposalResult(
-        finding_id="1312:audit-count",
-        issue_ref="#1312",
-        packet_hash="abc",
-        proposal=needs_verification_proposal(_packet(), basis="no checkable artifact cited"),
-        cost_usd=0.0123,
-        cost_provenance="provider_reported",
-    )
-    defaults = {
-        "results": (result,),
-        "total_cost_usd": 0.0123,
-        "cost_provenance": "provider_reported",
-    }
-    defaults.update(kwargs)
-    return ProposalRunSummary(**defaults)
+_SHELVED_MESSAGE = triage_proposals_shelved_message()
 
 
 def _backlog_report(**kwargs: object) -> BacklogTriageReport:
@@ -228,6 +161,11 @@ class TestParser:
     def test_output_flag_is_accepted_for_report_generation(self) -> None:
         args = build_parser().parse_args(["triage", "--output", ".forge/triage/out.yaml"])
         assert args.output == ".forge/triage/out.yaml"
+
+    def test_triage_help_reports_proposals_as_shelved(self) -> None:
+        help_text = build_parser().format_help()
+        assert "shelved by ADR-0010" in help_text
+        assert "--report or headless runs are shelved" in help_text
 
 
 class TestCommand:
@@ -310,71 +248,39 @@ class TestCommand:
         assert code == 1
         assert "gh api failed" in capsys.readouterr().err
 
-    def test_proposals_and_spend_are_printed(
+    def test_report_mode_is_rejected_with_adr_guidance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         config_path, report_path = _write_project(tmp_path, _REPORT)
         _stub_config(monkeypatch, tmp_path)
-        _stub_flow(monkeypatch, _summary())
-
-        code = cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path)))
-        out = capsys.readouterr().out
-        assert code == 0
-        assert "#1312  PROPOSE needs_verification" in out
-        assert "cost: $0.0123" in out
-        assert "TOTAL SPEND: $0.0123" in out
-        assert "no issue was modified" in out
-
-    def test_interactive_pre_dispatch_auth_failure_exits_nonzero(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-        _stub_flow(
-            monkeypatch,
-            _summary(
-                total_cost_usd=0.0,
-                run_level_failure=(
-                    "triage aborted agent dispatch before any proposer ran: "
-                    "claude credential store at /tmp/stale/.credentials.json holds no access token"
-                ),
-            ),
+        monkeypatch.setattr(
+            cli_triage,
+            "_cmd_triage_proposals",
+            lambda *a, **k: pytest.fail("shelved proposal mode must reject before dispatch"),
         )
 
         code = cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path)))
         captured = capsys.readouterr()
-        assert code == 1
-        assert captured.err == ""
-        assert captured.out.count("RUN-LEVEL FAILURE:") == 1
-        assert "claude credential store" in captured.out
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        assert captured.out == ""
+        assert captured.err == _SHELVED_MESSAGE + "\n"
 
-    def test_empty_backlog_prints_an_explicit_zero(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        config_path, report_path = _write_project(tmp_path, {"findings": []})
-        _stub_config(monkeypatch, tmp_path)
-        _stub_flow(monkeypatch, ProposalRunSummary(results=(), total_cost_usd=0.0))
-
-        code = cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path)))
-        out = capsys.readouterr().out
-        assert code == 0
-        assert "no findings" in out
-        assert "$0.0000" in out
-
-    def test_missing_report_fails_legibly_without_running_the_flow(
+    def test_report_mode_rejects_before_validating_the_report_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         config_path, _ = _write_project(tmp_path, _REPORT)
         _stub_config(monkeypatch, tmp_path)
-        calls = _stub_flow(monkeypatch, _summary())
+        monkeypatch.setattr(
+            cli_triage,
+            "_cmd_triage_proposals",
+            lambda *a, **k: pytest.fail("shelved proposal mode must reject before report loading"),
+        )
 
         code = cli_triage.cmd_triage(
             _args(report=str(tmp_path / "absent.json"), config=str(config_path))
         )
-        err = capsys.readouterr().err
-        assert code == 1
-        assert "not found" in err
-        assert calls == []
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        assert capsys.readouterr().err == _SHELVED_MESSAGE + "\n"
 
     def test_missing_config_fails_before_anything_else(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -384,102 +290,32 @@ class TestCommand:
         assert code == 1
         assert "forge.yaml not found" in capsys.readouterr().err
 
-    def test_current_milestone_flag_reaches_the_flow(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_current_milestone_flag_does_not_escape_the_shelf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         config_path, report_path = _write_project(tmp_path, _REPORT)
         _stub_config(monkeypatch, tmp_path)
-        calls = _stub_flow(monkeypatch, _summary())
+        monkeypatch.setattr(
+            cli_triage,
+            "_cmd_triage_proposals",
+            lambda *a, **k: pytest.fail("shelved proposal mode must reject before dispatch"),
+        )
 
-        cli_triage.cmd_triage(
+        code = cli_triage.cmd_triage(
             _args(
                 report=str(report_path),
                 config=str(config_path),
                 current_milestone="v0.14.0",
             )
         )
-        assert calls[0]["current_milestone"] == "v0.14.0"
-
-    def test_end_to_end_through_the_real_flow_with_a_stubbed_runner(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        """The command → flow → schema → substrate seam, with only the agent stubbed.
-
-        The other command tests replace the flow, so this is the one that would
-        catch the argument names, the report handoff, or the render diverging
-        from what the flow actually returns.
-        """
-        import theforge.coordinator.triage_proposal_flow as flow
-        from theforge.coordinator import audit_read_model, audit_storage
-
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-
-        class _Result:
-            def __init__(self, output: str, cost_usd: float) -> None:
-                self.output = output
-                self.success = True
-                self.cost_usd = cost_usd
-                self.cost_provenance = "provider_reported"
-
-        calls = {"count": 0}
-
-        def _run_agent(**kwargs: object) -> _Result:
-            calls["count"] += 1
-            if calls["count"] == 1:
-                return _Result(
-                    "<triage_proposal>\n"
-                    "disposition: punt\n"
-                    "punt_reason_code: verified-stale\n"
-                    "evidence:\n"
-                    "  - ref: symbol-absent\n"
-                    "    quote: cited symbol absent from current tree\n"
-                    "</triage_proposal>",
-                    0.05,
-                )
-            return _Result(
-                "<triage_punt_review>\n"
-                "verdict: concur\n"
-                "evidence:\n"
-                "  - ref: symbol-absent\n"
-                "    quote: cited symbol absent from current tree\n"
-                "</triage_punt_review>",
-                0.02,
-            )
-
-        monkeypatch.setattr(flow, "run_agent", _run_agent)
-        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
-        monkeypatch.setattr(
-            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
-        )
-
-        code = cli_triage.cmd_triage(
-            _args(report=str(report_path), config=str(config_path), no_audit=False)
-        )
-        out = capsys.readouterr().out
-        assert code == 0
-        assert "#1312  PROPOSE punt (reason: verified-stale)" in out
-        assert "REVIEW: concur" in out
-        assert "review cost: $0.0200" in out
-        assert "TOTAL SPEND: $0.0700" in out
-
-        conn = audit_storage.open_readonly(tmp_path)
-        try:
-            events = list(audit_read_model.iter_triage_proposal_events(conn))
-            runs = audit_read_model.triage_proposal_run_spend(conn)
-        finally:
-            conn.close()
-        assert events[0]["proposal"]["punt_reason_code"] == "verified-stale"
-        assert events[0]["punt_review"]["verdict"] == "concur"
-        assert runs[0]["total_cost_usd"] == pytest.approx(0.07)
-        assert runs[0]["review_stage"]["reviewed_punt_count"] == 1
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        assert capsys.readouterr().err == _SHELVED_MESSAGE + "\n"
 
     def test_the_command_spawns_no_subprocess(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         config_path, report_path = _write_project(tmp_path, _REPORT)
         _stub_config(monkeypatch, tmp_path)
-        _stub_flow(monkeypatch, _summary())
 
         def _forbidden(*a: object, **k: object) -> None:
             raise AssertionError(f"forge triage spawned a subprocess: {a!r}")
@@ -488,7 +324,10 @@ class TestCommand:
         monkeypatch.setattr(subprocess, "Popen", _forbidden)
         monkeypatch.setattr(subprocess, "check_output", _forbidden)
 
-        assert cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path))) == 0
+        assert (
+            cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path)))
+            == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        )
 
     def test_ratify_dispatches_to_the_ratification_flow(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -551,129 +390,55 @@ class TestHeadlessCommand:
     def _no_operator(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cli_triage, "stdin_is_interactive", lambda: False)
 
-    def test_report_mode_persists_instead_of_only_printing(
+    def test_report_mode_is_rejected_with_the_same_adr_guidance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         from theforge import pending as _pending
 
         config_path, report_path = _write_project(tmp_path, _REPORT)
         _stub_config(monkeypatch, tmp_path)
-        _stub_flow(monkeypatch, _summary(triage_run_id="run123"))
-
-        code = cli_triage.cmd_triage(
-            _args(report=str(report_path), config=str(config_path), no_audit=False)
-        )
-        out = capsys.readouterr().out
-        assert code == 0
-        assert "pending operator decision written" in out
-        entry = _pending.find_triage_pending("run123", tmp_path)
-        assert entry is not None
-        assert entry["findings_count"] == 1
-
-    def test_bare_invocation_runs_the_whole_flow_and_persists(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A cron entry runs `forge triage` with no mode; it must still propose."""
-        import theforge.triage_backlog_report as backlog_mod
-        import theforge.triage_report as report_mod
-        from theforge import pending as _pending
-
-        config_path, _ = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
-        )
-        monkeypatch.setattr(
-            backlog_mod,
-            "write_backlog_report",
-            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
-        )
-        monkeypatch.setattr(
-            report_mod,
-            "load_backlog_report",
-            lambda path: BacklogReport(findings=(), source_path=str(path)),
-        )
-        calls = _stub_flow(monkeypatch, _summary(triage_run_id="run123"))
-
-        code = cli_triage.cmd_triage(_args(config=str(config_path), no_audit=False))
-        assert code == 0
-        assert len(calls) == 1
-        assert _pending.find_triage_pending("run123", tmp_path) is not None
-
-    def test_no_audit_is_refused_before_spending(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-        calls = _stub_flow(monkeypatch, _summary())
-
-        code = cli_triage.cmd_triage(
-            _args(report=str(report_path), config=str(config_path), no_audit=True)
-        )
-        assert code == 1
-        assert "--no-audit cannot be used without an operator present" in capsys.readouterr().err
-        assert calls == []
-
-    def test_supersession_names_the_pending_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        from theforge import pending as _pending
-
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-        _pending.write_triage_pending("earlier", {"findings_count": 4}, project_root=tmp_path)
-        calls = _stub_flow(monkeypatch, _summary())
-
-        code = cli_triage.cmd_triage(
-            _args(report=str(report_path), config=str(config_path), no_audit=False)
-        )
-        err = capsys.readouterr().err
-        assert code == 1
-        assert "triage-earlier" in err
-        assert calls == []
-
-    def test_an_unratifiable_run_fails_and_writes_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        from theforge import pending as _pending
-
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-        _stub_flow(monkeypatch, _summary(triage_run_id="run123", audit_error="disk full"))
-
-        code = cli_triage.cmd_triage(
-            _args(report=str(report_path), config=str(config_path), no_audit=False)
-        )
-        err = capsys.readouterr().err
-        assert code == 1
-        assert "disk full" in err
-        assert _pending.find_triage_pending("run123", tmp_path) is None
-
-    def test_pre_dispatch_auth_failure_exits_nonzero(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        import theforge.coordinator.triage_headless_flow as headless_flow
-
-        config_path, report_path = _write_project(tmp_path, _REPORT)
-        _stub_config(monkeypatch, tmp_path)
-        monkeypatch.setattr(
-            headless_flow,
-            "run_headless_triage",
-            lambda *a, **k: headless_flow.HeadlessTriageOutcome(
-                status=headless_flow.HEADLESS_FAILED,
-                message="triage aborted agent dispatch before any proposer ran",
-                error="triage aborted agent dispatch before any proposer ran",
-                lines=("triage: triage aborted agent dispatch before any proposer ran",),
-            ),
+            cli_triage,
+            "_cmd_triage_headless",
+            lambda *a, **k: pytest.fail("headless proposal mode must reject before dispatch"),
         )
 
         code = cli_triage.cmd_triage(
             _args(report=str(report_path), config=str(config_path), no_audit=False)
         )
         captured = capsys.readouterr()
-        assert code == 1
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
         assert captured.out == ""
-        assert "triage aborted agent dispatch before any proposer ran" in captured.err
+        assert captured.err == _SHELVED_MESSAGE + "\n"
+        assert _pending.unresolved_triage_pending(tmp_path) is None
+
+    def test_bare_invocation_is_rejected_before_collecting_a_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        import theforge.triage_backlog_report as backlog_mod
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            backlog_mod,
+            "collect_backlog_report",
+            lambda *a, **k: pytest.fail("headless shelf must reject before report collection"),
+        )
+        code = cli_triage.cmd_triage(_args(config=str(config_path), no_audit=False))
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        assert capsys.readouterr().err == _SHELVED_MESSAGE + "\n"
+
+    def test_no_audit_does_not_change_the_headless_shelved_rejection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=True)
+        )
+        assert code == TRIAGE_PROPOSALS_SHELVED_EXIT_CODE
+        assert capsys.readouterr().err == _SHELVED_MESSAGE + "\n"
 
     def test_ratify_is_refused_without_a_terminal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture

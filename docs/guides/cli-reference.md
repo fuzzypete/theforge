@@ -1016,88 +1016,23 @@ still writes the structured artifact.
 
 ### Advisory proposal mode
 
-`forge triage --report <path>` keeps the existing proposal stage: a
-fresh-context agent reads one evidence packet per finding — the finding body,
-the report's deterministic staleness evidence, and whatever disposition history
-the audit substrate already holds for that finding — and proposes exactly one
-value from a fixed taxonomy.
+`forge triage --report <path>` is shelved by ADR-0010. The command rejects this
+invocation before it loads the report, dispatches no proposer or reviewer, and
+prints the ADR record together with the supported alternative:
 
-The taxonomy and its required payload:
-
-| disposition | payload |
-| --- | --- |
-| `fix_now` | `target_milestone` — must be the current milestone |
-| `fix_later` | `target_milestone` — a named milestone, or the standing `Hygiene` pool |
-| `punt` | `punt_reason_code` — one of `verified-stale`, `superseded`, `not-reproducible`, `duplicate`, `out-of-scope-by-policy` |
-| `needs_verification` | none |
-
-Sample output for a punt proposal that passes adversarial review:
-
+```text
+[forge] triage: disposition proposals are shelved (ADR-0010).
+        A full pass returned 29 needs_verification of 30 findings: the proposer's
+        evidence is artifact presence and churn, which cannot establish whether a
+        behavioral claim still holds.
+        To verify findings instead: forge diagnose --dry-run --issue A,B --parallel 2
+        Still supported: report generation (no flag, interactive), --ratify, --discard.
+        See ADR-0010.
 ```
-TRIAGE PROPOSALS — run 4601fd03e0c7; 1 finding(s)
-REVIEW STAGE: reviewed 1 punt proposal(s), challenged 0.
-
-#1312  PROPOSE punt (reason: verified-stale)
-       evidence: cited symbol absent from current tree; no disposition rows recorded
-       cites: symbol-absent, disposition-history
-       reasoning (unverified): nothing left in the tree for this to describe
-       REVIEW: concur
-       review evidence: cited symbol absent from current tree
-       review cites: symbol-absent
-       review cost: $0.0123 (provider_reported)
-       cost: $0.0123 (provider_reported)
-
-TOTAL SPEND: $0.0246 (provider_reported)
-Advisory only — no issue was modified.
-```
-
-The `evidence` line is quoted from the packet and was verified against it; the
-`reasoning` line is the proposer's own prose and was not. Punt reviews follow
-the same rule: `review evidence` is packet-grounded, while deterministic
-fallback text is rendered separately as `review basis`.
-
-Properties worth knowing before you rely on it:
-
-- **Advisory only, mechanically.** The command performs no tracker writes of any
-  kind — no edit, comment, label, or close, on any issue — and that is enforced
-  by what the proposer is given, not by what its prompt asks. Every invocation
-  runs with a read-only tool surface that has no shell, in a read-only sandbox,
-  in an empty scratch directory rather than your checkout, holding only provider
-  API keys (a `GH_TOKEN` in `.forge/.env` is never passed to it). Applying a
-  proposal is a separate, operator-driven step.
-- **Grounded or rejected.** A proposal cites evidence as `{ref, quote}` pairs: a
-  packet evidence id, plus that entry's **own words, verbatim**. Citing a valid
-  id does not license a claim beside it — a paraphrase or an invented assertion
-  is rejected even when the id is real. Anything the proposer says in its own
-  voice goes in `rationale` and is displayed as `reasoning (unverified)`, never
-  on the evidence line. Punt review uses the same evidence-packet grounding
-  rule, but a fresh-context reviewer must emit only `concur` or `challenge`.
-  Ungrounded or schema-invalid output is rejected and retried once with the
-  validator's errors named; if the proposer is still invalid the finding
-  resolves to `needs_verification`, and if the reviewer is still invalid or
-  unavailable the punt is challenged by a deterministic safe fallback with the
-  validation errors recorded — never guessed into grounded evidence.
-- **No evidence means no discard.** A finding whose packet holds nothing
-  checkable is proposed `needs_verification` deterministically, without invoking
-  an agent (and so at zero cost). Absence of evidence is never evidence for a
-  punt.
-- **Spend is visible.** Punt proposals can now incur both proposal and review
-  spend, and both legs are printed and written to the audit substrate
-  (`triage_proposal_events` / `triage_proposal_runs`). The run summary also
-  records whether the review stage reviewed punts or was an explicit no-op when
-  no punt proposals required review. The summary prints the `triage_run_id` the
-  operator later ratifies. An empty backlog invokes no agent and records an
-  explicit $0.00 run.
-- **`fix_now` needs a milestone.** Without `--current-milestone` or a
-  `current_milestone` in the report, `fix_now` is not offered to the agent and is
-  rejected by the validator — an unnameable target is not a checkable proposal.
-- **`--no-audit` means no later ratification.** A proposal run printed with
-  `--no-audit` leaves no `triage_run_id` rows in the substrate, so
-  `forge triage --ratify <id>` refuses it explicitly instead of pretending the
-  run had no findings.
 
 If `--report` names a file that does not exist or does not match the report
-contract, the command fails with an operator-legible error and invokes nothing.
+contract, the shelving rejection still wins: the proposal mode is unavailable
+regardless of artifact validity.
 
 ### Ratification and application mode
 
@@ -1155,24 +1090,14 @@ Applied: 2, stale: 1, skipped: 0, failed: 0
 
 ### Headless mode
 
-A `forge triage` invocation with no TTY on stdin cannot prompt, so it cannot
-ratify — and since application already requires ratification, a headless run can
-only propose and persist. It collects the backlog report (or uses `--report`),
-runs the proposal and punt-review stages with the run recorded to the audit
-substrate, and writes the reviewed package to
-`.forge/pending/triage-<triage-run-id>.yaml`.
+A `forge triage` invocation with no TTY on stdin is shelved on the same terms.
+Instead of collecting a report, proposing, reviewing, or writing a pending
+decision, it rejects with the same ADR-0010 guidance shown above. This includes
+the post-sprint helper when a project has opted into `sprint.post_sprint_triage:
+true`.
 
-```text
-$ forge triage            # from cron, stdin not a terminal
-triage: proposal pass proposed 3 disposition(s) (1 punt, concurred)
-triage: pending operator decision written — triage-4601fd03e0c7; resolve with 'forge triage --ratify 4601fd03e0c7'
-```
-
-Properties worth knowing:
-
-- **Never blocks, never applies.** No prompt is issued and no tracker mutation
-  is attempted on any headless path. `--ratify` refuses outright without a TTY,
-  before prompting and before applying anything.
+`--ratify` is unchanged: it still refuses without a TTY because ratification is
+an operator action and not part of the shelved proposal paths.
 - **The pending record is the product.** It carries the run summary, the
   proposals, the punt reviews, the cited evidence refs, the report path, and the
   finding/flagged counts. Unlike an HITL gate record it has no owning pid and no

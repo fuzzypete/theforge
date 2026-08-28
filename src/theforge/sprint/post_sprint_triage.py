@@ -42,24 +42,10 @@ def run_post_sprint_triage(state: Any) -> Any:
     the pass produced, or a failure outcome describing why it produced none.
     """
     from ..coordinator.triage_headless_flow import (  # noqa: PLC0415
-        HEADLESS_FAILED,
-        HeadlessTriageOutcome,
-        run_headless_triage,
+        shelved_headless_outcome,
     )
 
-    config = state.context.config
-    try:
-        outcome = run_headless_triage(config, project_root=config.project_root)
-    except Exception as exc:  # noqa: BLE001 - a broken triage pass never fails a sprint
-        message = f"post-sprint triage pass failed: {exc}"
-        _log(f"triage: {message} (the sprint result is unaffected)")
-        return HeadlessTriageOutcome(
-            status=HEADLESS_FAILED,
-            message=message,
-            error=str(exc),
-            lines=(f"triage: {message}",),
-        )
-
+    outcome = shelved_headless_outcome()
     for line in outcome.lines:
         _log(line)
     return outcome

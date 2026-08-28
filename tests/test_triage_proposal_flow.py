@@ -41,6 +41,15 @@ from theforge.triage_proposal import (
 from theforge.triage_report import parse_backlog_report
 
 
+@pytest.fixture(autouse=True)
+def _use_private_proposal_impl(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    if request.node.name == "test_public_entry_rejects_with_the_adr_message":
+        return
+    monkeypatch.setattr(flow, "run_triage_proposals", flow._run_triage_proposals_impl)
+
+
 def _config(tmp_path: Path) -> ForgeConfig:
     return ForgeConfig(
         project="test",
@@ -225,6 +234,12 @@ def _report(*, checkable: bool = True, findings: int = 1) -> object:
         },
         source_path="backlog.json",
     )
+
+
+class TestPublicShelf:
+    def test_public_entry_rejects_with_the_adr_message(self, tmp_path: Path) -> None:
+        with pytest.raises(flow.TriageProposalsShelvedError, match="ADR-0010"):
+            flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
 
 
 # ── Happy path ────────────────────────────────────────────────────────────────
