@@ -1,0 +1,63 @@
+schema_version: 2
+run_id: 85b75cbf390f
+authoritative_run_record: .forge/audits/runs/85b75cbf390f.json
+generated_at: '2026-08-27T16:53:04.083377+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0028564999999999997
+story:
+  slug: issue-2510
+  name: No canonical bug-heading spelling is declared, so the guide, the renderer
+    and the corpus each follow a different one
+  github_issue: 2510
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 4
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/authoring.md
+- tests/test_authoring_guide.py
+- tests/test_intake/test_shape_classify.py
+what_changed:
+  description: The authoring guide was aligned around a single canonical bug-heading
+    spelling, an explicit Diagnosis section position, and glossary definitions for
+    the operational vocabulary used in issue bodies. Validation expectations were
+    updated so the documented guide structure remains admissible while continuing
+    to accept legacy bug-heading aliases on input.
+  approach: 'The run treated the guide, intake classification, and executable checks
+    as one shared contract: it revised the documentation, adjusted shape-classification
+    expectations for canonical-versus-legacy heading handling, and added guide-focused
+    tests that enforce the documented structure and terminology under literal-content
+    guard.'
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- shared-doc-validator-contract
+- literal-doc-guard-requires-test-backed-edits
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The single review cycle approved once the canonical heading choice, Diagnosis
+    placement, glossary coverage, and admissible-example contract were all reflected
+    together.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.7482277499999999
+  dominant_difficulty: Keeping documentation, renderer-facing structure, and validator
+    admission behavior synchronized when legacy aliases must remain accepted but must
+    stop being emitted.

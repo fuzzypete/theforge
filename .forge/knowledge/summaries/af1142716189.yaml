@@ -1,0 +1,213 @@
+schema_version: 2
+run_id: af1142716189
+authoritative_run_record: .forge/audits/runs/af1142716189.json
+generated_at: '2026-08-26T20:14:28.397863+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01861875
+story:
+  slug: issue-2408
+  name: Nothing surfaces what a well-formed issue body requires, so an author discovers
+    each rule by submitting a body and reading the refusal
+  github_issue: 2408
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/authoring.md
+- docs/guides/cli-reference.md
+- src/theforge/cli/__init__.py
+- src/theforge/cli/author.py
+- src/theforge/cli/main.py
+- src/theforge/intake/author_flow.py
+- src/theforge/shape_check/document.py
+- tests/test_cli_author.py
+- tests/test_intake/test_author_flow.py
+what_changed:
+  description: This run added an interactive issue-authoring path that collects required
+    body parts before submission, can resume from existing drafts, validates against
+    the shared typed specification and shape gate, and documents the new CLI surface.
+  approach: The change was split between reusable intake logic and a thin CLI command
+    wired into the existing command tree, with shape-check alignment and focused authoring-flow
+    regressions used to close review findings around incomplete drafts, resume flows,
+    and issue promotion.
+  files_modified: *id002
+what_was_learned:
+- claim: When an authoring flow can resume incomplete drafts, completion must normalize
+    away any generated draft-status scaffolding before re-validation and output; otherwise
+    the tool can preserve or duplicate its own temporary markers into finished bodies.
+  evidence:
+  - type: review_finding
+    finding_id: 6a156f7403e60a6a
+    description: Review found that resuming an incomplete draft left the generated
+      'incomplete draft' banner in the finished body and could stack another copy
+      on a later incomplete pass, showing that resume flows must strip transient scaffolding
+      rather than treat prior rendered output as clean source.
+  - type: diff
+    ref: f57b8ba0e01a8c9c2208ca122502593831822c3f
+    description: This revision is where the cycle-1 fixes landed; paired with the
+      finding, it evidences that the correction required explicit handling in the
+      resume path rather than relying on normal completion alone.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly verified the banner-strip fix end-to-end,
+      confirming that normalization of saved incomplete drafts was a required condition
+      for a correct resumed-authoring flow.
+- claim: If an authoring command can mutate both issue metadata and body content during
+    promotion, it must order operations so the reversible body/title update succeeds
+    before label changes; otherwise a mid-flight failure can leave a draft appearing
+    promoted without a valid promoted body.
+  evidence:
+  - type: review_finding
+    finding_id: 253bcb7769dd246e
+    description: Review identified that label changes could succeed before a title/body
+      edit failure, removing todo:draft and leaving the old draft looking promoted,
+      which demonstrates that mixed metadata/content transitions are order-sensitive
+      and need the body update to be the gating step.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval called out 'body-before-label edit ordering' as
+      verified, showing that operation ordering was not incidental but the mechanism
+      that resolved the inconsistency.
+  - type: file
+    path: src/theforge/cli/author.py
+    description: The finding and verification both center on the CLI promotion path
+      in this file, demonstrating that orchestration logic at the command layer is
+      where transactional ordering must be enforced.
+- claim: Type selection in authoring flows must be constrained to types that the downstream
+    classifier and submission path can actually complete; exposing unsupported or
+    non-dispatchable types creates author loops that look like input errors but are
+    really impossible states.
+  evidence:
+  - type: review_finding
+    finding_id: 9c8271117505952b
+    description: Review showed that selecting 'epic' or 'operator-action' always produced
+      a draft-classified, refused result even when the body was fully answered, demonstrating
+      that the flow allowed types that could never reach a runnable completion.
+  - type: review_finding
+    finding_id: f9982f2fdf28b3dd
+    description: 'A later finding showed the same problem through resumed issues:
+      an inferred epic label bypassed the dispatchable-type filter and re-entered
+      the impossible path, showing the constraint must apply to inference/resume branches
+      as well as direct flag parsing.'
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approval verified that resumed epic drafts are now refused
+      before prompting, confirming the lesson that invalid types must be blocked at
+      entry to the flow, not discovered only after author effort.
+- claim: When translating shape-gate failures back into author prompts, the mapping
+    must preserve whether a finding is blocking versus advisory and should expose
+    unmapped reasons specifically; a generic 'missing parts' fallback can misstate
+    what the author actually needs to provide.
+  evidence:
+  - type: review_finding
+    finding_id: 47ea038c43cf5681
+    description: Review found that an unmapped refusal reason such as diagnosis_cause_unknown
+      degraded to a vague 'shape-gate findings remain' message with no concrete missing-part
+      guidance, showing that catch-all handling loses actionable specificity.
+  - type: review_finding
+    finding_id: 1e6b730dc187eefc
+    description: Review also found that the catch-all branch treated advisory implementation-plan
+      findings as if a Missing Example part were required, demonstrating that fallback
+      mapping must carry severity/semantics instead of converting every refusal into
+      the same required-input story.
+  - type: file
+    path: src/theforge/intake/author_flow.py
+    description: Both findings land in the intake translation layer, evidencing that
+      the author-facing prompt model is where gate outcomes must be classified precisely
+      rather than flattened.
+- claim: A resumed draft needs an explicit title-validity check independent of 'non-empty
+    string' presence, because imported placeholders such as file stems can suppress
+    prompting and silently become submitted titles.
+  evidence:
+  - type: review_finding
+    finding_id: e7742425408bc48f
+    description: Review found that a draft with neither frontmatter title nor H1 inherited
+      the file stem as title and therefore never prompted for one, showing that resume
+      logic must distinguish a syntactically present title from an author-confirmed,
+      submission-appropriate title.
+  - type: file
+    path: src/theforge/cli/author.py
+    description: The issue occurs in the resume/create command path, demonstrating
+      that title sourcing and validation belong in CLI intake orchestration rather
+      than being assumed correct once any value exists.
+learned_patterns:
+- resume-banner-normalization
+- body-before-label-promotion
+- dispatchable-type-gating
+- gate-finding-severity-mapping
+- explicit-title-validity-on-resume
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: ee3a5ec1435b4fdb
+    severity: P1
+    file: src/theforge/intake/author_flow.py
+    description: When a bug author supplies some missing Diagnosis fields and then
+      leaves a later Diagnosis field blank, the returned incomplete draft drops the
+      fields already supplied and reports only the first declined field as missing.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 620fd0c3b073ee48
+    severity: P1
+    file: src/theforge/cli/author.py
+    description: When forge author --create reaches an incomplete body without --output,
+      it refuses submission without writing or printing the incomplete draft.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 253bcb7769dd246e
+    severity: P1
+    file: src/theforge/cli/author.py
+    description: When promoting an existing draft issue and the title/body edit fails
+      after label changes succeed, the command can remove todo:draft from the old
+      draft body and leave it looking promoted.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 6a156f7403e60a6a
+    severity: P1
+    file: src/theforge/intake/author_flow.py
+    description: "Resuming a saved incomplete draft leaves the generated banner line\
+      \ 'Status: incomplete draft \u2014 do not submit yet' inside the finished body,\
+      \ so a completed, gate-passing issue is written out and filed still carrying\
+      \ the do-not-submit notice, and a second incomplete pass stacks another copy\
+      \ of the banner on top of the first."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 9c8271117505952b
+    severity: P1
+    file: src/theforge/cli/author.py
+    description: The --type flag offers 'epic' and 'operator-action', but a fully
+      answered body of either type is always classified as a draft, is stamped with
+      the incomplete-draft banner and todo:draft, and is refused at --create, so choosing
+      either type leaves the author in a loop with no answer that can ever finish,
+      and for operator-action the reported reason list is empty so the banner says
+      only that shape-gate findings remain.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases in resumed and incomplete-draft
+    paths, where temporary authoring state leaked into final submission behavior.
+  - Promotion and submission failures clustered around orchestration boundaries in
+    the CLI, especially where inferred state or partial side effects could bypass
+    the intended completion path.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 15.863607349999999
+  dominant_difficulty: Maintaining a single authoring flow that stays consistent across
+    fresh creation, resumed drafts, and issue promotion while translating shape-gate
+    outcomes back into accurate author-facing state.

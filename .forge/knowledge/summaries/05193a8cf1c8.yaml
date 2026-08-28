@@ -1,0 +1,85 @@
+schema_version: 2
+run_id: 05193a8cf1c8
+authoritative_run_record: .forge/audits/runs/05193a8cf1c8.json
+generated_at: '2026-08-26T06:14:41.021033+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008195000000000001
+story:
+  slug: issue-2755
+  name: A sprint's own run records refuse its remaining stories at entry, so a parallel
+    sprint can fail every story without landing anything
+  github_issue: 2755
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/runner.py
+- tests/test_sprint_run_artifact_publish_timing.py
+what_changed:
+  description: The sprint runner was adjusted so terminal story audits for non-integration
+    outcomes are settled and published before later stories evaluate shared-checkout
+    admission conditions. Focused timing regressions were updated around refused-before-integration
+    stories in parallel project-root landing.
+  approach: The change centralized the write-and-publish path for terminal non-integration
+    outcomes into a single helper seam, then routed each relevant terminal branch
+    through it so publication happens at the point the story is conclusively finished.
+  files_modified: *id002
+what_was_learned:
+- claim: When terminal bookkeeping is emitted from multiple outcome branches, future
+    work should first create a single settlement path for write-plus-publish behavior;
+    otherwise later branches can easily write the record but forget the publication
+    step.
+  evidence:
+  - type: review_finding
+    finding_id: eb489cd17af56b1f
+    description: The review explicitly identified that scattered call sites decoupled
+      audit writing from publication, and that this structure creates omission risk
+      for future terminal branches, which is a planning lesson about centralizing
+      the seam.
+  - type: plan_step
+    step_id: '1'
+    description: The first planned action was to add one post-audit publish helper
+      for terminal non-integration outcomes, showing the run treated consolidation
+      as the prerequisite to resolving the class of failures.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved a refactoring that consolidated write and publish
+      into a unified settlement seam specifically to prevent accidental omissions
+      in future branches, demonstrating the broader reusable pattern.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: This file held the runner control flow where terminal outcomes are
+      decided, so consolidating settlement here shows the mechanism for avoiding branch-specific
+      publish gaps is to centralize the branch exit path.
+learned_patterns:
+- centralize-terminal-audit-settlement
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on the structural risk of scattered terminal-outcome handling leaving
+    future branches without artifact publication.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 16.7616133
+  dominant_difficulty: Coordinating shared-checkout state under parallel terminal
+    outcomes without letting one story's bookkeeping interfere with another story's
+    admission.
