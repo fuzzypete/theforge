@@ -32,7 +32,7 @@ ADR-0001 establishes intake readiness as a deliberate pre-sprint operator workfl
 
 What ADR-0001 does not define is **who owns label state and on what synchronicity contract**. Today two parties write to the same label namespace:
 
-1. **The `.github/workflows/shape-check.yml` GitHub Actions workflow** — fires on issue create/edit, evaluates the body against shape-check heuristics, adds/removes `needs-grooming` accordingly. This is the *passive ambient labeler*: it provides backlog visibility, runs outside any sprint context, and reflects "is this issue in shape today?"
+1. **The `.github/workflows/shape-check.yml` GitHub Actions workflow** — fires on issue create/edit/label-change/reopen (labels are verdict-relevant input, so a retype changes the verdict with no body edit) and evaluates *current* issue state, refetched at run time rather than read from the triggering webhook snapshot, against shape-check heuristics, adds/removes `needs-grooming` accordingly. This is the *passive ambient labeler*: it provides backlog visibility, runs outside any sprint context, and reflects "is this issue in shape today?"
 2. **The sprint runner's intake-remediation pass** — when grooming auto-fix is enabled, the runner edits issue bodies to fix shape-gate violations and locally re-evaluates the gate. This is the *active in-sprint remediator*: it runs inside a specific sprint invocation and answers "is this issue dispatch-eligible right now?"
 
 Both write the same label namespace. Both read it as if it were authoritative. Neither coordinates with the other.

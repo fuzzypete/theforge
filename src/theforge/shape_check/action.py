@@ -29,6 +29,12 @@ COMMENT_MARKER = "<!-- shape-check-v1 -->"
 DEFAULT_NEEDS_GROOMING_LABEL = "needs-grooming"
 DEFAULT_TRACKING_LABEL = "epic"
 
+# Issue actions that can change the shape verdict. Label changes count because
+# check() consumes labels — retyping bug -> enhancement changes the verdict
+# with no body edit. Must stay in sync with on.issues.types in
+# .github/workflows/shape-check.yml.
+ISSUE_ACTIONS = ("opened", "edited", "labeled", "unlabeled", "reopened")
+
 logger = logging.getLogger("shape_check.action")
 
 
@@ -47,6 +53,7 @@ class GitHubAPI(Protocol):
 
     def add_label(self, issue_number: int, label: str) -> None: ...
     def remove_label(self, issue_number: int, label: str) -> None: ...
+    def get_issue(self, issue_number: int) -> dict[str, Any]: ...
     def list_open_issues(self) -> list[dict[str, Any]]: ...
     def list_comments(self, issue_number: int) -> list[dict[str, Any]]: ...
     def create_comment(self, issue_number: int, body: str) -> None: ...
@@ -135,6 +142,10 @@ class HttpGitHubAPI:
 
     def remove_label(self, issue_number: int, label: str) -> None:
         self._request("DELETE", f"/issues/{issue_number}/labels/{quote(label, safe='')}")
+
+    def get_issue(self, issue_number: int) -> dict[str, Any]:
+        """Read current issue state — the webhook payload is a stale snapshot."""
+        return dict(self._request("GET", f"/issues/{issue_number}") or {})
 
     def list_open_issues(self) -> list[dict[str, Any]]:
         issues = self._get_paginated("/issues?state=open&per_page=100")
@@ -236,17 +247,28 @@ def find_bot_comment(comments: list[dict[str, Any]], bot_login: str) -> dict[str
     return None
 
 
-def _log_result(issue_number: int, result: ShapeResult, author: str) -> None:
-    """Greppable one-line log for drift analysis."""
+def _log_result(
+    issue_number: int,
+    result: ShapeResult,
+    author: str,
+    *,
+    updated_at: str = "-",
+) -> None:
+    """Greppable one-line log for drift analysis.
+
+    ``updated_at`` is the ``updated_at`` of the issue state the verdict was
+    computed from, so out-of-order writes are diagnosable from the log alone.
+    """
     codes = ",".join(reason.code for reason in result.reasons) or "-"
     logger.info(
-        "shape_check issue=%d author=%s shape=%s verdict=%s action=%s reasons=%s",
+        "shape_check issue=%d author=%s shape=%s verdict=%s action=%s reasons=%s updated_at=%s",
         issue_number,
         author,
         result.shape.value,
         result.verdict.value,
         result.suggested_action.value,
         codes,
+        updated_at,
     )
 
 
@@ -449,21 +471,34 @@ def run_action(
     api: GitHubAPI,
     config: ActionConfig | None = None,
 ) -> ShapeResult:
-    """Act on a GitHub issues.opened/edited event payload.
+    """Act on a GitHub issues event payload (opened/edited/labeled/…).
 
     Labels, posts/updates a bot comment, and returns the ShapeResult.
     Never raises on a well-formed payload unless the API itself fails.
+
+    The event payload is only used for the issue number: the verdict is
+    computed from a fresh read of current issue state, fetched as late as
+    possible before planning, so a run for an older event that finishes after
+    a run for a newer one still writes the verdict for the newest state.
     """
     config = config or ActionConfig()
-    issue = issue_from_payload(event["issue"])
+    issue_number = int(event["issue"]["number"])
+    comments = api.list_comments(issue_number)
+    current = api.get_issue(issue_number)
+    issue = issue_from_payload(current)
     reconciliation = plan_issue_reconciliation(
         issue,
-        api.list_comments(issue.number),
+        comments,
         bot_login=api.bot_login(),
         config=config,
         policy_digest=compute_policy_digest(),
     )
-    _log_result(issue.number, reconciliation.result, issue.author)
+    _log_result(
+        issue.number,
+        reconciliation.result,
+        issue.author,
+        updated_at=str(current.get("updated_at") or "-"),
+    )
     apply_reconciliation(api, reconciliation)
     return reconciliation.result
 
@@ -538,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
 
     event = _load_event_from_env()
     action_kind = event.get("action") or ""
-    if action_kind not in ("opened", "edited"):
+    if action_kind not in ISSUE_ACTIONS:
         logger.info("shape_check skipped: action=%s", action_kind)
         return 0
 
