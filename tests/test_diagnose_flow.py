@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from coord_test_helpers import _make_config
 
@@ -1015,6 +1016,11 @@ class TestDiagnoseFlow:
         assert result.state.artifact is not None
         assert result.state.artifact.partial is True
         assert result.state.artifact.symptom_scope_coverage == SymptomScopeCoverage()
+        assert mock_post.call_count == 1
+        landed_markdown = mock_post.call_args.args[1]
+        assert "confirmed a cause" in landed_markdown
+        assert "categorical symptom scope coverage remains incomplete" in landed_markdown
+        assert "did not reach a confirmed cause" not in landed_markdown
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-44-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
@@ -1596,6 +1602,40 @@ class TestDiagnoseFlow:
         assert decisions == ["asked"]
         # No file was written
         assert not (tmp_path / ".forge" / "diagnoses" / "issue-9.md").exists()
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_interactive_mode_does_not_retry_confirmer_internal_type_error(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 10,
+            "title": "x",
+            "body": "y",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        calls = []
+
+        def boom(_artifact):
+            calls.append("asked")
+            raise TypeError("callback body failed")
+
+        with pytest.raises(TypeError, match="callback body failed"):
+            run_diagnose_flow(
+                issue_number=10,
+                config=config,
+                project_root=tmp_path,
+                output_destination="pr_to_body",
+                interactive=True,
+                confirm_landing=boom,
+            )
+
+        assert calls == ["asked"]
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     def test_closed_issue_is_refused(self, mock_fetch, tmp_path):
