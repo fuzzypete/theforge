@@ -42,6 +42,7 @@ CATEGORY_TRANSPORT = "transport"  # connection dropped, rate limit, provider 5xx
 CATEGORY_TIMEOUT = "timeout"  # wall-clock kill before any text existed
 CATEGORY_STARTUP = "startup"  # CLI/binary/sandbox could not start at all
 CATEGORY_PROCESS = "process"  # non-zero exit / signal with no output
+CATEGORY_NO_RESULT = "no_result"  # agent ran but ended without a terminal result
 
 ALLOWED_FAILURE_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -50,6 +51,7 @@ ALLOWED_FAILURE_CATEGORIES: frozenset[str] = frozenset(
         CATEGORY_TIMEOUT,
         CATEGORY_STARTUP,
         CATEGORY_PROCESS,
+        CATEGORY_NO_RESULT,
     }
 )
 
@@ -309,6 +311,8 @@ def classify_failure_category(result: Any) -> str:
         return CATEGORY_TIMEOUT
     if failure_code in _TRANSPORT_FAILURE_CODES:
         return CATEGORY_TRANSPORT
+    if failure_code == "agent_ended_without_result":
+        return CATEGORY_NO_RESULT
     text = _text_of(result)
     if _looks_like_auth_failure(text):
         return CATEGORY_AUTH
