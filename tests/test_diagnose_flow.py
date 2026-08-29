@@ -3126,6 +3126,35 @@ class TestPremiseVerification:
             ),
         )
 
+    def test_verify_premise_ignores_sentence_word_after_line_locator(self, tmp_path):
+        """A comma-suffix prose word after ``path:line`` is not a checkable symbol
+        premise when the cited file history never referenced it."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis
+
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def present_func():\n    return 1\n",
+            "seed",
+        )
+        head = _git(["rev-parse", "HEAD"], tmp_path)
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="src/mod.py:120, unchanged.",
+            fix_success_criterion="f",
+        )
+        verdict = verify_premise(artifact, head, tmp_path)
+        assert verdict.resolved is False
+        assert verdict.absent == ()
+        assert verdict.unable_to_check == ()
+
 
 class TestParsePremiseAnchors:
     def test_parses_premise_anchors(self):

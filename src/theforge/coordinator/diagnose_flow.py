@@ -331,6 +331,35 @@ def _find_pattern_removing_commit(
     )
 
 
+def _symbol_present_in_reachable_history(
+    path: str, symbol: str, sha: str, project_root: Path
+) -> bool:
+    """Return True when ``symbol`` appears in ``path`` history reachable from ``sha``."""
+    if not path or not symbol or not sha:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "-G",
+                rf"\b{re.escape(symbol)}\b",
+                "-1",
+                "--format=%H",
+                sha,
+                "--",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def _path_seen_in_history(path: str, sha: str, project_root: Path) -> bool:
     """Return True when ``path`` appears anywhere in history reachable from ``sha``."""
     if not path or not sha:
@@ -565,15 +594,17 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                     )
                 )
             else:
-                unable_to_check.append(
-                    UncheckedPremise(
-                        file=path,
-                        pattern=symbol,
-                        reason=(
-                            "symbol absent at baseline but no removing commit could be identified"
-                        ),
+                if _symbol_present_in_reachable_history(path, symbol, sha, project_root):
+                    unable_to_check.append(
+                        UncheckedPremise(
+                            file=path,
+                            pattern=symbol,
+                            reason=(
+                                "symbol absent at baseline but no removing commit "
+                                "could be identified"
+                            ),
+                        )
                     )
-                )
 
     deduped_unchecked: list[UncheckedPremise] = []
     seen_unchecked: set[tuple[str, str, str]] = set()
