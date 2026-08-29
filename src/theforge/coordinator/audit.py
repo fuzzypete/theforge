@@ -601,6 +601,7 @@ def _serialize_gate_diagnostic_metrics(state: CoordinatorState) -> list[dict]:
             "trace_path": item.trace_path,
             "command": item.command,
             "ran": item.ran,
+            "workload_executed": item.ran,
             "budget_s": item.budget_s,
             "per_test_timeout_s": item.per_test_timeout_s,
             "exit_code": item.exit_code,

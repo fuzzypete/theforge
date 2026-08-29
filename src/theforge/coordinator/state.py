@@ -380,7 +380,8 @@ class GateDiagnosticTelemetry:
     trace_index: int
     trace_path: str
     command: str
-    ran: bool  # True only when the diagnostic observed enough test execution to support inference
+    # True/False when workload execution was observed/refuted; None = indeterminate.
+    ran: bool | None
     budget_s: int  # hard wall-clock cap for the whole pass
     per_test_timeout_s: int  # --timeout= value applied to each test
     exit_code: int | None

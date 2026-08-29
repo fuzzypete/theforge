@@ -747,11 +747,17 @@ def _build_timeout_rca_packet(
                 " test could be isolated. The hang may be spread across setup/collection or be"
                 " concurrency-specific."
             )
-        elif not diagnostic.ran:
+        elif diagnostic.ran is False:
             diag_lines.append(
                 "The diagnostic invocation did not execute test workload, so it gathered no"
                 " evidence about serialized-versus-parallel behavior. Do not infer a"
                 " concurrency-specific bug from this result."
+            )
+        elif diagnostic.ran is None:
+            diag_lines.append(
+                "The diagnostic invocation finished without enough runner output to tell"
+                " whether test workload executed. Treat this pass as inconclusive about"
+                " serialized-versus-parallel behavior."
             )
         elif diagnostic.exit_code != 0:
             diag_lines.append(

@@ -1097,6 +1097,23 @@ def test_migrate_v13_to_v14_leaves_an_already_renamed_entry_alone() -> None:
     assert entry == {"trace_index": 7, "trace_path": ".forge/traces/7-gate-debug.txt"}
 
 
+def test_migrate_v38_to_v39_backfills_gate_diagnostic_workload_executed() -> None:
+    """Older records gain the clearer alias without losing the historical field."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [{"trace_index": 3, "command": "pytest -n 0", "ran": False}]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is False
+    assert diagnostic["workload_executed"] is False
+    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
+
+
 def test_migrate_record_chains_up_to_v14() -> None:
     """The registry reaches the current version, so v12 records load migrated."""
     record = {

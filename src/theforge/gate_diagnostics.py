@@ -48,6 +48,10 @@ _PYTEST_NODE_RESULT_RE = re.compile(
     re.MULTILINE,
 )
 _PYTEST_NO_TESTS_RAN_RE = re.compile(r"\bno tests ran\b", re.IGNORECASE)
+_PYTEST_ARGUMENT_ERROR_RE = re.compile(
+    r"^\S+:\s*error:\s+unrecognized arguments:",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def extract_hanging_test(output: str) -> str | None:
@@ -76,20 +80,30 @@ def diagnostic_workload_executed(
     exit_code: int | None,
     timed_out: bool,
     hanging_test: str | None,
-) -> bool:
+) -> bool | None:
     """Return whether the diagnostic observed test execution strongly enough to support inference.
+
+    Returns ``True`` when execution is clearly observed, ``False`` when output
+    clearly shows no test workload ran, and ``None`` when the invocation
+    finished but the output is too runner-specific to classify honestly.
 
     This is intentionally conservative. A launched command is not enough: the
     timeout RCA consumer must be able to distinguish "the diagnostic ran and
-    found nothing" from "the invocation failed before any useful workload ran".
+    found nothing" from "the invocation failed before any useful workload ran",
+    while operator-overridden non-pytest runners may only justify
+    "indeterminate".
     """
     if timed_out or hanging_test is not None:
         return True
     if _PYTEST_NO_TESTS_RAN_RE.search(output):
         return False
+    if _PYTEST_ARGUMENT_ERROR_RE.search(output):
+        return False
     if _PYTEST_RESULT_SUMMARY_RE.search(output) or _PYTEST_NODE_RESULT_RE.search(output):
         return True
-    return exit_code == 0 and bool(output.strip())
+    if exit_code == 0 and bool(output.strip()):
+        return True
+    return None
 
 
 def _resolve_test_target(config: ForgeConfig, task: TaskStory | None) -> str:

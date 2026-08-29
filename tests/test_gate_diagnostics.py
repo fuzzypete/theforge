@@ -85,6 +85,19 @@ def test_diagnostic_workload_executed_false_when_pytest_rejects_arguments() -> N
     )
 
 
+def test_diagnostic_workload_executed_none_when_runner_output_is_indeterminate() -> None:
+    output = "runner: suite aborted after environment bootstrap\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=1,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is None
+    )
+
+
 def test_diagnostic_pass_hang_reproduces_single_threaded(tmp_path: Path) -> None:
     """Hang reproduces under serialized run: the hanging test node is isolated and highlighted."""
     config = _diag_config(tmp_path)
@@ -223,6 +236,49 @@ def test_diagnostic_pass_non_timeout_failure_does_not_claim_concurrency(tmp_path
         )
     assert "exited with code 1" in packet
     assert "This suggests a concurrency-specific bug" not in packet
+
+
+def test_diagnostic_pass_indeterminate_runner_output_is_reported_as_inconclusive(
+    tmp_path: Path,
+) -> None:
+    """A custom runner can finish without enough output to classify workload execution."""
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(
+            config.validation,
+            gate_diagnostic_command="custom-runner {test_target}",
+        ),
+    )
+    task = _make_task(tmp_path)
+    output = "runner: suite aborted after environment bootstrap\n"
+    with patch_gate_shell(
+        return_value=(False, output, 1, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=6)
+
+    assert telemetry is not None
+    assert telemetry.ran is None
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 1
+
+    state = CoordinatorState(dev_iteration=6)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "finished without enough runner output" in packet
+    assert "concurrency-specific bug" not in packet
 
 
 def test_diagnostic_pass_itself_times_out(tmp_path: Path) -> None:
