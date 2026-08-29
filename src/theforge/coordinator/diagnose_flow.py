@@ -55,7 +55,9 @@ from theforge.diagnose_types import (
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
+from theforge.shape_check.document import parse_issue_document, render_issue_document, with_section
 from theforge.shape_check.heuristics import _diagnosis_cause_unknown, is_bug_format_issue
+from theforge.shape_check.issue_spec import BUG_SPEC, EXPECTED_SECTION, OBSERVED_SECTION
 from theforge.shape_check.producer import require_conforming_body
 from theforge.shape_check.types import ShapeVerdict
 from theforge.task.diagnose_prompts import (
@@ -1045,6 +1047,36 @@ def _declared_diagnosis_verdict(artifact: DiagnosisArtifact, section: str) -> Sh
     return ShapeVerdict.RUNNABLE
 
 
+def _ensure_bug_capture_sections(
+    body: str,
+    artifact: DiagnosisArtifact,
+    issue_labels: list[str],
+) -> str:
+    """Add missing required bug capture sections before validating the landed body."""
+    if not is_bug_format_issue(body, issue_labels):
+        return body
+
+    document = parse_issue_document(body, type_spec=BUG_SPEC)
+    if document.section(OBSERVED_SECTION.key) is None:
+        document = with_section(
+            document,
+            OBSERVED_SECTION.key,
+            (artifact.observed_symptom.strip() or "The reported bug occurs in the observed run."),
+            type_spec=BUG_SPEC,
+        )
+    if document.section(EXPECTED_SECTION.key) is None:
+        document = with_section(
+            document,
+            EXPECTED_SECTION.key,
+            (
+                artifact.fix_success_criterion.strip()
+                or "The reported bug should not occur in the target repository."
+            ),
+            type_spec=BUG_SPEC,
+        )
+    return render_issue_document(document)
+
+
 def _land_artifact(
     state: DiagnoseState,
     artifact: DiagnosisArtifact,
@@ -1076,6 +1108,7 @@ def _land_artifact(
             _emit_dry_run(section)
             return "<dry-run: body_section>"
         new_body = upsert_diagnosis_section(state.issue_body, section)
+        new_body = _ensure_bug_capture_sections(new_body, artifact, list(issue_labels or []))
         # Validate before mutating. A Diagnosis section carrying file:line
         # citations reads as an implementation plan on a non-bug issue, so the
         # very landing that makes a bug fix-ready can make an enhancement

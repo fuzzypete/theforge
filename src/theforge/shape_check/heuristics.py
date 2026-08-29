@@ -30,7 +30,9 @@ from theforge.shape_check.issue_spec import (
     DIAGNOSIS_SECTION,
     ENHANCEMENT_SPEC,
     EXAMPLE_SECTION,
+    EXPECTED_SECTION,
     ISSUE_SHAPE_REFERENCE_PATH,
+    OBSERVED_SECTION,
     RECOGNIZED_TYPE_LABELS,
     SECTIONS,
     ContradictionTrigger,
@@ -175,6 +177,10 @@ DIAGNOSIS_HEADING_PATTERN = DIAGNOSIS_SECTION.heading_pattern
 # DIAGNOSIS_HEADING_PATTERN (#2263). These are the specification's declared
 # alias spellings, which is also exactly what the renderer canonicalizes.
 DIAGNOSIS_CANONICAL_HEADING_TEXTS = DIAGNOSIS_SECTION.normalized_aliases
+OBSERVED_HEADING_PATTERN = OBSERVED_SECTION.heading_pattern
+OBSERVED_CANONICAL_HEADING_TEXTS = OBSERVED_SECTION.normalized_aliases
+EXPECTED_HEADING_PATTERN = EXPECTED_SECTION.heading_pattern
+EXPECTED_CANONICAL_HEADING_TEXTS = EXPECTED_SECTION.normalized_aliases
 
 
 @dataclass(frozen=True)
@@ -879,6 +885,80 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
             f"{describe_missing(missing)}.{_diagnosis_unreadable_region_hint(body, missing)} "
             f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
         ),
+    )
+
+
+def _section_content(section: str) -> str:
+    """Return a section's content without its heading line."""
+    _heading, _sep, rest = section.partition("\n")
+    return rest
+
+
+def _required_bug_section_reason(
+    body: str,
+    labels: Iterable[str],
+    *,
+    section_key: str,
+    heading_pattern: str,
+    canonical_texts: tuple[str, ...],
+    detail_heading: str,
+    code: str,
+) -> Reason | None:
+    if _presence_of(body, labels, section_key) is not Presence.REQUIRED:
+        return None
+    section = extract_authoritative_section(body, heading_pattern, canonical_texts)
+    if section is None:
+        condition = "absent"
+    else:
+        content = _section_content(section)
+        if not content.strip():
+            condition = "empty"
+        elif is_placeholder_only(content):
+            condition = "contains only placeholder scaffolding"
+        else:
+            return None
+    return Reason(
+        code=code,
+        severity=Severity.BLOCKING,
+        detail=(
+            f"Bug {detail_heading!r} section is required but {condition}. "
+            f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
+        ),
+    )
+
+
+def check_bug_missing_observed(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    """Refuse bug bodies missing required observed section content.
+
+    The test is purely mechanical: a required section fails only when it is
+    absent, empty, or placeholder-only. Any non-placeholder prose satisfies
+    the requirement, whatever its wording or length.
+    """
+    if not _lower_labels(labels) & _BUG_LABELS:
+        return None
+    return _required_bug_section_reason(
+        body,
+        labels,
+        section_key=OBSERVED_SECTION.key,
+        heading_pattern=OBSERVED_HEADING_PATTERN,
+        canonical_texts=OBSERVED_CANONICAL_HEADING_TEXTS,
+        detail_heading=OBSERVED_SECTION.canonical_heading,
+        code="missing_observed",
+    )
+
+
+def check_bug_missing_expected(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    """Refuse bug bodies missing required expected section content."""
+    if not _lower_labels(labels) & _BUG_LABELS:
+        return None
+    return _required_bug_section_reason(
+        body,
+        labels,
+        section_key=EXPECTED_SECTION.key,
+        heading_pattern=EXPECTED_HEADING_PATTERN,
+        canonical_texts=EXPECTED_CANONICAL_HEADING_TEXTS,
+        detail_heading=EXPECTED_SECTION.canonical_heading,
+        code="missing_expected",
     )
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from theforge.shape_check.heuristics import (
+    check_bug_missing_observed,
     check_missing_acceptance_criteria,
     check_missing_example,
 )
@@ -51,6 +52,8 @@ Post-groom verdict: needs_grooming_missing_example
         "1. FIXME: needs content",
         "- [ ] TODO: decide",
         "> XXX placeholder",
+        "<insert observation here>",
+        "<fill in>",
     ],
 )
 def test_placeholder_lines_are_recognized(line):
@@ -98,6 +101,26 @@ def test_is_placeholder_only_distinguishes_mixed_content():
 def test_strip_keeps_unclosed_fence_with_content():
     section = "```\nreal sample output\n"
     assert "real sample output" in strip_placeholder_content(section)
+
+
+def test_placeholder_only_observed_section_is_refused():
+    body = (
+        "## Observed\n\n"
+        "<insert observation here>\n\n"
+        "## Expected\n\n"
+        "The command exits 0.\n\n"
+        "## Diagnosis\n\n"
+        "- **Observed symptom.** The command exits 1.\n"
+        "- **Evidence.** Run `abc123`.\n"
+        "- **Ruled out.** Shell alias drift.\n"
+        "- **Confirmed cause.** Exit code is inverted.\n"
+        "- **Affected code path.** `cli.main`.\n"
+        "- **Fix-success criterion.** Success exits 0.\n"
+    )
+    reason = check_bug_missing_observed("Exit code", body, ["bug"])
+    assert reason is not None
+    assert reason.code == "missing_observed"
+    assert "placeholder" in reason.detail.lower()
 
 
 # ── check_missing_example ─────────────────────────────────────────────────

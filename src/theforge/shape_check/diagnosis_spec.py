@@ -33,6 +33,8 @@ from collections.abc import Iterable
 from theforge.shape_check.issue_spec import (
     BUG_SHAPE_REFERENCE_PATH,
     DIAGNOSIS_SECTION,
+    EXPECTED_SECTION,
+    OBSERVED_SECTION,
     FieldSpec,
 )
 
@@ -122,13 +124,25 @@ def render_diagnosis_requirements_block() -> str:
 
 
 def render_bug_skeleton_body() -> str:
-    """Render a fileable ``## Diagnosis`` skeleton from the spec.
+    """Render a fileable bug skeleton from the spec.
 
     A bug body that starts from this skeleton passes the shape gate by
-    construction: every component's bullet contains its own token, and the
+    construction: it carries the required observed/expected sections, every
+    Diagnosis component's bullet contains its own token, and the
     confirmed-cause example is a specific claim (implementation-ready).
     """
-    lines = [DIAGNOSIS_HEADING, ""]
+    lines = [
+        OBSERVED_SECTION.canonical_heading_line,
+        "",
+        "The command exits 1 instead of 0 on success.",
+        "",
+        EXPECTED_SECTION.canonical_heading_line,
+        "",
+        "The command exits 0 on success.",
+        "",
+        DIAGNOSIS_HEADING,
+        "",
+    ]
     for component in REQUIRED_DIAGNOSIS_COMPONENTS:
         lines.append(component.bullet())
     lines.append("")
@@ -147,7 +161,9 @@ def render_bug_shape_reference() -> str:
         "> Generated from `theforge.shape_check.diagnosis_spec`. Do not edit by hand —",
         "> run the shape-reference generator (or the test that regenerates it) instead.",
         "",
-        "A bug-typed issue is *fix-ready* when its body carries a complete",
+        "A bug-typed issue is *fix-ready* when its body carries required",
+        f"`{OBSERVED_SECTION.canonical_heading_line}` / "
+        f"`{EXPECTED_SECTION.canonical_heading_line}` sections and a complete",
         f"`{DIAGNOSIS_HEADING}` section. The shape gate refuses symptom-only bug bodies;",
         "an honest non-assertion confirmed cause (`unknown`, `not yet identified`,",
         "`pending investigation`, `TBD`) is admissible and marks the bug",

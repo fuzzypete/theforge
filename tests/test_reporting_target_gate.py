@@ -19,9 +19,13 @@ from theforge.reporting import target_gate as tg
 GATE_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "theforge" / "shape_check"
 
 BUG_BODY = """\
-## Problem
+## Observed
 
 Sprint resume reported a story merged when no commit landed.
+
+## Expected
+
+Sprint resume should not report a story merged until a landed commit proves it.
 
 ## Diagnosis
 
