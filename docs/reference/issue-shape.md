@@ -37,8 +37,8 @@ A defect report: what happened, what should have happened, and why.
 
 | Section | Heading | Rule |
 | --- | --- | --- |
-| Observed | `## Observed` (also recognized: `What happened`) | advisory — reported when absent, but it decides nothing |
-| Expected | `## Expected` (also recognized: `What was expected`) | advisory — reported when absent, but it decides nothing |
+| Observed | `## Observed` (also recognized: `What happened`) | required — the gate refuses a body without it |
+| Expected | `## Expected` (also recognized: `What was expected`) | required — the gate refuses a body without it |
 | Steps to reproduce | `## Steps to reproduce` (also recognized: `Reproduction`) | optional — modeled so it renders canonically |
 | Diagnosis | `## Diagnosis` (also recognized: `Root cause`) | required — the gate refuses a body without it |
 | Acceptance criteria | `## Acceptance criteria` (also recognized: `Done criteria`, `Checklist`) | forbidden — its presence contradicts this type |

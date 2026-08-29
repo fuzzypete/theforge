@@ -55,7 +55,19 @@ from theforge.diagnose_types import (
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
-from theforge.shape_check.heuristics import _diagnosis_cause_unknown, is_bug_format_issue
+from theforge.shape_check.document import (
+    parse_issue_document,
+    render_issue_document,
+    replace_section,
+    with_section,
+)
+from theforge.shape_check.heuristics import (
+    _diagnosis_cause_unknown,
+    check_bug_missing_expected,
+    check_bug_missing_observed,
+    is_bug_format_issue,
+)
+from theforge.shape_check.issue_spec import BUG_SPEC, EXPECTED_SECTION, OBSERVED_SECTION
 from theforge.shape_check.producer import require_conforming_body
 from theforge.shape_check.types import ShapeVerdict
 from theforge.task.diagnose_prompts import (
@@ -1045,6 +1057,56 @@ def _declared_diagnosis_verdict(artifact: DiagnosisArtifact, section: str) -> Sh
     return ShapeVerdict.RUNNABLE
 
 
+def _ensure_bug_capture_sections(
+    body: str,
+    artifact: DiagnosisArtifact,
+    issue_labels: list[str],
+) -> str:
+    """Add missing required bug capture sections before validating the landed body."""
+    if not is_bug_format_issue(body, issue_labels):
+        return body
+
+    document = parse_issue_document(body, type_spec=BUG_SPEC)
+    observed_text = (
+        artifact.observed_symptom.strip() or "The reported bug occurs in the observed run."
+    )
+    expected_text = (
+        artifact.fix_success_criterion.strip()
+        or "The reported bug should not occur in the target repository."
+    )
+    if check_bug_missing_observed("", body, issue_labels) is not None:
+        if document.section(OBSERVED_SECTION.key) is None:
+            document = with_section(
+                document,
+                OBSERVED_SECTION.key,
+                observed_text,
+                type_spec=BUG_SPEC,
+            )
+        else:
+            document = replace_section(document, OBSERVED_SECTION.key, observed_text)
+    if check_bug_missing_expected("", body, issue_labels) is not None:
+        if document.section(EXPECTED_SECTION.key) is None:
+            document = with_section(
+                document,
+                EXPECTED_SECTION.key,
+                expected_text,
+                type_spec=BUG_SPEC,
+            )
+        else:
+            document = replace_section(document, EXPECTED_SECTION.key, expected_text)
+    return render_issue_document(document)
+
+
+def _bug_capture_reasons(title: str, body: str, issue_labels: list[str]) -> tuple[str, ...]:
+    """Return blocking bug-capture reason details diagnose must refuse up front."""
+    reasons = []
+    for check_fn in (check_bug_missing_observed, check_bug_missing_expected):
+        reason = check_fn(title, body, issue_labels)
+        if reason is not None:
+            reasons.append(f"{reason.code}: {reason.detail}")
+    return tuple(reasons)
+
+
 def _land_artifact(
     state: DiagnoseState,
     artifact: DiagnosisArtifact,
@@ -1076,6 +1138,7 @@ def _land_artifact(
             _emit_dry_run(section)
             return "<dry-run: body_section>"
         new_body = upsert_diagnosis_section(state.issue_body, section)
+        new_body = _ensure_bug_capture_sections(new_body, artifact, list(issue_labels or []))
         # Validate before mutating. A Diagnosis section carrying file:line
         # citations reads as an implementation plan on a non-bug issue, so the
         # very landing that makes a bug fix-ready can make an enhancement
@@ -1499,6 +1562,16 @@ def _run_diagnose_flow_body(
     issue_state = str(issue.get("state", "OPEN")).upper()
     if issue_state != "OPEN":
         state.error = f"Issue #{issue_number} is {issue_state.lower()}; refusing to diagnose"
+        emit_phase(DiagnosePhase.FAILED)
+        write_diagnose_audit(state, project_root)
+        return DiagnoseResult(success=False, state=state, message=state.error)
+
+    bug_capture_reasons = _bug_capture_reasons(state.issue_title, state.issue_body, issue_labels)
+    if bug_capture_reasons:
+        state.error = (
+            f"Refusing to diagnose: issue #{issue_number} is missing required bug capture "
+            f"content. {' | '.join(bug_capture_reasons)}"
+        )
         emit_phase(DiagnosePhase.FAILED)
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
