@@ -116,6 +116,8 @@ def test_partial_diagnosis_collects_only_missing_fields_and_preserves_existing_v
 
 def test_partial_diagnosis_decline_preserves_answers_and_reports_remaining_missing() -> None:
     body = (
+        "## Observed\n\nResume reports merged work without a landed commit.\n\n"
+        "## Expected\n\nResume leaves unmerged work in the rerun set.\n\n"
         "## Diagnosis\n\n"
         "- **Observed symptom:** resume reports merged work without a landed commit.\n"
         "- **Evidence:** run id `abc123` shows the false positive.\n"
@@ -146,6 +148,8 @@ def test_partial_diagnosis_decline_preserves_answers_and_reports_remaining_missi
 
 def test_unknown_confirmed_cause_surfaces_reason_detail_in_missing_parts() -> None:
     body = (
+        "## Observed\n\nReady queue and sprint entry disagree.\n\n"
+        "## Expected\n\nReady queue and sprint entry agree on ready issues.\n\n"
         "## Diagnosis\n\n"
         "- **Observed symptom:** ready queue and sprint entry disagree.\n"
         "- **Evidence:** run id `abc123` reproduces the mismatch.\n"

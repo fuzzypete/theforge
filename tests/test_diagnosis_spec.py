@@ -34,6 +34,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # A compliant, implementation-ready bug body (shape of #1609/#1598).
 _COMPLIANT_BODY = textwrap.dedent(
     """\
+    ## Observed
+    Sprint resume false-skips zero-delta APPROVE stories.
+
+    ## Expected
+    Resume identifies zero-delta APPROVE stories correctly.
+
     ## Diagnosis
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
@@ -49,6 +55,12 @@ _COMPLIANT_BODY = textwrap.dedent(
 # exactly the #1629 failure mode: complete RCA, mismatched label.
 _LABEL_MISMATCH_BODY = textwrap.dedent(
     """\
+    ## Observed
+    Sprint resume false-skips zero-delta APPROVE stories.
+
+    ## Expected
+    Resume identifies zero-delta APPROVE stories correctly.
+
     ## Diagnosis
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.

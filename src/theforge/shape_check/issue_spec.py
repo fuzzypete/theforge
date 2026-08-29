@@ -491,8 +491,8 @@ BUG_SPEC = IssueTypeSpec(
     dispatchable=True,
     declares_type=True,
     section_rules=(
-        SectionRule("observed", Presence.ADVISORY),
-        SectionRule("expected", Presence.ADVISORY),
+        SectionRule("observed", Presence.REQUIRED),
+        SectionRule("expected", Presence.REQUIRED),
         SectionRule("reproduction", Presence.OPTIONAL),
         SectionRule("diagnosis", Presence.REQUIRED),
         SectionRule("acceptance_criteria", Presence.FORBIDDEN),

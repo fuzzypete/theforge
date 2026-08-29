@@ -1385,7 +1385,14 @@ class TestDiagnoseFlow:
         mock_fetch.return_value = {
             "number": 5,
             "title": "broken",
-            "body": "# Original\n\nBody content\n",
+            "body": (
+                "# Original\n\n"
+                "Body content\n\n"
+                "## Observed\n\n"
+                "The command exits 1.\n\n"
+                "## Expected\n\n"
+                "The command should exit 0.\n"
+            ),
             "state": "OPEN",
             "labels": [{"name": "bug"}],
         }
@@ -1404,6 +1411,53 @@ class TestDiagnoseFlow:
         new_body = mock_edit.call_args[0][1]
         assert "## Diagnosis" in new_body
         assert "Original" in new_body  # original body preserved
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_bug_missing_capture_sections_refuses_before_investigate(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """Seam test for the FETCH→INVESTIGATE boundary: a bug issue missing
+        substantive Observed/Expected capture must fail closed before any scope
+        inference or agent dispatch."""
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2665,
+            "title": "diagnose scans unrelated prose",
+            "body": (
+                "## Summary\n"
+                "Diagnose falls back to unrelated prose.\n\n"
+                "## Impact\n"
+                "The paid investigation starts from a guessed scope.\n\n"
+                "## Scope\n"
+                "Affects direct diagnose on bug issues.\n\n"
+                "## Notes\n"
+                "Observed and Expected were never captured.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2665,
+            config=config,
+            project_root=tmp_path,
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert not mock_agent.called, "investigative agent must not run"
+        assert "missing_observed" in (result.state.error or "")
+        assert "missing_expected" in (result.state.error or "")
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2665-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        phases = [entry["phase"] for entry in audit["phase_transitions"]]
+        assert "INVESTIGATE" not in phases
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
@@ -1456,6 +1510,65 @@ class TestDiagnoseFlow:
         # assertion fails, diagnose and sprint disagree on what fix-ready means.
         is_complete, missing = diagnosis_completeness(new_body)
         assert is_complete, f"diagnose output does not satisfy shape gate; missing: {missing}"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    def test_body_section_landing_replaces_placeholder_only_bug_capture_sections(
+        self, mock_edit, tmp_path
+    ):
+        """Seam test for the LAND boundary: placeholder-only Observed/Expected
+        headings must be normalized before producer validation so the diagnosis
+        can land into a bug issue body."""
+        from theforge.coordinator.diagnose_flow import _land_artifact
+        from theforge.shape_check.heuristics import (
+            check_bug_missing_expected,
+            check_bug_missing_observed,
+        )
+
+        state = DiagnoseState(
+            issue_number=2136,
+            issue_title="landing fails after paid diagnosis",
+            issue_body=(
+                "## Observed\n\n"
+                "<insert observation here>\n\n"
+                "## Expected\n\n"
+                "TODO: describe the expected behavior.\n"
+            ),
+        )
+        artifact = DiagnosisArtifact(
+            issue_number=2136,
+            observed_symptom="Sprint flow drops the third story silently",
+            reproduction_or_evidence="Run forge sprint --issues 1,2,3.",
+            hypotheses=(Hypothesis("worker pool off by one", "confirmed", "scheduler.py:142"),),
+            confirmed_cause="Worker pool reserves N-1 slots in scheduler.py:142",
+            affected_code_path="src/theforge/sprint/scheduler.py:142",
+            fix_success_criterion=(
+                "Running with --parallel 3 schedules and completes all 3 stories"
+            ),
+        )
+
+        location = _land_artifact(
+            state,
+            artifact,
+            "body_section",
+            tmp_path,
+            issue_labels=["bug"],
+        )
+
+        assert location == "issue #2136 body updated"
+        assert mock_edit.called
+        new_body = mock_edit.call_args[0][1]
+        assert "<insert observation here>" not in new_body
+        assert "TODO: describe the expected behavior." not in new_body
+        assert "Sprint flow drops the third story silently" in new_body
+        assert "Running with --parallel 3 schedules and completes all 3 stories" in new_body
+        assert (
+            check_bug_missing_observed("landing fails after paid diagnosis", new_body, ["bug"])
+            is None
+        )
+        assert (
+            check_bug_missing_expected("landing fails after paid diagnosis", new_body, ["bug"])
+            is None
+        )
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
@@ -1541,6 +1654,27 @@ class TestDiagnoseFlow:
         assert not mock_post.called
         assert "forge-diagnose" in (result.state.error or "")
         assert "implementation_plan_in_body" in (result.state.error or "")
+
+    def test_ensure_bug_capture_sections_noops_for_non_bug_body(self):
+        from theforge.coordinator.diagnose_flow import _ensure_bug_capture_sections
+
+        body = (
+            "## Acceptance criteria\n"
+            "- Export the report as CSV.\n\n"
+            "## Example\n"
+            "`forge report --format csv` writes a CSV file.\n"
+        )
+        artifact = DiagnosisArtifact(
+            issue_number=44,
+            observed_symptom="Observed symptom that should not be inserted.",
+            reproduction_or_evidence="Run forge report --format csv.",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="csv writer is not wired up",
+            affected_code_path="src/theforge/report.py:12",
+            fix_success_criterion="CSV export writes a file.",
+        )
+
+        assert _ensure_bug_capture_sections(body, artifact, ["enhancement"]) == body
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -2321,7 +2455,12 @@ class TestPremiseVerification:
         mock_fetch.return_value = {
             "number": 301,
             "title": "buggy_func miscounts",
-            "body": "buggy_func reserves the wrong number of slots\n",
+            "body": (
+                "## Observed\n\n"
+                "buggy_func reserves the wrong number of slots.\n\n"
+                "## Expected\n\n"
+                "buggy_func should reserve the requested number of slots.\n"
+            ),
             "state": "OPEN",
             "labels": [{"name": "bug"}],
         }
@@ -2445,7 +2584,12 @@ class TestPremiseVerification:
         mock_fetch.return_value = {
             "number": 300,
             "title": "buggy func miscounts",
-            "body": "The buggy_func reserves the wrong number of slots.\n",
+            "body": (
+                "## Observed\n\n"
+                "The buggy_func reserves the wrong number of slots.\n\n"
+                "## Expected\n\n"
+                "buggy_func should reserve the requested number of slots.\n"
+            ),
             "state": "OPEN",
             "labels": [{"name": "bug"}],
         }

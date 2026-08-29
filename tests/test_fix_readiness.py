@@ -29,6 +29,12 @@ from theforge.sprint.sources import GitHubIssueSource
 
 DIAGNOSIS_BODY = textwrap.dedent(
     """\
+    ## Observed
+    Sprint resume false-skips zero-delta APPROVE stories.
+
+    ## Expected
+    Resume identifies zero-delta APPROVE stories correctly.
+
     ## Diagnosis
 
     - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
@@ -153,6 +159,12 @@ class TestDeriveFixReady:
 def _investigation_ready_body(cause_value: str) -> str:
     return textwrap.dedent(
         f"""\
+        ## Observed
+        Sprint resume false-skips zero-delta APPROVE stories.
+
+        ## Expected
+        Resume identifies zero-delta APPROVE stories correctly.
+
         ## Diagnosis
 
         - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.

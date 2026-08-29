@@ -188,9 +188,13 @@ def render_issue_body(
     publication: Publication,
 ) -> str:
     lines: list[str] = []
-    lines.append("## Problem")
+    lines.append("## Observed")
     lines.append("")
     lines.append(description.strip())
+    lines.append("")
+    lines.append("## Expected")
+    lines.append("")
+    lines.append(_expected_behavior(description, diagnosis))
     lines.append("")
     lines.append(
         "Filed with `forge report` from the project where the behavior was observed. "
@@ -241,6 +245,14 @@ def render_issue_body(
         lines.append("No artifacts were captured, so this report carries no payload.")
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _expected_behavior(description: str, diagnosis: Diagnosis) -> str:
+    if diagnosis.fix_criterion.strip():
+        return _one_line(diagnosis.fix_criterion)
+    if diagnosis.symptom.strip():
+        return "The reported bug should not occur in the target repository."
+    return _one_line(description) or "The reported behavior should not occur."
 
 
 def manifest_lines(evidence: RunEvidence, publication: Publication) -> list[str]:
