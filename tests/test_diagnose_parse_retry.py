@@ -120,7 +120,13 @@ def _output_with_unterminated_quote() -> str:
     return f"```yaml\n{body}{defect}```"
 
 
-def _fake_agent_result(output: str, *, success: bool = True, cost: float | None = 0.05):
+def _fake_agent_result(
+    output: str,
+    *,
+    success: bool = True,
+    cost: float | None = 0.05,
+    tool_trace: tuple[dict, ...] = (),
+):
     from theforge.agent_types import AgentResult
 
     return AgentResult(
@@ -130,6 +136,7 @@ def _fake_agent_result(output: str, *, success: bool = True, cost: float | None 
         cost_usd=cost,
         exit_code=0 if success else 1,
         raw={},
+        tool_trace=tool_trace,
     )
 
 
@@ -474,6 +481,117 @@ class TestParseRetryRecovery:
         assert result.state.parse_retries == []
         # The investigation is still recoverable from disk without a retry.
         assert Path(result.state.raw_output_path).exists()
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_delegated_waiting_placeholder_is_not_retried_or_reported_as_parse_failure(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """A delegated top-level status line is not a diagnosis waiting to be reformatted."""
+        mock_fetch.return_value = _issue(2798)
+        placeholder = (
+            "Still waiting on the investigation agent to finish examining the "
+            "history-lookup and plan-dedup code paths for issue #419."
+        )
+        mock_agent.return_value = _fake_agent_result(
+            placeholder,
+            cost=0.45,
+            tool_trace=(
+                {"tool": "Agent", "target": "Investigate hamstring curl history/dedup bug"},
+                {
+                    "tool": "ScheduleWakeup",
+                    "target": (
+                        "Fallback in case the Explore agent notification doesn't land promptly"
+                    ),
+                },
+            ),
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2798,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "delegated_without_observed_outcome"
+        assert "used Agent, ScheduleWakeup" in result.message
+        assert "delegation placeholder" in result.message
+        assert "Skipping YAML reformat retries" in result.message
+        assert "parseable YAML block" not in result.message
+        assert Path(result.state.raw_output_path).read_text() == placeholder
+
+        audit = _audit_for(tmp_path, 2798, result.state.run_id)
+        assert audit["agent"]["failure_code"] == "delegated_without_observed_outcome"
+        assert audit["agent"]["parse_retries"] == []
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_delegated_results_to_follow_placeholder_is_not_retried(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """Delegation-tool evidence plus a deferred-results status is terminal."""
+        mock_fetch.return_value = _issue(2798)
+        placeholder = "Dispatched a subagent to trace the history-lookup path; results to follow."
+        mock_agent.return_value = _fake_agent_result(
+            placeholder,
+            cost=0.31,
+            tool_trace=({"tool": "Agent", "target": "Trace the history-lookup path"},),
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2798,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "delegated_without_observed_outcome"
+        assert "used Agent" in result.message
+        assert "Skipping YAML reformat retries" in result.message
+        assert "parseable YAML block" not in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_text_only_delegation_placeholder_uses_text_specific_message(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """The text-only fallback requires explicit delegated-agent wording."""
+        mock_fetch.return_value = _issue(2798)
+        placeholder = (
+            "Delegated the trace to a subagent. Still waiting for the investigation "
+            "agent to finish; I'll report back when it returns."
+        )
+        mock_agent.return_value = _fake_agent_result(placeholder, cost=0.18)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2798,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "delegated_without_observed_outcome"
+        assert "described delegated work in its own output" in result.message
+        assert "used Agent" not in result.message
 
 
 # ── Flow seam: recoverability when retries are exhausted ──────────────
