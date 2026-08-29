@@ -165,7 +165,7 @@ def test_describe_dev_failure_truncates_long_agent_text() -> None:
 
 
 def test_describe_dev_failure_keeps_exit_code_when_nothing_was_said() -> None:
-    """A run with no captured agent text stays distinguishable from one with it."""
+    """A no-result failure is still named even when the stream captured no agent text."""
     result = AgentResult(
         success=False,
         output="CLAUDE_STREAM_NO_TEXT: reason=missing_result_event",
@@ -177,7 +177,9 @@ def test_describe_dev_failure_keeps_exit_code_when_nothing_was_said() -> None:
         failure_code=FAILURE_ENDED_WITHOUT_RESULT,
     )
 
-    assert _describe_dev_failure(result, is_timeout=False) == "exit=-9"
+    assert _describe_dev_failure(result, is_timeout=False) == (
+        f"exit=-9: the agent {ENDED_WITHOUT_RESULT_PHRASE}"
+    )
 
 
 def test_describe_dev_failure_unnamed_failure_still_reads_exit_code() -> None:
