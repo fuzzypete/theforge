@@ -255,7 +255,12 @@ _UNIT_SEP = "\x1f"
 # line number (``:142``) or a symbol name (``:buggy_func``). The symbol, when
 # present, is a checkable premise: a diagnosis that pins the bug to a function
 # that has been deleted from a still-present file must not land as live.
-_PATH_REF_RE = re.compile(r"([\w./\-]*\w+\.[A-Za-z0-9]+)(?::([A-Za-z_]\w*))?")
+_PATH_REF_RE = re.compile(
+    r"(?P<path>[\w./\-]*\w+\.[A-Za-z0-9]+)(?::(?P<locator>[A-Za-z_]\w*|\d+))?"
+)
+_LINE_LOCATOR_SYMBOL_RE = re.compile(
+    r"^[\s,;()\[\]`'\"-]*(?:in\s+)?([A-Za-z_]\w*)\b",
+)
 
 
 def _path_exists_at_sha(path: str, sha: str, project_root: Path) -> bool:
@@ -326,6 +331,52 @@ def _find_pattern_removing_commit(
     )
 
 
+def _symbol_present_in_reachable_history(
+    path: str, symbol: str, sha: str, project_root: Path
+) -> bool:
+    """Return True when ``symbol`` appears in ``path`` history reachable from ``sha``."""
+    if not path or not symbol or not sha:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "-G",
+                rf"\b{re.escape(symbol)}\b",
+                "-1",
+                "--format=%H",
+                sha,
+                "--",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _path_seen_in_history(path: str, sha: str, project_root: Path) -> bool:
+    """Return True when ``path`` appears anywhere in history reachable from ``sha``."""
+    if not path or not sha:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-1", "--format=%H", sha, "--", path],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str] | None:
     """Run ``git log -1`` with ``extra_args``; return (sha, summary) or None."""
     try:
@@ -350,6 +401,24 @@ def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str]
     return commit, summary.strip()
 
 
+def _extract_line_locator_symbol(suffix: str) -> str:
+    """Return the symbol after a ``path:line`` citation when the tail is compact.
+
+    We accept compact follow-on symbol shapes such as ``path:line, symbol`` and
+    ``path:line in symbol``, not free prose like ``path:301, parse for
+    background``. The symbol token must be followed only by
+    punctuation/whitespace or the end of the citation.
+    """
+    match = _LINE_LOCATOR_SYMBOL_RE.match(suffix)
+    if not match:
+        return ""
+    candidate = match.group(1).strip()
+    trailing = suffix[match.end(1) :]
+    if trailing and not re.match(r"^\s*(?:$|[.,;:)\]}`'\"-])", trailing):
+        return ""
+    return candidate
+
+
 def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
     """Pull candidate ``(path, symbol)`` references out of a free-text field.
 
@@ -360,9 +429,14 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
     """
     refs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for path_tok, symbol_tok in _PATH_REF_RE.findall(affected_code_path or ""):
-        path = path_tok.strip().strip(".,;()[]`'\"")
-        symbol = symbol_tok.strip()
+    text = affected_code_path or ""
+    for match in _PATH_REF_RE.finditer(text):
+        path = match.group("path").strip().strip(".,;()[]`'\"")
+        locator = (match.group("locator") or "").strip()
+        symbol = locator if locator and not locator.isdigit() else ""
+        if locator.isdigit():
+            suffix = text[match.end() : match.end() + 80]
+            symbol = _extract_line_locator_symbol(suffix)
         if not path:
             continue
         key = (path, symbol)
@@ -371,6 +445,17 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
         seen.add(key)
         refs.append(key)
     return refs
+
+
+def _should_ignore_untracked_bare_path(path: str, symbol: str) -> bool:
+    """Return True for filename-like prose that should not become an audit premise.
+
+    Bare unqualified filenames inside narrative prose are common in
+    ``affected_code_path``. When they are absent at baseline and never appeared
+    in reachable history, surfacing them as unchecked premises adds noise. Keep
+    repo-qualified paths and symbol-bearing citations audit-visible.
+    """
+    return not symbol and "/" not in path
 
 
 def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) -> PremiseVerdict:
@@ -479,13 +564,19 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                 )
                 covered.add(path)
             else:
+                seen_in_history = _path_seen_in_history(path, sha, project_root)
+                if not seen_in_history and _should_ignore_untracked_bare_path(path, symbol):
+                    continue
+                reason = (
+                    "file absent at baseline but no removing commit could be identified"
+                    if seen_in_history
+                    else ("cited path absent at baseline and not present in reachable git history")
+                )
                 unable_to_check.append(
                     UncheckedPremise(
                         file=path,
-                        pattern="",
-                        reason=(
-                            "file absent at baseline but no removing commit could be identified"
-                        ),
+                        pattern=symbol,
+                        reason=reason,
                     )
                 )
             continue
@@ -503,15 +594,17 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                     )
                 )
             else:
-                unable_to_check.append(
-                    UncheckedPremise(
-                        file=path,
-                        pattern=symbol,
-                        reason=(
-                            "symbol absent at baseline but no removing commit could be identified"
-                        ),
+                if _symbol_present_in_reachable_history(path, symbol, sha, project_root):
+                    unable_to_check.append(
+                        UncheckedPremise(
+                            file=path,
+                            pattern=symbol,
+                            reason=(
+                                "symbol absent at baseline but no removing commit "
+                                "could be identified"
+                            ),
+                        )
                     )
-                )
 
     deduped_unchecked: list[UncheckedPremise] = []
     seen_unchecked: set[tuple[str, str, str]] = set()

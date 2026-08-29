@@ -2525,6 +2525,173 @@ class TestPremiseVerification:
         assert absent.removing_commit.startswith(removing[:8])
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_removed_symbol_in_path_line_symbol_prose_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Regression for #1312's recorded prose shape: ``path:line, symbol``
+        must resolve the removed symbol even when the file still exists and the
+        diagnosis emitted no premise anchors."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/theforge/config/load.py",
+            "def _validate_auto_api_fallback_schema():\n    return None\n",
+            "add auto api fallback validator",
+        )
+        removing = _commit_file(
+            tmp_path,
+            "src/theforge/config/load.py",
+            "def other_func():\n    return None\n",
+            "remove auto api fallback validator",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1312,
+            "title": "stale removed premise",
+            "body": "The auto_api_fallback validator misbehaves.\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": (
+                "The cited premise was removed by a named commit, so this is already resolved."
+            ),
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": (
+                "None - the cited code path "
+                "(src/theforge/config/load.py:301, _validate_auto_api_fallback_schema) "
+                "does not exist at HEAD. It was removed by commit "
+                f"{removing[:8]}."
+            ),
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1312,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert not mock_post.called
+        assert result.state.absent_premises
+        absent = result.state.absent_premises[0]
+        assert absent.file == "src/theforge/config/load.py"
+        assert absent.pattern == "_validate_auto_api_fallback_schema"
+        assert absent.removing_commit.startswith(removing[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_removed_public_symbol_in_path_line_symbol_prose_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Public identifiers in the same ``path:line, symbol`` prose shape
+        must be treated the same way as underscore-prefixed symbols."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/theforge/config/load.py",
+            "def validate_auto_api_fallback_schema():\n    return None\n",
+            "add public auto api fallback validator",
+        )
+        removing = _commit_file(
+            tmp_path,
+            "src/theforge/config/load.py",
+            "def other_func():\n    return None\n",
+            "remove public auto api fallback validator",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 1313,
+            "title": "stale removed public premise",
+            "body": "The public auto_api_fallback validator misbehaves.\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": (
+                "The cited premise was removed by a named commit, so this is already resolved."
+            ),
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": (
+                "None - the cited code path "
+                "(src/theforge/config/load.py:301, validate_auto_api_fallback_schema) "
+                "does not exist at HEAD. It was removed by commit "
+                f"{removing[:8]}."
+            ),
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=1313,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert not mock_post.called
+        assert result.state.absent_premises
+        absent = result.state.absent_premises[0]
+        assert absent.file == "src/theforge/config/load.py"
+        assert absent.pattern == "validate_auto_api_fallback_schema"
+        assert absent.removing_commit.startswith(removing[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_present_symbol_in_affected_path_lands_normally(
@@ -2658,6 +2825,143 @@ class TestPremiseVerification:
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_deleted_affected_file_with_line_and_prose_still_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """A deleted-file citation with a ``path:line`` locator followed by prose
+        must still preserve the file premise and divert to already-resolved."""
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "keep.txt", "keep\n", "seed")
+        _commit_file(tmp_path, "src/deleted_mod.py", "def gone():\n    pass\n", "add deleted mod")
+        deleting = _remove_file(tmp_path, "src/deleted_mod.py", "delete deleted module")
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 201,
+            "title": "deleted module bug",
+            "body": "src/deleted_mod.py misbehaves\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": "The module was removed before this diagnosis landed.",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": (
+                "src/deleted_mod.py:42, removed entirely in an earlier refactor."
+            ),
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=201,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert result.state.absent_premises[0].file == "src/deleted_mod.py"
+        assert result.state.absent_premises[0].pattern == ""
+        assert result.state.absent_premises[0].removing_commit.startswith(deleting[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_removed_symbol_in_path_line_in_symbol_prose_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """Compact ``path:line in symbol`` phrasing should verify the removed
+        symbol rather than falling back to a live diagnosis."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def removed_func():\n    return reserve(n - 1)\n",
+            "add removed func",
+        )
+        removing = _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def other_func():\n    return reserve(n)\n",
+            "remove removed_func, keep module",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 202,
+            "title": "removed symbol bug",
+            "body": "removed_func reserves the wrong number of slots\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": "The cited symbol was removed by a named commit.",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": "src/mod.py:301 in removed_func.",
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=202,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert result.state.absent_premises[0].file == "src/mod.py"
+        assert result.state.absent_premises[0].pattern == "removed_func"
+        assert result.state.absent_premises[0].removing_commit.startswith(removing[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_present_premise_lands_normally(self, mock_agent, mock_fetch, mock_edit, tmp_path):
         """Given a still-present bug, behavior is unchanged: the premise check
         passes and the confirmed-cause diagnosis lands normally."""
@@ -2765,6 +3069,91 @@ class TestPremiseVerification:
                 reason="pattern absent at baseline but no removing commit could be identified",
             ),
         )
+
+    def test_verify_premise_drops_prose_path_candidates_never_tracked_by_git(self, tmp_path):
+        """Looser affected_code_path parsing must not turn arbitrary prose into
+        unchecked premises when the path token never existed in repo history."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis
+
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def present():\n    pass\n", "seed")
+        head = _git(["rev-parse", "HEAD"], tmp_path)
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path=(
+                "See load.py:301, parse for background, but the live bug is elsewhere."
+            ),
+            fix_success_criterion="f",
+        )
+        verdict = verify_premise(artifact, head, tmp_path)
+        assert verdict.resolved is False
+        assert verdict.absent == ()
+        assert verdict.unable_to_check == ()
+
+    def test_verify_premise_keeps_never_tracked_cited_path_in_unchecked_premises(self, tmp_path):
+        """A compact path-bearing citation that never existed must still leave
+        audit-visible trace instead of being dropped entirely."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis
+
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def present():\n    pass\n", "seed")
+        head = _git(["rev-parse", "HEAD"], tmp_path)
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="src/never_tracked.py:17, deleted_func",
+            fix_success_criterion="f",
+        )
+        verdict = verify_premise(artifact, head, tmp_path)
+        assert verdict.resolved is False
+        assert verdict.absent == ()
+        assert verdict.unable_to_check == (
+            UncheckedPremise(
+                file="src/never_tracked.py",
+                pattern="deleted_func",
+                reason="cited path absent at baseline and not present in reachable git history",
+            ),
+        )
+
+    def test_verify_premise_ignores_sentence_word_after_line_locator(self, tmp_path):
+        """A comma-suffix prose word after ``path:line`` is not a checkable symbol
+        premise when the cited file history never referenced it."""
+        from theforge.coordinator.diagnose_flow import verify_premise
+        from theforge.diagnose_types import DiagnosisArtifact, Hypothesis
+
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def present_func():\n    return 1\n",
+            "seed",
+        )
+        head = _git(["rev-parse", "HEAD"], tmp_path)
+
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="src/mod.py:120, unchanged.",
+            fix_success_criterion="f",
+        )
+        verdict = verify_premise(artifact, head, tmp_path)
+        assert verdict.resolved is False
+        assert verdict.absent == ()
+        assert verdict.unable_to_check == ()
 
 
 class TestParsePremiseAnchors:
