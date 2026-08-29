@@ -82,8 +82,10 @@ Mode: {mode}
    your conclusion, leave ``confirmed_cause`` empty and make
    ``affected_code_path`` mechanically cite the removed reference itself using
    a path-bearing form such as ``path/to/file.py:missing_symbol`` or
-   ``path/to/file.py:123, missing_symbol``, then name the removing commit in
-   ``confirmed_cause_support`` or ``affected_code_path``.
+   ``path/to/file.py:123, missing_symbol``.  Keep that citation compact: the
+   token immediately after the comma must be the missing identifier itself, not
+   explanatory prose.  Name the removing commit in ``confirmed_cause_support``
+   or ``affected_code_path``.
 8. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
    and nothing less.** The diagnosis boundary must match the issue boundary.
    While investigating you may notice other real defects in nearby code that
@@ -216,7 +218,8 @@ affected_code_path: |
   but still cite the removed reference in a machine-readable path-bearing form
   such as ``path/to/file.py:missing_symbol`` or
   ``path/to/file.py:123, missing_symbol`` so the coordinator can verify that it
-  is absent and mark the record already resolved.
+  is absent and mark the record already resolved. Keep that ``path:line,
+  symbol`` citation compact; do not turn the symbol slot into prose.
 fix_success_criterion: |
   Content class: behavioral requirement for the eventual fix.
   An observable, verifiable criterion the fix must satisfy.  Phrased so

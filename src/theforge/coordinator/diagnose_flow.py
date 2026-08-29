@@ -372,6 +372,23 @@ def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str]
     return commit, summary.strip()
 
 
+def _extract_line_locator_symbol(suffix: str) -> str:
+    """Return the symbol after a ``path:line`` citation when the tail is compact.
+
+    We only accept the prompt-documented ``path:line, symbol`` shape, not free
+    prose like ``path:301, parse for background``. The symbol token must be
+    followed only by punctuation/whitespace or the end of the citation.
+    """
+    match = _LINE_LOCATOR_SYMBOL_RE.match(suffix)
+    if not match:
+        return ""
+    candidate = match.group(1).strip()
+    trailing = suffix[match.end(1) :]
+    if trailing and not re.match(r"^\s*(?:$|[.,;:)\]}`'\"-])", trailing):
+        return ""
+    return candidate
+
+
 def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
     """Pull candidate ``(path, symbol)`` references out of a free-text field.
 
@@ -389,10 +406,9 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
         symbol = locator if locator and not locator.isdigit() else ""
         if locator.isdigit():
             suffix = text[match.end() : match.end() + 80]
-            suffix_match = _LINE_LOCATOR_SYMBOL_RE.match(suffix)
-            candidate = suffix_match.group(1).strip() if suffix_match else ""
-            if candidate.startswith("_"):
-                symbol = candidate
+            symbol = _extract_line_locator_symbol(suffix)
+            if not symbol and suffix.lstrip().startswith(","):
+                continue
         if not path:
             continue
         key = (path, symbol)
@@ -509,17 +525,18 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                 )
                 covered.add(path)
             else:
-                if _path_seen_in_history(path, sha, project_root):
-                    unable_to_check.append(
-                        UncheckedPremise(
-                            file=path,
-                            pattern="",
-                            reason=(
-                                "file absent at baseline but no removing "
-                                "commit could be identified"
-                            ),
-                        )
+                reason = (
+                    "file absent at baseline but no removing commit could be identified"
+                    if _path_seen_in_history(path, sha, project_root)
+                    else ("cited path absent at baseline and not present in reachable git history")
+                )
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern=symbol,
+                        reason=reason,
                     )
+                )
             continue
         # File is present; if the citation named a symbol that has since been
         # removed from it, the described bug can no longer reproduce there.
