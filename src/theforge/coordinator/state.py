@@ -755,6 +755,12 @@ class CoordinatorState:
     preflight_implementation_complexity_score: int | None = None  # code-change envelope
     preflight_validation_complexity_score: int | None = None  # validation/execution envelope
     preflight_complexity_projection: str | None = None  # e.g. "max_implementation_validation"
+    # True when the story exceeds what one story should attempt and should be
+    # decomposed (#2680). Derived from the *implementation* axis reaching its
+    # ceiling, never from the projected complexity_score — a validation-heavy
+    # but cohesive story is not over scope. Routing is unaffected: 9 and 10
+    # resolve to the same tier, reviewer count, and reasoning effort.
+    preflight_scope_exceeded: bool = False
     # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
     # that fired on each axis. Empty until preflight sizing runs.
     preflight_complexity_evidence: list[dict] = field(default_factory=list)

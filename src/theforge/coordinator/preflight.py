@@ -583,6 +583,25 @@ def _parse_preflight_complexity_score(output: str, fallback_band: str | None = N
     return None
 
 
+def _parse_preflight_scope_exceeded(output: str) -> bool | None:
+    """Extract ``scope_exceeded`` from preflight agent output.
+
+    Returns the emitted boolean, or None when the field is absent or is not a
+    real boolean. None means "the classifier said nothing" — deliberately
+    distinct from ``False``, so the caller can tell a silent model from one
+    that asserted the story is within single-story scope. Parsing is strict:
+    a string, number, or list is not a claim about scope and is treated as
+    absent rather than coerced into truthiness.
+    """
+    parsed = _parse_preflight_mapping(output)
+    if parsed is None:
+        return None
+    raw = parsed.get("scope_exceeded")
+    if isinstance(raw, bool):
+        return raw
+    return None
+
+
 def _parse_preflight_sufficiency(output: str) -> str:
     """Extract sufficiency from preflight agent output.
 

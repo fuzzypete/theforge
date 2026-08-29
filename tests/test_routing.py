@@ -192,3 +192,27 @@ def test_axis_decision_without_score_records_static_fallback():
     # Thresholds are still surfaced so the table is reconstructable even in
     # static mode.
     assert dec["thresholds"] == [3, 6, 10]
+
+
+def test_scores_9_and_10_route_identically_on_every_axis():
+    """Score 10 means "decompose this story", not "route it differently" (#2680).
+
+    The scope-exceeded semantics live on the preflight signal; every routing
+    axis must keep resolving 9 and 10 to the same output, so recording a 10
+    can never move a tier, a reviewer count, or a reasoning-effort level.
+    """
+    assert score_to_dev_tier(9) == score_to_dev_tier(10) == "strong"
+    assert score_to_plan_tier(9) == score_to_plan_tier(10) == "strong"
+    assert score_to_reviewer_target(9) == score_to_reviewer_target(10) == "max"
+    for phase in REASONING_EFFORT_PHASE_BUCKETS:
+        nine = axis_decision("reasoning_effort", 9, phase=phase)
+        ten = axis_decision("reasoning_effort", 10, phase=phase)
+        assert nine["output"] == ten["output"] == "high"
+        assert nine["bucket"] == ten["bucket"]
+        assert nine["range"] == ten["range"]
+    for axis in ("dev_tier", "plan_tier", "reviewer_count"):
+        nine = axis_decision(axis, 9)
+        ten = axis_decision(axis, 10)
+        assert nine["output"] == ten["output"]
+        assert nine["bucket"] == ten["bucket"]
+        assert nine["range"] == ten["range"]

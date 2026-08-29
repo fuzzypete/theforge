@@ -58,6 +58,7 @@ from .audit_render import build_invocation_ledger
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
+    COMPLEXITY_SCORE_MAX,
     _apply_preflight_config,
     _detect_large_preflight_story_categories,
     _parse_preflight_blocking_basis,
@@ -68,6 +69,7 @@ from .preflight import (
     _parse_preflight_domains,
     _parse_preflight_likely_files,
     _parse_preflight_policy_assertions,
+    _parse_preflight_scope_exceeded,
     _parse_preflight_sufficiency,
     _parse_preflight_symptom_verification,
     _parse_preflight_verdict,
@@ -252,6 +254,7 @@ def _preflight_phase_end_fields(state: CoordinatorState) -> dict[str, object]:
         "implementation_complexity_score": state.preflight_implementation_complexity_score,
         "validation_complexity_score": state.preflight_validation_complexity_score,
         "complexity_projection": state.preflight_complexity_projection,
+        "scope_exceeded": state.preflight_scope_exceeded,
         "complexity_routing": routing,
         "domains": list(state.preflight_domains or []),
         # A phase that produced no evidence must not report its conservative
@@ -879,6 +882,33 @@ def _run_preflight_phase(
             for w in validation.warnings:
                 _log(f"  ⚠ {w}")
 
+        # ── Scope-exceeded signal (#2680) ─────────────────────────────
+        # Read off the *implementation* axis at its ceiling, never off the
+        # projected complexity_score: a validation-heavy story can project to
+        # 10 while its code change is one coherent unit, and reporting that as
+        # over scope would tell the operator to split work that is not
+        # divisible. Routing is untouched — 9 and 10 land in the same buckets
+        # on every axis — so this is a readable signal, not a routing input.
+        scope_exceeded = implementation_score == COMPLEXITY_SCORE_MAX
+        state.preflight_scope_exceeded = scope_exceeded
+        claimed_scope_exceeded = _parse_preflight_scope_exceeded(preflight_result.output)
+        if claimed_scope_exceeded is not None and claimed_scope_exceeded != scope_exceeded:
+            # The classifier contradicted its own score. The score is
+            # authoritative — it is what every coordinator override writes and
+            # what routing reads — so the claim is recorded, not obeyed.
+            disagreement = (
+                f"preflight emitted scope_exceeded={claimed_scope_exceeded} with "
+                f"implementation complexity_score={implementation_score}; recorded "
+                f"scope_exceeded={scope_exceeded} from the implementation axis"
+            )
+            state.preflight_warnings = list(state.preflight_warnings or []) + [disagreement]
+            _log(f"  ⚠ {disagreement}")
+        elif scope_exceeded:
+            _log(
+                "  ⚠ scope_exceeded: implementation complexity is at the ceiling "
+                f"({COMPLEXITY_SCORE_MAX}) — this story should be decomposed"
+            )
+
         # ── Bounded-bug planning skip ─────────────────────────────────
         # Bounded, diagnosed bugs whose fix is localized to a single area
         # do not benefit from the plan + plan-review pipeline. The plan
@@ -1183,6 +1213,9 @@ def _run_preflight_phase(
         "validation_complexity_score": state.preflight_validation_complexity_score,
         "complexity_projection": state.preflight_complexity_projection,
         "complexity_evidence": list(state.preflight_complexity_evidence or []),
+        # Distinct from the numeric score: says the work should be split, so a
+        # consumer never has to infer decomposition from a magnitude (#2680).
+        "scope_exceeded": state.preflight_scope_exceeded,
         "sufficiency": state.preflight_sufficiency,
         "contract_change": state.preflight_contract_change,
         "domains": list(state.preflight_domains or []),

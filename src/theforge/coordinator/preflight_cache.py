@@ -150,6 +150,7 @@ def apply_cached_preflight_state(
         cached_state.preflight_validation_complexity_score
     )
     state.preflight_complexity_projection = cached_state.preflight_complexity_projection
+    state.preflight_scope_exceeded = bool(getattr(cached_state, "preflight_scope_exceeded", False))
     state.preflight_complexity_evidence = list(cached_state.preflight_complexity_evidence or [])
     state.preflight_sufficiency = cached_state.preflight_sufficiency
     state.preflight_work_type = cached_state.preflight_work_type

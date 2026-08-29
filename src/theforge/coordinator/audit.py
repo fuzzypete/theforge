@@ -896,6 +896,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "validation_complexity_score": state.preflight_validation_complexity_score,
                 "complexity_projection": state.preflight_complexity_projection,
                 "complexity_evidence": list(state.preflight_complexity_evidence or []),
+                # Read off the implementation axis at its ceiling (#2680): the
+                # story should be decomposed, stated rather than inferred from
+                # the score. Routing is identical for 9 and 10.
+                "scope_exceeded": state.preflight_scope_exceeded,
                 "work_type": state.preflight_work_type,
                 "domains": list(state.preflight_domains or []),
                 "contract_change": state.preflight_contract_change,
