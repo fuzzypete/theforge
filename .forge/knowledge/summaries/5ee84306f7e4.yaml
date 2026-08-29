@@ -1,0 +1,132 @@
+schema_version: 2
+run_id: 5ee84306f7e4
+authoritative_run_record: .forge/audits/runs/5ee84306f7e4.json
+generated_at: '2026-08-29T21:10:49.298075+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01206875
+story:
+  slug: issue-2760
+  name: A diagnosis that concludes the premise was removed serializes as unresolved,
+    so a consumer reading the record files a stale finding as live
+  github_issue: 2760
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/controller-runbook.md
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_flow.py
+what_changed:
+  description: The run changed diagnose-premise serialization so diagnoses whose narrative
+    says the cited code path or symbol was removed can surface that outcome in structured
+    fields instead of looking unresolved. It also updated the diagnosis prompt/flow
+    handling and added focused parser and premise-verification regression tests around
+    removed-file and removed-symbol citation shapes.
+  approach: The work centered on normalizing natural-language affected-code-path citations
+    into checkable premises, then threading those premises through the already-resolved
+    versus unchecked classification path so deleted files, deleted symbols, and missing-history
+    cases remain visible to serialization.
+  files_modified: *id002
+what_was_learned:
+- claim: Removed-premise verification cannot rely on a single citation shape; affected_code_path
+    text must be parsed across multiple path/line/symbol phrasings or stale findings
+    will serialize as unresolved even when the narrative identified the deletion correctly.
+  evidence:
+  - type: review_finding
+    finding_id: 543b9f1da9087392
+    description: Review found that a still-present file with a deleted symbol cited
+      as path:line,symbol lost the symbol during parsing, which meant premise verification
+      never saw the absent symbol and the record stayed unresolved.
+  - type: review_finding
+    finding_id: ad6ad878abb7c8a6
+    description: Review found a deleted-file citation in path:line followed by prose
+      was dropped entirely, showing that prose-bearing citation variants must still
+      produce a premise or the absent path never reaches verification.
+  - type: review_finding
+    finding_id: 9e63f17ef664bd38
+    description: Review found that 'path.py:301 in removed_func' produced no symbol
+      premise, demonstrating that alternate natural-language connectors like 'in'
+      are operationally significant and need equivalent handling.
+- claim: When a cited premise cannot be confirmed as removed, the artifact still needs
+    an explicit unchecked trace; otherwise consumers cannot distinguish parser/history
+    failure from a genuinely live premise.
+  evidence:
+  - type: review_finding
+    finding_id: 9c8351339cd72490
+    description: Review found that a cited path absent at baseline and never tracked
+      in history was dropped entirely, which erased evidence that the diagnosis had
+      encountered an unverifiable premise rather than a live code path.
+  - type: review_finding
+    finding_id: 6792e80705afd725
+    description: Review found that a symbol absent at baseline but lacking an attributable
+      removing commit produced no unchecked premise because the history gate never
+      matched, demonstrating that failed removal attribution must remain serialized
+      as unchecked rather than disappearing.
+- claim: Parser broadening for free-form citations needs a counter-check against ordinary
+    prose being mistaken for identifiers, because false symbol extraction creates
+    misleading premise records.
+  evidence:
+  - type: review_finding
+    finding_id: 75b5a4c80aa76bf2
+    description: Review found that a trailing ordinary word after a line number was
+      interpreted as a symbol and then looked up as code, showing that permissive
+      citation parsing can fabricate unchecked premises unless identifier extraction
+      is constrained.
+learned_patterns:
+- citation-shape-normalization
+- preserve-unverifiable-premises
+- prose-vs-identifier-guard
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 543b9f1da9087392
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: When affected_code_path cites a deleted still-present symbol as path:line,
+      deleted_func, the premise verifier drops the symbol and the record remains unresolved
+      because the file itself still exists.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 9c8351339cd72490
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: A cited path that is absent at the baseline and was never tracked
+      in repository history is now dropped entirely, so a diagnosis citing a file
+      path that never existed leaves no trace in the artifact's unchecked_premises.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: ad6ad878abb7c8a6
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: When affected_code_path cites a deleted file as path:line followed
+      by comma prose, the parser drops the citation and verify_premise returns unresolved
+      with no absent or unchecked premise.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases where affected_code_path parsing
+    dropped or fabricated premises, and each miss fed directly into wrong already_resolved
+    or unchecked serialization.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 9.50321465
+  dominant_difficulty: Translating free-form narrative code citations into structured
+    premise states without losing deleted references or inventing bogus ones.

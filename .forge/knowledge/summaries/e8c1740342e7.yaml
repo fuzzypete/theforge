@@ -1,0 +1,81 @@
+schema_version: 2
+run_id: e8c1740342e7
+authoritative_run_record: .forge/audits/runs/e8c1740342e7.json
+generated_at: '2026-08-29T20:30:23.943015+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00741375
+story:
+  slug: issue-2794
+  name: An agent invocation that ends without delivering a result is reported as a
+    host process failure, so the operator eliminates disk, memory and parallelism
+    before seeing the agent
+  github_issue: 2794
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/agent_failure.py
+- src/theforge/coordinator/dev_phase.py
+- tests/test_agent_ended_without_result.py
+- tests/test_coord_no_judgment_seam.py
+what_changed:
+  description: The run corrected how agent invocations that end without any delivered
+    result are surfaced at abort time, so they are reported as a no-result agent condition
+    rather than as a process-level infrastructure failure. It also aligned the dev-phase
+    reporting path with that classification.
+  approach: The change was made by adjusting the shared failure classification path
+    and the dev-phase renderer together, then verifying the behavior with targeted
+    no-result and coordinator seam tests.
+  files_modified: *id002
+what_was_learned:
+- claim: When a failure mode is classified centrally but rendered differently at phase
+    abort sites, verification has to cover both the shared classifier and the phase-specific
+    reporting seam; otherwise the operator-facing diagnosis can diverge from the stored
+    failure code.
+  evidence:
+  - type: diff
+    ref: b989578bc036bb1662b9ea8e0c4db19ded7565ec
+    description: This diff updates both the shared agent-failure handling and the
+      dev-phase abort path, showing that correcting the misattribution required changes
+      in both layers rather than in classification alone.
+  - type: file
+    path: tests/test_coord_no_judgment_seam.py
+    description: This test file targets the coordinator seam where abort output is
+      produced, demonstrating that the run treated the reporting boundary itself as
+      a distinct verification point needed to keep surfaced diagnostics aligned with
+      internal classification.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved the fix specifically because both the shared classifier
+      and the dev-phase renderer were corrected, confirming that these were the two
+      places whose alignment mattered for the bug.
+learned_patterns:
+- classifier-renderer-alignment
+- no-result-agent-failure
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review kept the focus on shared classification and dev-phase rendering as
+    a paired correctness boundary.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 2.41667455
+  dominant_difficulty: The hard part was correcting attribution across layers so the
+    abort-time message matched the system's actual no-result failure classification.
