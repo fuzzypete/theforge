@@ -32,11 +32,12 @@ from coord_test_helpers import (
     patch_gate_shell,
 )
 
-from theforge.agent_types import ModelUsage
+from theforge.agent_types import FAILURE_ENDED_WITHOUT_RESULT, ModelUsage
 from theforge.config.types import ModelProfile, PlanAgentReviewConfig, PlanConfig
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.agent_failure import (
     CATEGORY_AUTH,
+    CATEGORY_NO_RESULT,
     NO_JUDGMENT,
     AgentInvocationFailure,
     classify_agent_failure,
@@ -93,6 +94,19 @@ def _transient_transport_failure(
         raw={},
         profile_name=profile_name,
         failure_code="rate_limit",
+    )
+
+
+def _ended_without_result_failure(profile_name: str = "dev") -> AgentResult:
+    return AgentResult(
+        success=False,
+        output="CLAUDE_STREAM_NO_TEXT: reason=missing_result_event",
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=-9,
+        raw={},
+        profile_name=profile_name,
+        failure_code=FAILURE_ENDED_WITHOUT_RESULT,
     )
 
 
@@ -167,6 +181,14 @@ class TestClassification:
         )
         assert produced_model_output(result) is True
         assert classify_agent_failure(result, phase="DEV") is None
+
+    def test_agent_ended_without_result_is_not_classified_as_process(self):
+        result = _ended_without_result_failure()
+        assert produced_model_output(result) is False
+        failure = classify_agent_failure(result, phase="DEV")
+        assert failure is not None
+        assert failure.category == CATEGORY_NO_RESULT
+        assert classify_failure_category(result) == CATEGORY_NO_RESULT
 
     def test_no_text_marker_beats_usage_telemetry(self):
         result = AgentResult(
@@ -762,3 +784,33 @@ class TestPreflightNoJudgment:
         assert audit["preflight"]["verdict"] == NO_JUDGMENT
         assert audit["phases"]["preflight"]["outcome"] == "no_judgment"
         assert audit["trust_status"] == TRUST_TAINTED
+
+    @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_preflight_no_result_failure_keeps_its_own_category(
+        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_profiles, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _ended_without_result_failure("preflight")
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.infrastructure_failure is True
+        assert result.state.preflight_verdict is None
+        assert result.state.preflight_failure_action == "infrastructure_abort"
+        assert result.state.infrastructure_failure["category"] == CATEGORY_NO_RESULT
+        assert mock_dev.call_count == 0
+        assert mock_profiles.call_count == 0
