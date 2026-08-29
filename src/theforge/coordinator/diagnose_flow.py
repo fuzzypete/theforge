@@ -255,7 +255,12 @@ _UNIT_SEP = "\x1f"
 # line number (``:142``) or a symbol name (``:buggy_func``). The symbol, when
 # present, is a checkable premise: a diagnosis that pins the bug to a function
 # that has been deleted from a still-present file must not land as live.
-_PATH_REF_RE = re.compile(r"([\w./\-]*\w+\.[A-Za-z0-9]+)(?::([A-Za-z_]\w*))?")
+_PATH_REF_RE = re.compile(
+    r"(?P<path>[\w./\-]*\w+\.[A-Za-z0-9]+)(?::(?P<locator>[A-Za-z_]\w*|\d+))?"
+)
+_LINE_LOCATOR_SYMBOL_RE = re.compile(
+    r"^[\s,;()\[\]`'\"-]*([A-Za-z_]\w*)\b",
+)
 
 
 def _path_exists_at_sha(path: str, sha: str, project_root: Path) -> bool:
@@ -326,6 +331,23 @@ def _find_pattern_removing_commit(
     )
 
 
+def _path_seen_in_history(path: str, sha: str, project_root: Path) -> bool:
+    """Return True when ``path`` appears anywhere in history reachable from ``sha``."""
+    if not path or not sha:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-1", "--format=%H", sha, "--", path],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str] | None:
     """Run ``git log -1`` with ``extra_args``; return (sha, summary) or None."""
     try:
@@ -360,9 +382,17 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
     """
     refs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for path_tok, symbol_tok in _PATH_REF_RE.findall(affected_code_path or ""):
-        path = path_tok.strip().strip(".,;()[]`'\"")
-        symbol = symbol_tok.strip()
+    text = affected_code_path or ""
+    for match in _PATH_REF_RE.finditer(text):
+        path = match.group("path").strip().strip(".,;()[]`'\"")
+        locator = (match.group("locator") or "").strip()
+        symbol = locator if locator and not locator.isdigit() else ""
+        if locator.isdigit():
+            suffix = text[match.end() : match.end() + 80]
+            suffix_match = _LINE_LOCATOR_SYMBOL_RE.match(suffix)
+            candidate = suffix_match.group(1).strip() if suffix_match else ""
+            if candidate.startswith("_"):
+                symbol = candidate
         if not path:
             continue
         key = (path, symbol)
@@ -479,15 +509,17 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                 )
                 covered.add(path)
             else:
-                unable_to_check.append(
-                    UncheckedPremise(
-                        file=path,
-                        pattern="",
-                        reason=(
-                            "file absent at baseline but no removing commit could be identified"
-                        ),
+                if _path_seen_in_history(path, sha, project_root):
+                    unable_to_check.append(
+                        UncheckedPremise(
+                            file=path,
+                            pattern="",
+                            reason=(
+                                "file absent at baseline but no removing "
+                                "commit could be identified"
+                            ),
+                        )
                     )
-                )
             continue
         # File is present; if the citation named a symbol that has since been
         # removed from it, the described bug can no longer reproduce there.

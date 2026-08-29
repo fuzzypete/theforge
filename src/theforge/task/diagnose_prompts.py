@@ -78,7 +78,12 @@ Mode: {mode}
    saw at HEAD) in ``premise_anchors``.  These are checked mechanically after
    you finish: if a cited file or pattern is absent from the baseline, the run
    is reported as "already resolved" rather than landed as a live diagnosis.
-   Do NOT emit a confirmed cause for code that no longer exists.
+   Do NOT emit a confirmed cause for code that no longer exists.  When that is
+   your conclusion, leave ``confirmed_cause`` empty and make
+   ``affected_code_path`` mechanically cite the removed reference itself using
+   a path-bearing form such as ``path/to/file.py:missing_symbol`` or
+   ``path/to/file.py:123, missing_symbol``, then name the removing commit in
+   ``confirmed_cause_support`` or ``affected_code_path``.
 8. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
    and nothing less.** The diagnosis boundary must match the issue boundary.
    While investigating you may notice other real defects in nearby code that
@@ -206,7 +211,12 @@ confirmed_cause_support_provenance:
   detail: "Short source note: what was observed directly, or where the prior assertion lived."
 affected_code_path: |
   Content class: confirmed localization.
-  File path(s) and function/line locations involved in the bug.
+  File path(s) and function/line locations involved in the bug. When the
+  diagnosis concludes the cited premise was removed, keep confirmed_cause empty
+  but still cite the removed reference in a machine-readable path-bearing form
+  such as ``path/to/file.py:missing_symbol`` or
+  ``path/to/file.py:123, missing_symbol`` so the coordinator can verify that it
+  is absent and mark the record already resolved.
 fix_success_criterion: |
   Content class: behavioral requirement for the eventual fix.
   An observable, verifiable criterion the fix must satisfy.  Phrased so
