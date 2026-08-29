@@ -27,8 +27,13 @@ class DiagnosePhase(Enum):
     FAILED = auto()
     TIMEOUT_PARTIAL = auto()  # ran out of time/budget; partial artifact returned
     BUDGET_EXCEEDED = auto()
-    UNCLASSIFIED_PARTIAL = auto()  # partial artifact for a non-budget, non-timeout reason
+    # Retained for old audit records written before cause/no-cause were split
+    # out of it (#2803). No longer assigned by the flow.
+    UNCLASSIFIED_PARTIAL = auto()
+    CAUSE_FOUND_PARTIAL = auto()  # confirmed_cause populated; other lifecycle fields missing
+    NO_CAUSE_FOUND = auto()  # honest no-cause landing; confirmed_cause empty
     ALREADY_RESOLVED = auto()  # premise absent from baseline; no diagnosis written
+    DISCARDED = auto()  # operator declined to land; nothing written
 
 
 class DiagnosePartialReason(Enum):
@@ -36,7 +41,12 @@ class DiagnosePartialReason(Enum):
 
     BUDGET_EXCEEDED = "budget_exceeded"
     TIMEOUT = "timeout"
+    # Retained so audit records written before cause/no-cause were split out
+    # of this value (#2803) still deserialize. No longer assigned by the flow.
     UNCLASSIFIED = "unclassified"
+    CAUSE_FOUND_INCOMPLETE = "cause_found_incomplete"
+    NO_CAUSE_FOUND = "no_cause_found"
+    DISCARDED = "discarded"
 
 
 # Output destinations for a completed diagnosis artifact.
@@ -615,6 +625,15 @@ def render_artifact_markdown(
                 "> ⚠ Partial diagnosis — the investigation confirmed a cause, "
                 "but categorical symptom scope coverage remains incomplete. "
                 "Operator review required."
+            )
+        elif (
+            artifact.partial_reason is DiagnosePartialReason.CAUSE_FOUND_INCOMPLETE
+            or artifact.confirmed_cause.strip()
+        ):
+            warning = (
+                "> ⚠ Partial diagnosis — the investigation confirmed a cause, "
+                "but the diagnosis is otherwise incomplete. Operator review "
+                "required."
             )
         else:
             warning = (
