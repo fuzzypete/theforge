@@ -919,7 +919,7 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
         assert not result.success  # partial
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.NO_CAUSE_FOUND
         # Artifact still landed so operator can review
         assert mock_post.called
         posted_body = mock_post.call_args[0][1]
@@ -927,8 +927,42 @@ class TestDiagnoseFlow:
         assert "did not reach a confirmed cause" in posted_body
         assert "budget or timeout" not in posted_body
         assert result.state.artifact is not None
-        assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
-        assert _load_audit_artifact(tmp_path)["partial_reason"] == "unclassified"
+        assert result.state.artifact.partial_reason is DiagnosePartialReason.NO_CAUSE_FOUND
+        assert _load_audit_artifact(tmp_path)["partial_reason"] == "no_cause_found"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_interactive_decline_of_partial_artifact_is_discarded_not_landed(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 8,
+            "title": "x",
+            "body": "y",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("ruled_out", "inconclusive"))
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=8,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+            interactive=True,
+            confirm_landing=lambda _artifact: False,
+        )
+        assert not result.success
+        assert not mock_post.called, "declined partial artifact must not land"
+        assert result.state.phase == DiagnosePhase.DISCARDED
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial_reason is DiagnosePartialReason.DISCARDED
+        assert _load_audit_artifact(tmp_path)["partial_reason"] == "discarded"
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
@@ -1097,7 +1131,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1149,7 +1183,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1188,7 +1222,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1227,7 +1261,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1268,7 +1302,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1315,7 +1349,7 @@ class TestDiagnoseFlow:
         )
 
         assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
         assert result.message == (
             "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
             "— operator review required"
@@ -1825,6 +1859,9 @@ class TestDiagnoseFlow:
         assert decisions == ["asked"]
         # No file was written
         assert not (tmp_path / ".forge" / "diagnoses" / "issue-9.md").exists()
+        assert result.state.phase == DiagnosePhase.DISCARDED
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial_reason is DiagnosePartialReason.DISCARDED
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")

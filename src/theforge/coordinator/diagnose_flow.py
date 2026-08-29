@@ -2043,16 +2043,23 @@ def _run_diagnose_flow_body(
         elif state.agent_failure_code == "timeout":
             partial_phase = DiagnosePhase.TIMEOUT_PARTIAL
             partial_reason = DiagnosePartialReason.TIMEOUT
+        elif artifact.confirmed_cause.strip():
+            # A cause was confirmed; what's missing is some other lifecycle
+            # field (scope coverage, reproduction, etc). Distinct from the
+            # honest-no-cause case below so an operator can tell "ready to
+            # sprint after a small gap" from "re-run needed" without opening
+            # the landed body (#2803).
+            partial_phase = DiagnosePhase.CAUSE_FOUND_PARTIAL
+            partial_reason = DiagnosePartialReason.CAUSE_FOUND_INCOMPLETE
         else:
-            partial_phase = DiagnosePhase.UNCLASSIFIED_PARTIAL
-            partial_reason = DiagnosePartialReason.UNCLASSIFIED
+            partial_phase = DiagnosePhase.NO_CAUSE_FOUND
+            partial_reason = DiagnosePartialReason.NO_CAUSE_FOUND
         artifact = dataclasses.replace(
             artifact,
             partial=True,
             partial_reason=partial_reason,
         )
         state.artifact = artifact
-        emit_phase(partial_phase)
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm
         if interactive and confirm_landing is not None:
@@ -2061,9 +2068,15 @@ def _run_diagnose_flow_body(
                 artifact,
                 issue_requires_categorical_scope=state.issue_scope_is_categorical,
             ):
+                artifact = dataclasses.replace(
+                    artifact, partial_reason=DiagnosePartialReason.DISCARDED
+                )
+                state.artifact = artifact
+                emit_phase(DiagnosePhase.DISCARDED)
                 msg = "Partial artifact — operator declined to land. Audit written."
                 write_diagnose_audit(state, project_root)
                 return DiagnoseResult(success=False, state=state, message=msg)
+        emit_phase(partial_phase)
         try:
             location = _land_artifact(
                 state,
@@ -2088,8 +2101,10 @@ def _run_diagnose_flow_body(
             cause_label = f"timed out after {int(profile.timeout_seconds)}s"
         elif lifecycle_blocking_fields == ("symptom_scope_coverage",):
             cause_label = "diagnosis scope-coverage incomplete"
+        elif artifact.confirmed_cause.strip():
+            cause_label = "cause found, diagnosis otherwise incomplete"
         else:
-            cause_label = "incomplete diagnosis"
+            cause_label = "no cause found"
         return DiagnoseResult(
             success=False,
             state=state,
@@ -2106,6 +2121,11 @@ def _run_diagnose_flow_body(
             artifact,
             issue_requires_categorical_scope=state.issue_scope_is_categorical,
         ):
+            artifact = dataclasses.replace(
+                artifact, partial_reason=DiagnosePartialReason.DISCARDED
+            )
+            state.artifact = artifact
+            emit_phase(DiagnosePhase.DISCARDED)
             msg = "Operator declined to land artifact. Audit written."
             write_diagnose_audit(state, project_root)
             return DiagnoseResult(success=False, state=state, message=msg)
