@@ -84,6 +84,29 @@ _log = logging.getLogger(__name__)
 # Patch target for tests: theforge.coordinator.diagnose_flow.run_agent
 run_agent = None
 
+_DELEGATED_WAITING_FAILURE_CODE = "delegated_without_observed_outcome"
+_DELEGATION_TOOL_NAMES: frozenset[str] = frozenset({"agent", "schedulewakeup"})
+_WAITING_PLACEHOLDER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bstill waiting (?:on|for)\b", re.IGNORECASE),
+    re.compile(
+        r"\bwait(?:ing)? for the (?:investigation|exploration|sub-?agent)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bi['’]ll be notified when (?:it|they) complete", re.IGNORECASE),
+)
+_REPORT_LATER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bi['’]ll report(?: the diagnosis| back)? once\b", re.IGNORECASE),
+    re.compile(r"\bi['’]ll report(?: the diagnosis| back)? when\b", re.IGNORECASE),
+    re.compile(r"\bno need to poll\b", re.IGNORECASE),
+)
+_DELEGATION_TEXT_MARKERS: tuple[str, ...] = (
+    "delegat",
+    "subagent",
+    "sub-agent",
+    "investigation agent",
+    "exploration agent",
+)
+
 
 def _ensure_runner() -> None:
     global run_agent
@@ -99,6 +122,46 @@ def _now_iso() -> str:
 
 def _generate_run_id() -> str:
     return os.urandom(6).hex()
+
+
+def _delegation_tools_used(result: object) -> tuple[str, ...]:
+    """Return delegation tool names observed in a runner tool trace."""
+    trace = getattr(result, "tool_trace", ()) or ()
+    used: list[str] = []
+    for entry in trace:
+        if not isinstance(entry, dict):
+            continue
+        tool = str(entry.get("tool", "") or "").strip()
+        if tool.lower() in _DELEGATION_TOOL_NAMES and tool not in used:
+            used.append(tool)
+    return tuple(used)
+
+
+def _ended_on_delegated_waiting_placeholder(result: object) -> tuple[str, ...]:
+    """Name a billed top-level turn that delegated and stopped on a status line.
+
+    This is narrower than "unparseable diagnose output": the observed defect is a
+    top-level investigation turn that successfully ends after spawning delegated
+    work, while its own terminal text says that work is still in flight. A
+    reformat retry cannot recover a diagnosis that was never emitted.
+    """
+    if not bool(getattr(result, "success", False)):
+        return ()
+    output = str(getattr(result, "output", "") or "").strip()
+    if not output:
+        return ()
+    lowered = output.lower()
+    tools = _delegation_tools_used(result)
+    mentions_delegation = bool(tools) or any(
+        marker in lowered for marker in _DELEGATION_TEXT_MARKERS
+    )
+    if not mentions_delegation:
+        return ()
+    waiting = any(pattern.search(output) for pattern in _WAITING_PLACEHOLDER_PATTERNS)
+    report_later = any(pattern.search(output) for pattern in _REPORT_LATER_PATTERNS)
+    if waiting and report_later:
+        return tools or ("delegation wording in its own output",)
+    return ()
 
 
 # ── Issue I/O via gh CLI ──────────────────────────────────────────────
@@ -715,6 +778,15 @@ def persist_agent_output(
     if emit is not None:
         emit(f"  [diagnose] full agent output persisted ({state.raw_output_chars} chars): {path}")
     return path
+
+
+def _describe_persisted_agent_output(state: DiagnoseState) -> str:
+    """Return where the complete investigative output survived for inspection."""
+    if state.raw_output_path:
+        return state.raw_output_path
+    if state.raw_output_inline:
+        return "inline in this run's audit record, field agent.raw_output"
+    return "<no output to persist>"
 
 
 def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
@@ -1703,6 +1775,21 @@ def _run_diagnose_flow_body(
         state.agent_output, issue_number=issue_number, partial=partial
     )
     if parsed.artifact is None:
+        delegated_tools = _ended_on_delegated_waiting_placeholder(agent_result)
+        if delegated_tools:
+            state.agent_failure_code = _DELEGATED_WAITING_FAILURE_CODE
+            tools = ", ".join(delegated_tools)
+            state.error = (
+                "INVESTIGATE did not produce an observed outcome: the investigative "
+                f"agent used {tools} and ended its billed turn on a waiting placeholder "
+                "instead of an investigation. Skipping YAML reformat retries because "
+                "no diagnosis was emitted. Full agent output: "
+                f"{_describe_persisted_agent_output(state)}. "
+                f"Raw tail: {state.agent_output[-200:]!r}"
+            )
+            emit_phase(DiagnosePhase.FAILED)
+            write_diagnose_audit(state, project_root)
+            return DiagnoseResult(success=False, state=state, message=state.error)
         # The investigation is done; only its serialization is broken. Ask for the
         # same diagnosis, correctly encoded, before declaring the paid-for work
         # lost. Parsing of each retry stays strict.
@@ -1724,16 +1811,10 @@ def _run_diagnose_flow_body(
     artifact = parsed.artifact
     if artifact is None:
         attempts = len(state.parse_retries)
-        if state.raw_output_path:
-            where = state.raw_output_path
-        elif state.raw_output_inline:
-            where = "inline in this run's audit record, field agent.raw_output"
-        else:
-            where = "<no output to persist>"
         state.error = (
             f"PARSE failed: investigative agent did not emit a parseable YAML block "
             f"({parsed.error}) and {attempts} reformat retry attempt(s) did not "
-            f"produce one. Full agent output: {where}. "
+            f"produce one. Full agent output: {_describe_persisted_agent_output(state)}. "
             f"Raw tail: {state.agent_output[-200:]!r}"
         )
         emit_phase(DiagnosePhase.FAILED)
