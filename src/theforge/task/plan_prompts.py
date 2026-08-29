@@ -178,9 +178,31 @@ def build_preflight_prompt(
           change requires careful planning but is still localizable.
         - **8 (large)**: cross-module refactor, a rename of a widely-referenced
           field or function, schema migration with multiple consumers.
-        - **9–10 (very large)**: architectural change, new subsystem, a rewrite
-          of a phase of the state machine, changes that touch >10 files or
-          require coordinated migration across the codebase.
+        - **9 (very large, still one story)**: the largest scope that is still
+          coherent as a single story — architectural change, new subsystem, a
+          rewrite of a phase of the state machine, a change touching >10 files
+          or requiring coordinated migration, where the whole change is one
+          seam that a single dev agent can hold and land in one pass. Hard,
+          but not divisible without breaking the change apart mid-seam.
+        - **10 (beyond one story)**: the work exceeds what a single story
+          should attempt and should be decomposed before it runs — it contains
+          two or more independently landable units, each with its own
+          acceptance criteria, that happen to be described together. The test
+          is divisibility, not size: if you can name the pieces and each piece
+          could be reviewed and merged on its own, this is a 10.
+
+        Scores 9 and 10 are mutually exclusive. A change that is one seam is a
+        9 no matter how large; a change that is several landable units is a 10
+        no matter how small each unit is. Never score 10 merely because a story
+        is hard, unfamiliar, or heavy to validate.
+
+        Whenever you assign `complexity_score: 10`, also emit
+        `scope_exceeded: true`; for every other score emit
+        `scope_exceeded: false`. `scope_exceeded` reports one thing only —
+        that the *implementation* work should be split into separate stories.
+        A story whose implementation is one coherent unit is
+        `scope_exceeded: false` even when it is expensive to validate,
+        long-running, or execution-heavy.
 
         Treat the following as **LARGE (score 8+) even if the local edit count
         looks modest**:
@@ -202,8 +224,8 @@ def build_preflight_prompt(
         prompt template string, or schema field, do not score below 4 —
         blast radius dominates conceptual simplicity.
 
-        When verdict is ALREADY_DONE or BLOCKED, set `complexity: small` and
-        `complexity_score: 2` as placeholders.
+        When verdict is ALREADY_DONE or BLOCKED, set `complexity: small`,
+        `complexity_score: 2`, and `scope_exceeded: false` as placeholders.
 
         ## Work-Type Classification
 
@@ -298,6 +320,7 @@ def build_preflight_prompt(
         ```yaml
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity_score: <integer 1-10>
+        scope_exceeded: true | false  # true only when complexity_score is 10
         complexity: small | medium | large
         work_type: feature | refactor | mechanical | bug
         domains: []  # or a list of tags from the fixed domain taxonomy
