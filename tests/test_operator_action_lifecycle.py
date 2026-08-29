@@ -240,7 +240,12 @@ class TestDiagnoseRefusesOperatorAction:
         mock_fetch.return_value = {
             "number": 42,
             "title": "broken sprint",
-            "body": "story 3 never starts",
+            "body": (
+                "## Observed\n\n"
+                "Story 3 never starts.\n\n"
+                "## Expected\n\n"
+                "This sprint run should start story 3.\n"
+            ),
             "state": "OPEN",
             "labels": [{"name": "bug"}],
         }
