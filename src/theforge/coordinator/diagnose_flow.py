@@ -162,7 +162,7 @@ def _ended_on_delegated_waiting_placeholder(result: object) -> str:
         return ""
     tools = _delegation_tools_used(result)
     if tools:
-        return f"used {', '.join(tools)}" if _has_delegated_placeholder_signal(output) else ""
+        return f"used {', '.join(tools)}"
     mentions_delegated_agent = any(
         pattern.search(output) for pattern in _TEXT_ONLY_DELEGATION_PATTERNS
     )
