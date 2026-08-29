@@ -98,12 +98,64 @@ def test_diagnostic_workload_executed_false_when_command_is_missing() -> None:
     )
 
 
+def test_diagnostic_workload_executed_false_when_posix_shell_reports_command_missing() -> None:
+    output = "/bin/sh: 1: pytest: not found\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=127,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
 def test_diagnostic_workload_executed_false_when_interpreter_is_unavailable() -> None:
     output = "ERROR: [Errno 2] No such file or directory: 'python'\n"
     assert (
         diagnostic_workload_executed(
             output,
             exit_code=None,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
+def test_diagnostic_workload_executed_false_when_shell_reports_missing_executable_path() -> None:
+    output = "/bin/sh: 1: ./bin/missing-pytest: not found\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=127,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
+def test_diagnostic_workload_executed_false_when_shell_reports_missing_absolute_path() -> None:
+    output = "/bin/sh: 1: /tmp/missing-pytest: not found\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=127,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
+def test_diagnostic_workload_executed_false_when_shell_reports_no_such_file_for_path() -> None:
+    output = "/bin/sh: 1: /tmp/missing-pytest: No such file or directory\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -261,6 +313,41 @@ def test_diagnostic_pass_missing_command_reports_no_workload(tmp_path: Path) -> 
     assert "finished without enough runner output" not in packet
 
 
+def test_diagnostic_pass_posix_shell_missing_command_reports_no_workload(tmp_path: Path) -> None:
+    """POSIX shell command-not-found output still means no diagnostic workload ran."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = "/bin/sh: 1: pytest: not found\n"
+    with patch_gate_shell(
+        return_value=(False, output, 127, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=9)
+
+    assert telemetry is not None
+    assert telemetry.ran is False
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 127
+
+    state = CoordinatorState(dev_iteration=9)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "did not execute test workload" in packet
+    assert "Do not infer a concurrency-specific bug from this result." in packet
+    assert "finished without enough runner output" not in packet
+
+
 def test_diagnostic_pass_missing_interpreter_reports_no_workload(tmp_path: Path) -> None:
     """An unavailable interpreter is a pre-execution failure, not indeterminate."""
     config = _diag_config(tmp_path)
@@ -278,6 +365,41 @@ def test_diagnostic_pass_missing_interpreter_reports_no_workload(tmp_path: Path)
     assert telemetry.exit_code is None
 
     state = CoordinatorState(dev_iteration=8)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "did not execute test workload" in packet
+    assert "Do not infer a concurrency-specific bug from this result." in packet
+    assert "finished without enough runner output" not in packet
+
+
+def test_diagnostic_pass_missing_executable_path_reports_no_workload(tmp_path: Path) -> None:
+    """A shell-reported missing executable path is still a pre-execution failure."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = "/bin/sh: 1: /tmp/missing-pytest: No such file or directory\n"
+    with patch_gate_shell(
+        return_value=(False, output, 127, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=10)
+
+    assert telemetry is not None
+    assert telemetry.ran is False
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 127
+
+    state = CoordinatorState(dev_iteration=10)
     with patch(
         "theforge.coordinator.validate_phase.subprocess.run",
         side_effect=_stub_git,

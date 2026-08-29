@@ -53,11 +53,14 @@ _PYTEST_ARGUMENT_ERROR_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _COMMAND_NOT_FOUND_RE = re.compile(
-    r"^(?:\S+:\s+)?\S+: (?:command not found|not found)\b",
+    r"^(?:\S+:\s+)+(?:command not found|not found)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 _NO_SUCH_FILE_RE = re.compile(
-    r"^(?:ERROR:\s*)?(?:\[\s*errno\s*2\s*\]\s*)?no such file or directory\b",
+    (
+        r"^(?:(?:\S+:\s+)+.*\bno such file or directory\b|"
+        r"(?:ERROR:\s*)?(?:\[\s*errno\s*2\s*\]\s*)?no such file or directory\b)"
+    ),
     re.IGNORECASE | re.MULTILINE,
 )
 
