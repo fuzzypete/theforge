@@ -10,7 +10,11 @@ from coord_test_helpers import _make_config, _make_task, patch_gate_shell
 
 from theforge.coordinator.state import CoordinatorState
 from theforge.coordinator.validate_phase import _build_timeout_rca_packet
-from theforge.gate_diagnostics import extract_hanging_test, run_gate_diagnostic_pass
+from theforge.gate_diagnostics import (
+    diagnostic_workload_executed,
+    extract_hanging_test,
+    run_gate_diagnostic_pass,
+)
 
 
 def _diag_config(tmp_path: Path):
@@ -63,6 +67,22 @@ def test_extract_hanging_test_none_when_multiple_timeouts() -> None:
 
 def test_extract_hanging_test_none_when_clean() -> None:
     assert extract_hanging_test("42 passed in 3.14s") is None
+
+
+def test_diagnostic_workload_executed_false_when_pytest_rejects_arguments() -> None:
+    output = (
+        "ERROR: usage: __main__.py [options] [file_or_dir] [file_or_dir] [...]\n"
+        "__main__.py: error: unrecognized arguments: --timeout=10 --timeout-method=thread\n"
+    )
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=4,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
 
 
 def test_diagnostic_pass_hang_reproduces_single_threaded(tmp_path: Path) -> None:
@@ -127,6 +147,82 @@ def test_diagnostic_pass_hang_does_not_reproduce_single_threaded(tmp_path: Path)
         )
     assert "concurrency-specific" in packet
     assert "Hanging test isolated" not in packet
+
+
+def test_diagnostic_pass_rejected_before_workload_reports_no_evidence(tmp_path: Path) -> None:
+    """Argument parsing failure means the diagnostic did not execute test workload."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = (
+        "ERROR: usage: __main__.py [options] [file_or_dir] [file_or_dir] [...]\n"
+        "__main__.py: error: unrecognized arguments: --timeout=10 --timeout-method=thread\n"
+    )
+    with patch_gate_shell(
+        return_value=(False, output, 4, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=4)
+
+    assert telemetry is not None
+    assert telemetry.ran is False
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 4
+
+    state = CoordinatorState(dev_iteration=4)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "did not execute test workload" in packet
+    assert "Do not infer a concurrency-specific bug from this result." in packet
+    assert "This suggests a concurrency-specific bug" not in packet
+
+
+def test_diagnostic_pass_non_timeout_failure_does_not_claim_concurrency(tmp_path: Path) -> None:
+    """A serialized run that fails for another reason is not concurrency evidence."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = (
+        "tests/test_api.py::test_contract FAILED\n"
+        "=========================== short test summary info ===========================\n"
+        "1 failed, 12 passed in 1.23s\n"
+    )
+    with patch_gate_shell(
+        return_value=(False, output, 1, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=5)
+
+    assert telemetry is not None
+    assert telemetry.ran is True
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 1
+
+    state = CoordinatorState(dev_iteration=5)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "exited with code 1" in packet
+    assert "This suggests a concurrency-specific bug" not in packet
 
 
 def test_diagnostic_pass_itself_times_out(tmp_path: Path) -> None:
