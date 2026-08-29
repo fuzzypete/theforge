@@ -193,6 +193,7 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
         ),
         "complexity_gate_waited_seconds": state.preflight_complexity_gate_waited_seconds,
         "complexity_gate_decided_at": state.preflight_complexity_gate_decided_at,
+        "complexity_gate_withheld_reason": state.preflight_complexity_gate_withheld_reason,
         "sufficiency": state.preflight_sufficiency,
         "work_type": state.preflight_work_type,
         "domains": list(state.preflight_domains or []),
@@ -981,6 +982,10 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         ),
         ("preflight_complexity_gate_waited_seconds", "complexity_gate_waited_seconds"),
         ("preflight_complexity_gate_decided_at", "complexity_gate_decided_at"),
+        (
+            "preflight_complexity_gate_withheld_reason",
+            "complexity_gate_withheld_reason",
+        ),
         ("preflight_sufficiency", "sufficiency"),
         ("preflight_work_type", "work_type"),
         ("preflight_domains", "domains"),

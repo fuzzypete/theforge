@@ -238,9 +238,22 @@ preflight classified `implementation_ready` — which skips planning — still s
 here. There is no enable switch: raise the threshold above 10 to disable it.
 `--until preflight` still stops at preflight without opening the gate.
 
+**Only a founded score opens it.** A degraded preflight, or one that examined no
+criteria, still yields a complexity figure — a deliberately *high*, conservative
+one (see "Which attempt a resume proceeds from" above). Routing, timeouts, and
+allocation consume that number because they need one and conservative is the safe
+guess. A scope question does not: asking whether a story is too broad, on a figure
+that means "we could not tell", is asking the operator to rule on nothing — and
+because the gate fails closed on silence, it would then return the story on no
+evidence at all. So a story over the threshold whose score nothing observed founded
+runs on **unasked**, and the audit says so: `preflight_complexity_gate.withheld_reason`
+is `degraded preflight` or `preflight examined no criteria`. That is the difference
+between the two ways `opened: false` can arise — under the threshold, or over it
+but unfounded.
+
 Where to look afterwards: `preflight_complexity_gate` in the run audit (whether
-it opened, both complexity axes, the threshold, the decision and its source) and
-`outcome.returned_for_decomposition`.
+it opened, both complexity axes, the threshold, the decision and its source, and
+any `withheld_reason`) and `outcome.returned_for_decomposition`.
 
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 

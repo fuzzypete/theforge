@@ -778,6 +778,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "no_decision_fallback": state.preflight_complexity_gate_no_decision_fallback,
             "waited_seconds": state.preflight_complexity_gate_waited_seconds,
             "decided_at": state.preflight_complexity_gate_decided_at,
+            # Non-null only when the score reached the threshold but nothing
+            # preflight observed founded it, so the story was let through
+            # unasked. Distinguishes that from a score simply under the
+            # threshold, which is the other way ``opened: false`` arises.
+            "withheld_reason": state.preflight_complexity_gate_withheld_reason,
         },
         "outcome": {
             "success": result.success,

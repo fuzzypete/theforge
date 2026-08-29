@@ -780,6 +780,10 @@ class CoordinatorState:
     preflight_complexity_gate_no_decision_fallback: str | None = None
     preflight_complexity_gate_waited_seconds: float | None = None
     preflight_complexity_gate_decided_at: str | None = None
+    # Set when the score reached the threshold but was not one preflight founded
+    # ("degraded preflight" | "preflight examined no criteria"), so the story ran
+    # on without a scope decision. None whenever the gate was not withheld.
+    preflight_complexity_gate_withheld_reason: str | None = None
     # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
     # that fired on each axis. Empty until preflight sizing runs.
     preflight_complexity_evidence: list[dict] = field(default_factory=list)
