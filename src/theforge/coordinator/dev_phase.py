@@ -397,13 +397,12 @@ def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
     already explained and are reported in those words:
 
     * a timeout, whose runner output states the limit that was exceeded;
-    * an agent that ended without a result event, whose captured stream holds
-      the agent's own last words about how it stopped.
+    * an agent that ended without a result event, even when the stream captured
+      no agent text and the run only knows the failure code.
 
     An ending the run cannot account for still reads ``exit=<code>`` — the
     distinction between "the run stated why it ended" and "the run has no
-    recorded cause" is exactly what a caller downstream needs to keep, and a
-    runner marker standing in for text that never existed is not a statement.
+    recorded cause" is exactly what a caller downstream needs to keep.
     """
     from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
 
@@ -415,7 +414,9 @@ def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
         # marker rather than agent text, and they are still the explanation.
         return _clip_agent_text(result.output) or exit_detail
     captured = _captured_agent_text(result)
-    if captured and result.failure_code == FAILURE_ENDED_WITHOUT_RESULT:
+    if result.failure_code == FAILURE_ENDED_WITHOUT_RESULT:
+        if not captured:
+            return f"{exit_detail}: the agent {ENDED_WITHOUT_RESULT_PHRASE}"
         return (
             f"{exit_detail}: the agent {ENDED_WITHOUT_RESULT_PHRASE}; {LAST_SAID_MARKER}{captured}"
         )
