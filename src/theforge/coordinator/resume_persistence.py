@@ -175,6 +175,24 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "complexity_projection": state.preflight_complexity_projection,
         "complexity_evidence": _jsonable(list(state.preflight_complexity_evidence or [])),
         "scope_exceeded": bool(state.preflight_scope_exceeded),
+        # Preflight complexity gate (#2681). A resumed attempt allocates a fresh
+        # CoordinatorState, so without these the operator's scope decision would
+        # be absent from the resumed run's audit — and the gate would re-ask a
+        # question they already answered for this story text.
+        "complexity_gate_opened": bool(state.preflight_complexity_gate_opened),
+        "complexity_gate_score": state.preflight_complexity_gate_score,
+        "complexity_gate_implementation_score": (
+            state.preflight_complexity_gate_implementation_score
+        ),
+        "complexity_gate_validation_score": state.preflight_complexity_gate_validation_score,
+        "complexity_gate_threshold": state.preflight_complexity_gate_threshold,
+        "complexity_gate_decision": state.preflight_complexity_gate_decision,
+        "complexity_gate_decision_source": state.preflight_complexity_gate_decision_source,
+        "complexity_gate_no_decision_fallback": (
+            state.preflight_complexity_gate_no_decision_fallback
+        ),
+        "complexity_gate_waited_seconds": state.preflight_complexity_gate_waited_seconds,
+        "complexity_gate_decided_at": state.preflight_complexity_gate_decided_at,
         "sufficiency": state.preflight_sufficiency,
         "work_type": state.preflight_work_type,
         "domains": list(state.preflight_domains or []),
@@ -947,6 +965,22 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         ("preflight_complexity_projection", "complexity_projection"),
         ("preflight_complexity_evidence", "complexity_evidence"),
         ("preflight_scope_exceeded", "scope_exceeded"),
+        ("preflight_complexity_gate_opened", "complexity_gate_opened"),
+        ("preflight_complexity_gate_score", "complexity_gate_score"),
+        (
+            "preflight_complexity_gate_implementation_score",
+            "complexity_gate_implementation_score",
+        ),
+        ("preflight_complexity_gate_validation_score", "complexity_gate_validation_score"),
+        ("preflight_complexity_gate_threshold", "complexity_gate_threshold"),
+        ("preflight_complexity_gate_decision", "complexity_gate_decision"),
+        ("preflight_complexity_gate_decision_source", "complexity_gate_decision_source"),
+        (
+            "preflight_complexity_gate_no_decision_fallback",
+            "complexity_gate_no_decision_fallback",
+        ),
+        ("preflight_complexity_gate_waited_seconds", "complexity_gate_waited_seconds"),
+        ("preflight_complexity_gate_decided_at", "complexity_gate_decided_at"),
         ("preflight_sufficiency", "sufficiency"),
         ("preflight_work_type", "work_type"),
         ("preflight_domains", "domains"),

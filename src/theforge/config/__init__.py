@@ -51,9 +51,13 @@ from .provenance import (
     resolved_config_sha256,
 )
 from .types import (
+    DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD,
     ESCALATE_TIMEOUT_APPLY_ADVICE,
     ESCALATE_TIMEOUT_POLICIES,
     ESCALATE_TIMEOUT_PRESERVE,
+    PREFLIGHT_GATE_ACTIONS,
+    PREFLIGHT_GATE_APPROVE,
+    PREFLIGHT_GATE_DECOMPOSE,
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
@@ -88,6 +92,7 @@ from .types import (
     TransportFallbackConfig,
     ValidationConfig,
     WorkspaceConfig,
+    normalize_preflight_gate_no_decision,
 )
 
 __all__ = [
@@ -121,9 +126,14 @@ __all__ = [
     "PlanReviewConfig",
     "RecencyConfig",
     "RetryPolicy",
+    "DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD",
     "ESCALATE_TIMEOUT_APPLY_ADVICE",
     "ESCALATE_TIMEOUT_POLICIES",
     "ESCALATE_TIMEOUT_PRESERVE",
+    "PREFLIGHT_GATE_ACTIONS",
+    "PREFLIGHT_GATE_APPROVE",
+    "PREFLIGHT_GATE_DECOMPOSE",
+    "normalize_preflight_gate_no_decision",
     "SandboxConfig",
     "SlackConfig",
     "SprintBatchConfig",

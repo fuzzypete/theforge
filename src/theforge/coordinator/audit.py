@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from theforge import __version__ as FORGE_VERSION
-from theforge.config import ForgeConfig
+from theforge.config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig
 from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
@@ -753,8 +753,42 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "events": list(state.spec_gap_events),
             "resolutions": list(state.spec_gap_resolutions),
         },
+        # ── Preflight complexity gate (#2681) ─────────────────────────────
+        # The end-of-preflight scope decision: whether the run paused, the size
+        # it paused at on both axes, the threshold that opened it, what was
+        # decided, and whether an operator decided it at all. Present on every
+        # record — ``opened: false`` is the readable fact that this run was not
+        # over the threshold, which a null block could not distinguish from a
+        # run that predates the gate.
+        "preflight_complexity_gate": {
+            "opened": bool(state.preflight_complexity_gate_opened),
+            "complexity_score": state.preflight_complexity_gate_score,
+            "implementation_complexity_score": (
+                state.preflight_complexity_gate_implementation_score
+            ),
+            "validation_complexity_score": state.preflight_complexity_gate_validation_score,
+            "threshold": state.preflight_complexity_gate_threshold,
+            "decision": state.preflight_complexity_gate_decision,
+            # "operator" when a human answered, "no_decision" when the wait
+            # expired and the configured action was applied instead.
+            "decision_source": state.preflight_complexity_gate_decision_source,
+            "no_decision_action_configured": str(
+                getattr(config.retry, "preflight_complexity_gate_no_decision", "")
+            ),
+            "no_decision_fallback": state.preflight_complexity_gate_no_decision_fallback,
+            "waited_seconds": state.preflight_complexity_gate_waited_seconds,
+            "decided_at": state.preflight_complexity_gate_decided_at,
+        },
         "outcome": {
             "success": result.success,
+            # Not a failure and not a success: the operator (or the configured
+            # no-decision action) returned the story to be split at the
+            # preflight gate. Recorded next to ``success`` so a reader of the
+            # outcome block alone cannot mistake it for a story that could not
+            # be made to work (#2681).
+            "returned_for_decomposition": (
+                state.preflight_complexity_gate_decision == PREFLIGHT_GATE_DECOMPOSE
+            ),
             "final_phase": result.phase.name,
             "message": result.message,
             "error_type": state.error_type,

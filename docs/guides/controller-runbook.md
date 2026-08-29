@@ -204,6 +204,44 @@ survive preflight's re-scale and the allocation evaluation, so an allocation or
 worker ceiling resting on a phase that observed nothing reads as such on the
 story row rather than as a derived figure.
 
+### PREFLIGHT complexity gate — approve the scope or send it back (issue #2681)
+
+Preflight sizes a story for cents; everything after it is where the money goes.
+A story whose preflight verdict is PROCEED and whose complexity score reaches
+`retry.preflight_complexity_gate_threshold` (shipped: 9) now stops at the end of
+PREFLIGHT and asks, before planning, dev, or review is charged:
+
+```
+▸ #2541  PREFLIGHT  complexity 9 (impl 9, validation 3)  — awaiting operator
+  Threshold 9. Nothing has been spent beyond preflight for this story.
+
+    forge decide 7c1e04b9d3af approve      plan and implement it as scoped
+    forge decide 7c1e04b9d3af decompose    return it to be split
+```
+
+The decision is keyed by the **story's** run id — the one `forge status` shows on
+the story row, not the sprint's. Other stories keep running while one waits.
+
+- **approve** — the run continues exactly as it would have without the gate, and
+  the audit records that the story was explicitly approved at that score. A
+  large-but-cohesive story is never blocked by its size alone.
+- **decompose** — the run ends having spent only preflight. The story is
+  reported **returned for decomposition** (`outcome: decomposed`, `⤺` on the
+  sprint row), which is not a failure and is not an escalation.
+- **no answer** — the run takes `retry.preflight_complexity_gate_no_decision`
+  (shipped: `decompose`), and the audit says no operator decision was recorded.
+  That key accepts only `approve` or `decompose`; anything else returns the
+  story, so a typo cannot spend on an unapproved one.
+
+The gate is anchored to the end of preflight rather than to PLAN, so a story
+preflight classified `implementation_ready` — which skips planning — still stops
+here. There is no enable switch: raise the threshold above 10 to disable it.
+`--until preflight` still stops at preflight without opening the gate.
+
+Where to look afterwards: `preflight_complexity_gate` in the run audit (whether
+it opened, both complexity axes, the threshold, the decision and its source) and
+`outcome.returned_for_decomposition`.
+
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 
 A dev agent that reaches an acceptance criterion which does not define the case

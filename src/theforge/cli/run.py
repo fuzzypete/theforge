@@ -19,7 +19,7 @@ from theforge.cli.shared import (
     check_run_preconditions,
     load_config_checked,
 )
-from theforge.config import load_config
+from theforge.config import PREFLIGHT_GATE_DECOMPOSE, load_config
 from theforge.config.provenance import VALUE_SOURCE_CLI_OVERRIDE, refresh_provenance
 from theforge.coordinator.engine import (
     run_from_review,
@@ -309,7 +309,13 @@ def cmd_run(args: "argparse.Namespace") -> int:
         # Summary
         print(file=sys.stderr)
         print(f"{'=' * 60}", file=sys.stderr)
-        icon = "✓" if result.success else "✗"
+        # A story the preflight complexity gate returned gets neither mark: it
+        # did not succeed and it did not fail (#2681).
+        _gate_decision = getattr(result.state, "preflight_complexity_gate_decision", None)
+        if _gate_decision == PREFLIGHT_GATE_DECOMPOSE:
+            icon = "⤺"
+        else:
+            icon = "✓" if result.success else "✗"
         print(f"  {icon} {result.message}", file=sys.stderr)
         print(f"  Audit log: {audit_path}", file=sys.stderr)
         print(f"  Total cost: ${result.state.total_cost:.3f}", file=sys.stderr)

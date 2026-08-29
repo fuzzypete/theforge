@@ -255,6 +255,8 @@ def _outcome_to_status(outcome: str) -> str:
         return "skipped"
     if outcome == "OPERATOR_ACTION":
         return "operator-action"
+    if outcome == "DECOMPOSED":
+        return "decomposed"
     if outcome in ("ESCALATE", "MERGE_FAILED", "MERGE_ARMING_FAILED"):
         return "failed"
     return "failed"
@@ -829,6 +831,9 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
     if status_val == "operator-action":
         return "", "not sprintable; operator deliverable", complexity
 
+    if status_val == "decomposed":
+        return "", "returned for decomposition", complexity
+
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
         # Defensive backstop: a failed/skipped story must never display a
@@ -1082,6 +1087,8 @@ def _stage_and_detail_from_completed_story(
         verdict = _nonempty_str(story.get("verdict")) if _success_outcome else None
         if outcome == "OPERATOR_ACTION":
             detail = "not sprintable; operator deliverable"
+        elif outcome == "DECOMPOSED":
+            detail = "returned for decomposition"
         elif verdict == "APPROVE":
             detail = "APPROVE"
         elif verdict:
@@ -1417,7 +1424,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 detail = _pending_decision_display(pending_entry)
         complexity_score = _normalize_complexity_score(story.get("complexity_score"))
 
-        if status_val in {"skipped", "blocked", "operator-action"}:
+        if status_val in {"skipped", "blocked", "operator-action", "decomposed"}:
             model_val: str | None = None
         else:
             model_raw = story.get("current_model")
