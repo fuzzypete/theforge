@@ -809,6 +809,10 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             }
             for a in state.unchecked_premises
         ],
+        # Verification/provenance fields the artifact left unrecorded. These no
+        # longer force a partial landing (#2797), so the record is the only
+        # place the strict schema gap survives a run that landed runnable.
+        "missing_metadata_fields": list(state.missing_metadata_fields),
         "error": state.error,
     }
     if state.artifact is not None:
@@ -1838,10 +1842,20 @@ def _run_diagnose_flow_body(
     # If essential fields are missing OR the run breached its budget/timeout
     # envelope, return the partial work for operator review rather than landing
     # a misleading "fix-ready" artifact. Name the specific reason when known.
-    missing_required_fields = artifact.missing_required_fields(
+    #
+    # "Essential" is the lifecycle-blocking subset, not the strict schema list:
+    # an artifact whose only gap is unrecorded verification metadata renders a
+    # Diagnosis section the shape gate reads as RUNNABLE, so declaring it
+    # NEEDS_DIAGNOSIS refuses the write against a body that does not occupy the
+    # declared state and discards the whole investigation (#2797). The strict
+    # list still reaches the audit via ``missing_metadata_fields``.
+    lifecycle_blocking_fields = artifact.lifecycle_blocking_missing_fields(
         issue_requires_categorical_scope=state.issue_scope_is_categorical
     )
-    if missing_required_fields or partial:
+    state.missing_metadata_fields = artifact.missing_verification_metadata_fields(
+        issue_requires_categorical_scope=state.issue_scope_is_categorical
+    )
+    if lifecycle_blocking_fields or partial:
         if budget_exceeded:
             partial_phase = DiagnosePhase.BUDGET_EXCEEDED
             partial_reason = DiagnosePartialReason.BUDGET_EXCEEDED
@@ -1891,7 +1905,7 @@ def _run_diagnose_flow_body(
             cause_label = f"budget exceeded (${config.diagnose.budget_usd})"
         elif state.agent_failure_code == "timeout":
             cause_label = f"timed out after {int(profile.timeout_seconds)}s"
-        elif missing_required_fields == ("symptom_scope_coverage",):
+        elif lifecycle_blocking_fields == ("symptom_scope_coverage",):
             cause_label = "diagnosis scope-coverage incomplete"
         else:
             cause_label = "incomplete diagnosis"
@@ -1934,10 +1948,17 @@ def _run_diagnose_flow_body(
     state.landed_location = location
     emit_phase(DiagnosePhase.DONE)
     write_diagnose_audit(state, project_root)
+    message = f"Diagnosis landed at {location}"
+    if state.missing_metadata_fields:
+        # The landing is runnable, but say what the artifact never recorded so
+        # the gap is visible without opening the audit.
+        message += " — verification metadata unrecorded: " + ", ".join(
+            state.missing_metadata_fields
+        )
     return DiagnoseResult(
         success=True,
         state=state,
-        message=f"Diagnosis landed at {location}",
+        message=message,
     )
 
 

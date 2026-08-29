@@ -438,6 +438,53 @@ class TestDiagnosisArtifact:
         assert not artifact.is_complete()
         assert artifact.missing_required_fields() == ("confirmed_cause_verification",)
 
+    def test_missing_verification_metadata_is_not_lifecycle_blocking(self):
+        # The strict schema signal stays; only its lifecycle weight changes. A
+        # confirmed cause that renders verbatim is not a partial diagnosis just
+        # because nobody recorded how it was checked (#2797).
+        artifact = self._make(
+            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            confirmed_cause_verification=ClaimVerification(),
+        )
+        assert artifact.missing_required_fields() == (
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        )
+        assert artifact.lifecycle_blocking_missing_fields() == ()
+        assert artifact.missing_verification_metadata_fields() == (
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        )
+
+    def test_missing_diagnosis_content_stays_lifecycle_blocking(self):
+        artifact = self._make(
+            confirmed_cause="",
+            confirmed_cause_verification=ClaimVerification(),
+            affected_code_path="",
+        )
+        assert artifact.lifecycle_blocking_missing_fields() == (
+            "confirmed_cause",
+            "affected_code_path",
+        )
+        assert artifact.missing_verification_metadata_fields() == ()
+
+    def test_missing_categorical_scope_coverage_stays_lifecycle_blocking(self):
+        artifact = self._make(
+            symptom_scope_coverage=SymptomScopeCoverage(),
+            confirmed_cause_verification=ClaimVerification(),
+        )
+        assert artifact.lifecycle_blocking_missing_fields(
+            issue_requires_categorical_scope=True
+        ) == ("symptom_scope_coverage",)
+        assert artifact.missing_verification_metadata_fields(
+            issue_requires_categorical_scope=True
+        ) == ("confirmed_cause_verification",)
+
+    def test_complete_artifact_has_no_lifecycle_blockers_or_metadata_gaps(self):
+        artifact = self._make()
+        assert artifact.lifecycle_blocking_missing_fields() == ()
+        assert artifact.missing_verification_metadata_fields() == ()
+
     def test_is_complete_false_when_claim_verification_type_is_unrecognized(self):
         artifact = self._make(
             hypotheses=(
