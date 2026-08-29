@@ -372,6 +372,58 @@ class DiagnosisArtifact:
             issue_requires_categorical_scope=issue_requires_categorical_scope
         )
 
+    @staticmethod
+    def _is_verification_metadata_field(name: str) -> bool:
+        """True when a missing-field name records claim provenance, not content.
+
+        The verification entries say *how* a claim was checked; they carry no
+        part of the diagnosis a dev or the shape gate reads.  They are named
+        separately so a gap in them can stay an audit signal without also
+        being a lifecycle blocker.
+        """
+        return name == "confirmed_cause_verification" or (
+            name.startswith("hypotheses[") and name.endswith("].claim_verification")
+        )
+
+    def lifecycle_blocking_missing_fields(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> tuple[str, ...]:
+        """Missing required fields that make this diagnosis substantively partial.
+
+        A subset of :meth:`missing_required_fields`, which stays the strict
+        schema/audit signal.  This one answers the narrower lifecycle question:
+        does what is missing stop the rendered diagnosis from being the
+        fix-ready artifact it looks like?  Absent narrative content — no
+        confirmed cause, no hypotheses, no reproduction, uncovered categorical
+        scope — does.  A confirmed cause whose ``verification_type`` was never
+        recorded does not: the cause itself is asserted and renders verbatim,
+        so declaring the landing ``needs_diagnosis`` over that metadata gap
+        contradicts what the shape gate reads back off the same body (#2797).
+        """
+        return tuple(
+            name
+            for name in self.missing_required_fields(
+                issue_requires_categorical_scope=issue_requires_categorical_scope
+            )
+            if not self._is_verification_metadata_field(name)
+        )
+
+    def missing_verification_metadata_fields(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> tuple[str, ...]:
+        """The verification/provenance-only gaps in this artifact.
+
+        Recorded in the audit so landing a metadata-incomplete diagnosis as
+        runnable stays inspectable after the run succeeds.
+        """
+        return tuple(
+            name
+            for name in self.missing_required_fields(
+                issue_requires_categorical_scope=issue_requires_categorical_scope
+            )
+            if self._is_verification_metadata_field(name)
+        )
+
     def has_substantive_content(self) -> bool:
         """Return True when at least one required diagnosis field carries content.
 
@@ -438,6 +490,11 @@ class DiagnoseState:
     # Set when the premise check finds the cited code was removed from baseline.
     unchecked_premises: tuple[UncheckedPremise, ...] = ()
     # Set when premise verification could not check cited anchors/patterns.
+    missing_metadata_fields: tuple[str, ...] = ()
+    # Required-field names the artifact left unrecorded that are verification /
+    # provenance metadata only. These do NOT force a partial landing (#2797),
+    # so they are carried here to keep the strict schema gap inspectable in the
+    # audit of a run that landed runnable anyway.
     starting_evidence_labels: list[str] = field(default_factory=list)
     # Short labels for each excerpt auto-loaded from issue-body references and
     # injected into the prompt as STARTING EVIDENCE. Empty when the body cited
@@ -551,7 +608,7 @@ def render_artifact_markdown(
                 "> ⚠ Partial diagnosis — the investigation timed out before "
                 "reaching a confirmed cause. Operator review required."
             )
-        elif artifact.confirmed_cause.strip() and artifact.missing_required_fields(
+        elif artifact.confirmed_cause.strip() and artifact.lifecycle_blocking_missing_fields(
             issue_requires_categorical_scope=issue_requires_categorical_scope
         ) == ("symptom_scope_coverage",):
             warning = (
