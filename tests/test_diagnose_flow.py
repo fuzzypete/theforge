@@ -933,7 +933,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_missing_claim_verification_lands_partial_instead_of_complete_diagnosis(
+    def test_missing_claim_verification_lands_runnable_and_records_metadata_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -955,7 +955,7 @@ class TestDiagnoseFlow:
             ],
             "confirmed_cause": "Completeness ignores missing claim verification metadata",
             "affected_code_path": "src/theforge/diagnose_types.py:321",
-            "fix_success_criterion": "Diagnoses with omitted verification metadata land partial",
+            "fix_success_criterion": "Diagnoses with omitted verification metadata land runnable",
         }
         mock_agent.return_value = _fake_agent_result(
             f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
@@ -971,13 +971,102 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        # The verification metadata is unrecorded, but the diagnosis itself is
+        # substantive: it lands runnable rather than declaring needs_diagnosis
+        # against a body the shape gate reads as runnable (#2797).
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
         assert mock_post.called
         posted_body = mock_post.call_args[0][1]
-        assert "Partial diagnosis" in posted_body
+        assert "Partial diagnosis" not in posted_body
         assert result.state.artifact is not None
+        assert not result.state.artifact.partial
+        # The strict schema signal is unchanged — only its lifecycle weight is.
         assert result.state.artifact.missing_required_fields() == (
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        )
+        assert result.state.missing_metadata_fields == (
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-2672-*.yaml"))
+        assert audit_files
+        audit = yaml.safe_load(audit_files[-1].read_text())
+        assert audit["missing_metadata_fields"] == [
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        ]
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_missing_verification_metadata_body_landing_is_not_refused(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """Seam test for the LAND boundary: the state the producer declares must
+        match what the shared shape gate evaluates off the same rendered body.
+
+        A substantive confirmed cause with unrecorded verification metadata used
+        to declare ``needs_diagnosis`` while ``check_bug_missing_diagnosis`` read
+        the same body as ``runnable``, so ``require_conforming_body`` refused the
+        write before ``_gh_edit_body`` and the whole paid investigation was
+        discarded (#2797).
+        """
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 419,
+            "title": "two exercises collapse onto one identity",
+            "body": (
+                "## Observed\n\n"
+                "Two distinct exercises share one base key.\n\n"
+                "## Expected\n\n"
+                "Distinct exercises keep distinct identities.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        payload = {
+            "observed_symptom": "Two distinct exercises collapse onto one base key",
+            "reproduction_or_evidence": (
+                "infer_base_exercise_key strips a fixed equipment-prefix list."
+            ),
+            "hypotheses": [
+                {
+                    "statement": "The prefix strip is lossy",
+                    "status": "confirmed",
+                    "evidence": "Both names reduce to the same key after stripping.",
+                }
+            ],
+            "confirmed_cause": (
+                "infer_base_exercise_key strips a fixed equipment-prefix list, "
+                "collapsing two distinct exercises onto one identity."
+            ),
+            "affected_code_path": "src/hdp/exercises.py:infer_base_exercise_key",
+            "fix_success_criterion": "The two exercises retain distinct base keys.",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=419,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success, result.message
+        assert mock_edit.called, "the conforming-body gate must not refuse this write"
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+        assert "Partial diagnosis" not in new_body
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.artifact is not None
+        assert not result.state.artifact.partial
+        assert result.state.missing_metadata_fields == (
             "hypotheses[0].claim_verification",
             "confirmed_cause_verification",
         )
