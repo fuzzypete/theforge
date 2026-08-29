@@ -259,7 +259,7 @@ _PATH_REF_RE = re.compile(
     r"(?P<path>[\w./\-]*\w+\.[A-Za-z0-9]+)(?::(?P<locator>[A-Za-z_]\w*|\d+))?"
 )
 _LINE_LOCATOR_SYMBOL_RE = re.compile(
-    r"^[\s,;()\[\]`'\"-]*([A-Za-z_]\w*)\b",
+    r"^[\s,;()\[\]`'\"-]*(?:in\s+)?([A-Za-z_]\w*)\b",
 )
 
 
@@ -375,9 +375,10 @@ def _git_log_first(extra_args: list[str], project_root: Path) -> tuple[str, str]
 def _extract_line_locator_symbol(suffix: str) -> str:
     """Return the symbol after a ``path:line`` citation when the tail is compact.
 
-    We only accept the prompt-documented ``path:line, symbol`` shape, not free
-    prose like ``path:301, parse for background``. The symbol token must be
-    followed only by punctuation/whitespace or the end of the citation.
+    We accept compact follow-on symbol shapes such as ``path:line, symbol`` and
+    ``path:line in symbol``, not free prose like ``path:301, parse for
+    background``. The symbol token must be followed only by
+    punctuation/whitespace or the end of the citation.
     """
     match = _LINE_LOCATOR_SYMBOL_RE.match(suffix)
     if not match:
@@ -407,8 +408,6 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
         if locator.isdigit():
             suffix = text[match.end() : match.end() + 80]
             symbol = _extract_line_locator_symbol(suffix)
-            if not symbol and suffix.lstrip().startswith(","):
-                continue
         if not path:
             continue
         key = (path, symbol)
@@ -417,6 +416,17 @@ def _extract_affected_refs(affected_code_path: str) -> list[tuple[str, str]]:
         seen.add(key)
         refs.append(key)
     return refs
+
+
+def _should_ignore_untracked_bare_path(path: str, symbol: str) -> bool:
+    """Return True for filename-like prose that should not become an audit premise.
+
+    Bare unqualified filenames inside narrative prose are common in
+    ``affected_code_path``. When they are absent at baseline and never appeared
+    in reachable history, surfacing them as unchecked premises adds noise. Keep
+    repo-qualified paths and symbol-bearing citations audit-visible.
+    """
+    return not symbol and "/" not in path
 
 
 def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) -> PremiseVerdict:
@@ -525,9 +535,12 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                 )
                 covered.add(path)
             else:
+                seen_in_history = _path_seen_in_history(path, sha, project_root)
+                if not seen_in_history and _should_ignore_untracked_bare_path(path, symbol):
+                    continue
                 reason = (
                     "file absent at baseline but no removing commit could be identified"
-                    if _path_seen_in_history(path, sha, project_root)
+                    if seen_in_history
                     else ("cited path absent at baseline and not present in reachable git history")
                 )
                 unable_to_check.append(

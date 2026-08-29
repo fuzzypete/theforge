@@ -2825,6 +2825,143 @@ class TestPremiseVerification:
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_deleted_affected_file_with_line_and_prose_still_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """A deleted-file citation with a ``path:line`` locator followed by prose
+        must still preserve the file premise and divert to already-resolved."""
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "keep.txt", "keep\n", "seed")
+        _commit_file(tmp_path, "src/deleted_mod.py", "def gone():\n    pass\n", "add deleted mod")
+        deleting = _remove_file(tmp_path, "src/deleted_mod.py", "delete deleted module")
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 201,
+            "title": "deleted module bug",
+            "body": "src/deleted_mod.py misbehaves\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": "The module was removed before this diagnosis landed.",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": (
+                "src/deleted_mod.py:42, removed entirely in an earlier refactor."
+            ),
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=201,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert result.state.absent_premises[0].file == "src/deleted_mod.py"
+        assert result.state.absent_premises[0].pattern == ""
+        assert result.state.absent_premises[0].removing_commit.startswith(deleting[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_removed_symbol_in_path_line_in_symbol_prose_reports_already_resolved(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        """Compact ``path:line in symbol`` phrasing should verify the removed
+        symbol rather than falling back to a live diagnosis."""
+        _init_repo(tmp_path)
+        _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def removed_func():\n    return reserve(n - 1)\n",
+            "add removed func",
+        )
+        removing = _commit_file(
+            tmp_path,
+            "src/mod.py",
+            "def other_func():\n    return reserve(n)\n",
+            "remove removed_func, keep module",
+        )
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 202,
+            "title": "removed symbol bug",
+            "body": "removed_func reserves the wrong number of slots\n",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "s",
+            "reproduction_or_evidence": "r",
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": "",
+            "confirmed_cause_support": "The cited symbol was removed by a named commit.",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": "src/mod.py:301 in removed_func.",
+            "fix_success_criterion": "c",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=202,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert not mock_edit.called
+        assert result.state.absent_premises[0].file == "src/mod.py"
+        assert result.state.absent_premises[0].pattern == "removed_func"
+        assert result.state.absent_premises[0].removing_commit.startswith(removing[:8])
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_present_premise_lands_normally(self, mock_agent, mock_fetch, mock_edit, tmp_path):
         """Given a still-present bug, behavior is unchanged: the premise check
         passes and the confirmed-cause diagnosis lands normally."""
