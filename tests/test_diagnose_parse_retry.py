@@ -565,6 +565,40 @@ class TestParseRetryRecovery:
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_tool_trace_delegation_does_not_require_waiting_phrase_match(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """Tool-trace-confirmed delegation is sufficient even when wording drifts."""
+        mock_fetch.return_value = _issue(2798)
+        placeholder = (
+            "I'll wait for the background agent's completion notification rather than polling."
+        )
+        mock_agent.return_value = _fake_agent_result(
+            placeholder,
+            cost=0.32,
+            tool_trace=({"tool": "Agent", "target": "Investigate the background task"},),
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2798,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "delegated_without_observed_outcome"
+        assert "used Agent" in result.message
+        assert "Skipping YAML reformat retries" in result.message
+        assert "parseable YAML block" not in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_text_only_delegation_placeholder_uses_text_specific_message(
         self, mock_agent, mock_fetch, tmp_path
     ):
