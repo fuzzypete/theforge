@@ -9339,8 +9339,8 @@
   },
   "timing": {
     "started_at": "2026-08-29T18:55:53.520200+00:00",
-    "finished_at": "2026-08-29T19:05:56.257636+00:00",
-    "duration_seconds": 602.737436
+    "finished_at": "2026-08-29T19:09:57.210788+00:00",
+    "duration_seconds": 843.690588
   },
   "workspace": {
     "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2797",
@@ -12409,15 +12409,15 @@
     "pr_url": "https://github.com/fuzzypete/theforge/pull/2799",
     "pr_merged_at": null
   },
-  "landing_status": "pending_integration",
+  "landing_status": "landed",
   "landing_review": {
     "source": "merged_cycle_review",
     "verdict": "APPROVE"
   },
   "landing_event": {
-    "landing_status": "pending_integration",
-    "landed": false,
-    "timestamp": "2026-08-29T19:05:56.257636+00:00"
+    "landing_status": "landed",
+    "landed": true,
+    "timestamp": "2026-08-29T19:09:57.210788+00:00"
   },
   "gate_green_salvage": null,
   "timeout_escalation": null,
