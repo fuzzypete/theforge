@@ -375,7 +375,7 @@ see [ADR-0010](../adr/0010-triage-disposition-shelved.md).
 |---|---|---|
 | What is open in the milestone? | `gh issue list --milestone vX.Y.Z --state open --limit 500` | No Forge equivalent. **`--limit` defaults to 30 and truncates silently** — always pass an explicit limit |
 | What is ready to sprint? | `forge status --ready --milestone vX.Y.Z` | Shows only issues already `ready` |
-| Is this finding still active, and where is the real seam? | `forge diagnose --dry-run --issue A,B --parallel N` | Spends (~$0.5/finding). Until #2760 lands, read the narrative — do not trust `already_resolved` |
+| Is this finding still active, and where is the real seam? | `forge diagnose --dry-run --issue A,B --parallel N` | Spends (~$0.5/finding). Read the structured premise-verification fields (`already_resolved`, `absent_premises`, `unchecked_premises`) alongside the narrative |
 | Persist that diagnosis into the issue | same, without `--dry-run` | Mutates issue bodies |
 | Make an issue structurally runnable | `forge shape`, `forge groom`, `forge diagnose` | Readiness only, never priority |
 | Verify a sprint before spending | `forge sprint --dry-run --issues … --budget …` | Requires the work already selected |
