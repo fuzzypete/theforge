@@ -21,6 +21,8 @@ from theforge.shape_check import (
 from theforge.shape_check.classifier import classify
 from theforge.shape_check.heuristics import (
     check_bug_missing_diagnosis,
+    check_bug_missing_expected,
+    check_bug_missing_observed,
     check_criterion_needs_live_evidence,
     check_epic_or_tracking,
     check_implementation_design_dump,
@@ -82,6 +84,12 @@ ADVISORY_ONLY_DONE_STATE_BODY = textwrap.dedent(
 # required Diagnosis component must be present for the issue to pass shape check.
 DIAGNOSED_BUG_BODY = textwrap.dedent(
     """\
+    ## Observed
+    Command exits 1 instead of 0 on success.
+
+    ## Expected
+    Command returns 0 on the success path.
+
     ## Diagnosis
 
     - **Observed symptom.** Command exits 1 instead of 0 on success.
@@ -224,6 +232,92 @@ class TestEpicOrTracking:
         assert r is not None
         assert "tracking issue" in r.detail
         assert "Tracking issue for several follow-up tasks." in r.detail
+
+
+class TestBugObservedExpectedRequirement:
+    def test_missing_observed_is_blocking(self):
+        body = textwrap.dedent(
+            """\
+            ## What was expected
+            The command exits 0.
+
+            ## Diagnosis
+            - **Observed symptom.** The command exits 1.
+            - **Evidence.** Run `abc123`.
+            - **Ruled out.** Shell alias drift.
+            - **Confirmed cause.** Exit code is inverted.
+            - **Affected code path.** `cli.main`.
+            - **Fix-success criterion.** Success exits 0.
+            """
+        )
+        reason = check_bug_missing_observed("Exit code", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "missing_observed"
+        assert "absent" in reason.detail
+
+    def test_empty_expected_is_blocking(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed
+            SIGSEGV
+
+            ## Expected
+
+            ## Diagnosis
+            - **Observed symptom.** The command segfaults.
+            - **Evidence.** Crash log from run `abc123`.
+            - **Ruled out.** Missing input file.
+            - **Confirmed cause.** Null pointer dereference in parser setup.
+            - **Affected code path.** `parser.configure`.
+            - **Fix-success criterion.** Same input no longer segfaults.
+            """
+        )
+        reason = check_bug_missing_expected("Crash", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "missing_expected"
+        assert "empty" in reason.detail
+
+    def test_non_placeholder_minimal_observed_passes(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed
+            SIGSEGV
+
+            ## Expected
+            The command completes successfully.
+
+            ## Diagnosis
+            - **Observed symptom.** The command segfaults.
+            - **Evidence.** Crash log from run `abc123`.
+            - **Ruled out.** Missing input file.
+            - **Confirmed cause.** Null pointer dereference in parser setup.
+            - **Affected code path.** `parser.configure`.
+            - **Fix-success criterion.** Same input no longer segfaults.
+            """
+        )
+        assert check_bug_missing_observed("Crash", body, ["bug"]) is None
+        assert check_bug_missing_expected("Crash", body, ["bug"]) is None
+
+    def test_summary_prefixed_prose_still_passes(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed
+            Summary: the queue drops the issue after rerun.
+
+            ## Expected
+            Summary: the queue keeps the issue once rerun passes.
+
+            ## Diagnosis
+            - **Observed symptom.** The queue drops the issue after rerun.
+            - **Evidence.** Audit log `abc123`.
+            - **Ruled out.** Missing label sync.
+            - **Confirmed cause.** The rerun result is discarded.
+            - **Affected code path.** `queue.refresh`.
+            - **Fix-success criterion.** Passing reruns keep the issue queued.
+            """
+        )
+        assert check_bug_missing_observed("Queue rerun", body, ["bug"]) is None
+        assert check_bug_missing_expected("Queue rerun", body, ["bug"]) is None
 
     def test_body_heading_tracking_issue(self):
         body = textwrap.dedent(

@@ -32,6 +32,11 @@ _PLACEHOLDER_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ANGLE_BRACKET_PLACEHOLDER_RE = re.compile(
+    r"^\s*<\s*(?:insert\b.*\bhere|fill\s+in|fill\b.*\bhere|state\b.*\bhere)\s*>\s*$",
+    re.IGNORECASE,
+)
+
 
 # A placeholder's instructions may wrap onto following lines. Anything that
 # opens new structure (blank line, bullet, heading, fence, table row) ends
@@ -46,7 +51,10 @@ _WRAPS_RE = re.compile(r"[,;:—–\-(\[]$")
 
 def is_placeholder_line(line: str) -> bool:
     """True when ``line`` is an unfilled-template marker rather than content."""
-    return _PLACEHOLDER_LINE_RE.match(line) is not None
+    return (
+        _PLACEHOLDER_LINE_RE.match(line) is not None
+        or _ANGLE_BRACKET_PLACEHOLDER_RE.match(line) is not None
+    )
 
 
 def _wraps_onto_next_line(line: str) -> bool:

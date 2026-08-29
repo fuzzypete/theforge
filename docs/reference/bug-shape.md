@@ -3,7 +3,8 @@
 > Generated from `theforge.shape_check.diagnosis_spec`. Do not edit by hand —
 > run the shape-reference generator (or the test that regenerates it) instead.
 
-A bug-typed issue is *fix-ready* when its body carries a complete
+A bug-typed issue is *fix-ready* when its body carries required
+`## Observed` / `## Expected` sections and a complete
 `## Diagnosis` section. The shape gate refuses symptom-only bug bodies;
 an honest non-assertion confirmed cause (`unknown`, `not yet identified`,
 `pending investigation`, `TBD`) is admissible and marks the bug
@@ -45,6 +46,14 @@ Copy this into a bug issue body and replace each example value. A body
 that starts from this skeleton passes the shape gate by construction.
 
 ```markdown
+## Observed
+
+The command exits 1 instead of 0 on success.
+
+## Expected
+
+The command exits 0 on success.
+
 ## Diagnosis
 
 - **Observed symptom:** sprint resume false-skips zero-delta APPROVE stories, reporting them merged when no commit landed.
