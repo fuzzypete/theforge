@@ -94,17 +94,20 @@ _WAITING_PLACEHOLDER_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"\bi['’]ll be notified when (?:it|they) complete", re.IGNORECASE),
 )
-_REPORT_LATER_PATTERNS: tuple[re.Pattern[str], ...] = (
+_DEFERRED_OUTCOME_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bi['’]ll report(?: the diagnosis| back)? once\b", re.IGNORECASE),
     re.compile(r"\bi['’]ll report(?: the diagnosis| back)? when\b", re.IGNORECASE),
     re.compile(r"\bno need to poll\b", re.IGNORECASE),
+    re.compile(r"\b(?:results?|findings?|details?) to follow\b", re.IGNORECASE),
 )
-_DELEGATION_TEXT_MARKERS: tuple[str, ...] = (
-    "delegat",
-    "subagent",
-    "sub-agent",
-    "investigation agent",
-    "exploration agent",
+_TEXT_ONLY_DELEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bsub-?agent\b", re.IGNORECASE),
+    re.compile(r"\b(?:investigation|exploration) agent\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:delegat(?:e|ed|es|ing|ion)|dispatch(?:ed|es|ing)?|spawn(?:ed|s|ing)?)\b"
+        r".{0,80}\b(?:sub-?agent|(?:investigation|exploration) agent)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
 )
 
 
@@ -137,8 +140,15 @@ def _delegation_tools_used(result: object) -> tuple[str, ...]:
     return tuple(used)
 
 
-def _ended_on_delegated_waiting_placeholder(result: object) -> tuple[str, ...]:
-    """Name a billed top-level turn that delegated and stopped on a status line.
+def _has_delegated_placeholder_signal(output: str) -> bool:
+    """Return True when the output reads like deferred delegated work."""
+    return any(pattern.search(output) for pattern in _WAITING_PLACEHOLDER_PATTERNS) or any(
+        pattern.search(output) for pattern in _DEFERRED_OUTCOME_PATTERNS
+    )
+
+
+def _ended_on_delegated_waiting_placeholder(result: object) -> str:
+    """Describe a billed top-level turn that delegated and stopped on a status line.
 
     This is narrower than "unparseable diagnose output": the observed defect is a
     top-level investigation turn that successfully ends after spawning delegated
@@ -146,22 +156,19 @@ def _ended_on_delegated_waiting_placeholder(result: object) -> tuple[str, ...]:
     reformat retry cannot recover a diagnosis that was never emitted.
     """
     if not bool(getattr(result, "success", False)):
-        return ()
+        return ""
     output = str(getattr(result, "output", "") or "").strip()
     if not output:
-        return ()
-    lowered = output.lower()
+        return ""
     tools = _delegation_tools_used(result)
-    mentions_delegation = bool(tools) or any(
-        marker in lowered for marker in _DELEGATION_TEXT_MARKERS
+    if tools:
+        return f"used {', '.join(tools)}" if _has_delegated_placeholder_signal(output) else ""
+    mentions_delegated_agent = any(
+        pattern.search(output) for pattern in _TEXT_ONLY_DELEGATION_PATTERNS
     )
-    if not mentions_delegation:
-        return ()
-    waiting = any(pattern.search(output) for pattern in _WAITING_PLACEHOLDER_PATTERNS)
-    report_later = any(pattern.search(output) for pattern in _REPORT_LATER_PATTERNS)
-    if waiting and report_later:
-        return tools or ("delegation wording in its own output",)
-    return ()
+    if mentions_delegated_agent and _has_delegated_placeholder_signal(output):
+        return "described delegated work in its own output"
+    return ""
 
 
 # ── Issue I/O via gh CLI ──────────────────────────────────────────────
@@ -1775,13 +1782,13 @@ def _run_diagnose_flow_body(
         state.agent_output, issue_number=issue_number, partial=partial
     )
     if parsed.artifact is None:
-        delegated_tools = _ended_on_delegated_waiting_placeholder(agent_result)
-        if delegated_tools:
+        delegated_observation = _ended_on_delegated_waiting_placeholder(agent_result)
+        if delegated_observation:
             state.agent_failure_code = _DELEGATED_WAITING_FAILURE_CODE
-            tools = ", ".join(delegated_tools)
             state.error = (
                 "INVESTIGATE did not produce an observed outcome: the investigative "
-                f"agent used {tools} and ended its billed turn on a waiting placeholder "
+                f"agent {delegated_observation} and ended its billed turn on a "
+                "delegation placeholder "
                 "instead of an investigation. Skipping YAML reformat retries because "
                 "no diagnosis was emitted. Full agent output: "
                 f"{_describe_persisted_agent_output(state)}. "
