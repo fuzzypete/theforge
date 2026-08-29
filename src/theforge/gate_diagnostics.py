@@ -52,6 +52,14 @@ _PYTEST_ARGUMENT_ERROR_RE = re.compile(
     r"^\S+:\s*error:\s+unrecognized arguments:",
     re.IGNORECASE | re.MULTILINE,
 )
+_COMMAND_NOT_FOUND_RE = re.compile(
+    r"^(?:\S+:\s+)?\S+: (?:command not found|not found)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_NO_SUCH_FILE_RE = re.compile(
+    r"^(?:ERROR:\s*)?(?:\[\s*errno\s*2\s*\]\s*)?no such file or directory\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def extract_hanging_test(output: str) -> str | None:
@@ -98,6 +106,10 @@ def diagnostic_workload_executed(
     if _PYTEST_NO_TESTS_RAN_RE.search(output):
         return False
     if _PYTEST_ARGUMENT_ERROR_RE.search(output):
+        return False
+    if _COMMAND_NOT_FOUND_RE.search(output):
+        return False
+    if _NO_SUCH_FILE_RE.search(output):
         return False
     if _PYTEST_RESULT_SUMMARY_RE.search(output) or _PYTEST_NODE_RESULT_RE.search(output):
         return True

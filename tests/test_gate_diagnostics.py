@@ -85,6 +85,32 @@ def test_diagnostic_workload_executed_false_when_pytest_rejects_arguments() -> N
     )
 
 
+def test_diagnostic_workload_executed_false_when_command_is_missing() -> None:
+    output = "bash: pytest: command not found\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=127,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
+def test_diagnostic_workload_executed_false_when_interpreter_is_unavailable() -> None:
+    output = "ERROR: [Errno 2] No such file or directory: 'python'\n"
+    assert (
+        diagnostic_workload_executed(
+            output,
+            exit_code=None,
+            timed_out=False,
+            hanging_test=None,
+        )
+        is False
+    )
+
+
 def test_diagnostic_workload_executed_none_when_runner_output_is_indeterminate() -> None:
     output = "runner: suite aborted after environment bootstrap\n"
     assert (
@@ -198,6 +224,76 @@ def test_diagnostic_pass_rejected_before_workload_reports_no_evidence(tmp_path: 
     assert "did not execute test workload" in packet
     assert "Do not infer a concurrency-specific bug from this result." in packet
     assert "This suggests a concurrency-specific bug" not in packet
+
+
+def test_diagnostic_pass_missing_command_reports_no_workload(tmp_path: Path) -> None:
+    """A missing diagnostic command is a pre-execution failure, not inconclusive runner output."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = "bash: pytest: command not found\n"
+    with patch_gate_shell(
+        return_value=(False, output, 127, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=7)
+
+    assert telemetry is not None
+    assert telemetry.ran is False
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code == 127
+
+    state = CoordinatorState(dev_iteration=7)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "did not execute test workload" in packet
+    assert "Do not infer a concurrency-specific bug from this result." in packet
+    assert "finished without enough runner output" not in packet
+
+
+def test_diagnostic_pass_missing_interpreter_reports_no_workload(tmp_path: Path) -> None:
+    """An unavailable interpreter is a pre-execution failure, not indeterminate."""
+    config = _diag_config(tmp_path)
+    task = _make_task(tmp_path)
+    output = "ERROR: [Errno 2] No such file or directory: 'python'\n"
+    with patch_gate_shell(
+        return_value=(False, output, None, False),
+    ):
+        telemetry = run_gate_diagnostic_pass(config, tmp_path, task=task, iter_num=8)
+
+    assert telemetry is not None
+    assert telemetry.ran is False
+    assert telemetry.hanging_test is None
+    assert telemetry.timed_out is False
+    assert telemetry.exit_code is None
+
+    state = CoordinatorState(dev_iteration=8)
+    with patch(
+        "theforge.coordinator.validate_phase.subprocess.run",
+        side_effect=_stub_git,
+    ):
+        packet = _build_timeout_rca_packet(
+            state=state,
+            config=config,
+            gate_cmd="make gate",
+            gate_output_tail="TIMEOUT after 45s",
+            gate_err="Gate timed out after 45s",
+            workspace_path=tmp_path,
+            diagnostic=telemetry,
+        )
+    assert "did not execute test workload" in packet
+    assert "Do not infer a concurrency-specific bug from this result." in packet
+    assert "finished without enough runner output" not in packet
 
 
 def test_diagnostic_pass_non_timeout_failure_does_not_claim_concurrency(tmp_path: Path) -> None:
