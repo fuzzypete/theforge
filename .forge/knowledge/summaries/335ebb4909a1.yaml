@@ -1,0 +1,111 @@
+schema_version: 2
+run_id: 335ebb4909a1
+authoritative_run_record: .forge/audits/runs/335ebb4909a1.json
+generated_at: '2026-08-29T19:31:12.375869+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01054125
+story:
+  slug: issue-2798
+  name: forge diagnose charges for a run whose investigative agent delegated the work
+    and ended its turn on a placeholder
+  github_issue: 2798
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+what_changed:
+  description: Diagnose placeholder outputs were reclassified before YAML reformatting
+    so runs that only report an in-flight delegated investigation are treated as missing
+    an observed outcome rather than as parse failures. The run also narrowed the detection
+    so prose alone does not imply delegation unless the tool trace shows delegation
+    evidence.
+  approach: The change inserted a pre-parse classification step in the diagnose flow
+    that combines agent-output placeholder signals with delegation-tool evidence,
+    then iterated once after review to loosen the placeholder signal requirement while
+    keeping the delegation-evidence requirement.
+  files_modified: *id002
+what_was_learned:
+- claim: When diagnosing agent-output failures, classify 'still waiting' placeholders
+    before any parse-retry path; otherwise the system can spend retries and mislabel
+    the failure as formatting even though no investigation result exists.
+  evidence:
+  - type: review_finding
+    finding_id: 8d88ef15345a5924
+    description: 'This finding identifies the exact failure mode: a successful Agent-traced
+      diagnose turn with only a still-waiting status fell through to YAML reformat
+      retries and a generic PARSE failure, showing the classification must happen
+      ahead of parse recovery.'
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 accepted the new failure class direction but called out missed
+      delegated placeholder cases, confirming that early placeholder classification
+      is the behavior under scrutiny rather than YAML serialization itself.
+  - type: diff
+    ref: 6da6f3dca92961dd792ddfe6e1bce1f828c4b8cb
+    description: This diff is part of the diagnose-flow change set that moved handling
+      toward a dedicated delegated-without-observed-outcome path instead of letting
+      placeholder text proceed into parse retries.
+- claim: Use tool-trace evidence, not delegate-like wording alone, to infer that a
+    diagnose turn actually delegated work; otherwise ordinary prose can be misclassified
+    as a delegated-without-outcome failure.
+  evidence:
+  - type: review_finding
+    finding_id: 94583ff081fccf08
+    description: 'This finding shows the false-positive mechanism directly: outputs
+      with no delegation tool in the trace were still classified as delegated solely
+      from marker substrings in prose, so delegation inference must be anchored to
+      tool evidence.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the logic required delegation-tool evidence
+      while relaxing the placeholder phrase gate, demonstrating that the stable rule
+      is 'tool evidence required, placeholder signal flexible.'
+  - type: diff
+    ref: d2f6df650e7ee367fbdb97a9c7b83087d67ee893
+    description: 'This later diagnose-flow revision reflects the reviewed correction:
+      it preserves detection of waiting placeholders but ties the delegated-without-outcome
+      classification to observed delegation tooling rather than prose alone.'
+learned_patterns:
+- pre-parse-placeholder-classification
+- delegate-inference-needs-tool-evidence
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 8d88ef15345a5924
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: When a successful Agent-traced diagnose turn emits only a still-waiting
+      status such as Still waiting on the investigation agent to finish, diagnose
+      does not classify it as delegated_without_observed_outcome and proceeds to YAML
+      reformat retries and the generic PARSE failure.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly focused on getting the delegated-placeholder classifier broad
+    enough to catch real waiting outputs while strict enough to require actual delegation
+    evidence.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.4813598500000005
+  dominant_difficulty: Separating 'no result was produced' from 'a result was malformed'
+    using both final prose and tool-trace context without introducing false delegated
+    classifications.
