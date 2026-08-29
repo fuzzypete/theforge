@@ -89,6 +89,7 @@ def build_routing_record(
         "implementation_complexity_score": state.preflight_implementation_complexity_score,
         "validation_complexity_score": state.preflight_validation_complexity_score,
         "complexity_projection": state.preflight_complexity_projection,
+        "scope_exceeded": bool(state.preflight_scope_exceeded),
         "work_type": state.preflight_work_type,
         "sufficiency": state.preflight_sufficiency,
         "domains": list(state.preflight_domains or []),
@@ -183,6 +184,8 @@ def apply_routing_record_to_state(state: "CoordinatorState", record: dict[str, A
         state.preflight_validation_complexity_score = record["validation_complexity_score"]
     if record.get("complexity_projection"):
         state.preflight_complexity_projection = record["complexity_projection"]
+    if record.get("scope_exceeded"):
+        state.preflight_scope_exceeded = True
     if record.get("work_type"):
         state.preflight_work_type = record["work_type"]
     if record.get("sufficiency"):

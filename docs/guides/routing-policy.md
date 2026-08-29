@@ -46,6 +46,28 @@ Notes:
   still records each axis with `applied: false` and the reason, so the fallback
   is never silent.
 
+## Scores 9 and 10 route identically and mean different things
+
+The coarse buckets put 9 and 10 in the same cell on every axis — same dev tier,
+same plan tier, same reviewer-count target, same reasoning effort. That is
+deliberate and unchanged. What separates them is *scoring semantics*, not
+consumption: 9 is the largest scope still coherent as a single story, and 10 is
+work that exceeds what one story should attempt and should be decomposed into
+independently landable pieces (issue #2680).
+
+Because routing cannot express that difference, the audit states it directly.
+Preflight records **`scope_exceeded`** — in the `preflight` audit block, the
+`PREFLIGHT` `phase_end` line in `forge.log`, the resume record, and the routing
+record — as `true` exactly when the **implementation** complexity score reaches
+10. It is read off the implementation axis, never off the projected
+`complexity_score`, so a story that is cheap to build but expensive to validate
+is never reported as over scope. Read `scope_exceeded`, not the number, when
+asking "should this have been one story?"
+
+If the classifier emits a `scope_exceeded` that contradicts its own
+implementation score, the score wins and the disagreement is recorded as a
+preflight warning.
+
 ## Reasoning effort (per phase)
 
 > **Retraction.** Earlier versions of this guide (and of `routing.py`) described
