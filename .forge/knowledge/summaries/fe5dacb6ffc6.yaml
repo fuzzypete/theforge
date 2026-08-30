@@ -1,0 +1,105 @@
+schema_version: 2
+run_id: fe5dacb6ffc6
+authoritative_run_record: .forge/audits/runs/fe5dacb6ffc6.json
+generated_at: '2026-08-28T17:00:31.309230+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0092425
+story:
+  slug: issue-2763
+  name: forge triage still offers disposition proposals that ADR-0010 shelved, so
+    an operator who runs it pays for refusals and re-derives the decision
+  github_issue: 2763
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- testing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/triage.py
+- src/theforge/coordinator/triage_headless_flow.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/sprint/post_sprint_triage.py
+- src/theforge/triage_shelved.py
+- tests/test_cli_triage.py
+- tests/test_triage_headless.py
+- tests/test_triage_proposal_flow.py
+- tests/test_triage_ratification_flow.py
+- tests/test_triage_shelved.py
+what_changed:
+  description: This run removed triage disposition proposing from user-facing and
+    automated `forge triage` paths, preserving only backlog reporting in interactive
+    no-flag mode and pending-decision ratify/discard flows. It also updated terminal/help
+    messaging and documentation to present proposals as shelved under ADR-0010.
+  approach: The change centralized the shelved-proposal decision behind shared rejection
+    handling, then applied that guard across CLI entrypoints, headless/proposal flows,
+    and post-sprint triage so all proposing routes fail before agent dispatch while
+    preserved paths continue unchanged.
+  files_modified: *id002
+what_was_learned:
+- claim: When behavior is being shelved across multiple entrypoints, documentation
+    of unchanged adjacent workflows must be checked explicitly; broad rewrites around
+    the shelved path can silently delete the only operator-facing description of surviving
+    behaviors.
+  evidence:
+  - type: review_finding
+    finding_id: 31ba9dd313d8f7bc
+    description: Review found that the CLI reference rewrite removed the only explanation
+      of how operators discover and handle existing pending triage decisions even
+      though that behavior still exists, showing that shelving one mode can accidentally
+      erase documentation for neighboring preserved flows unless those are verified
+      separately.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that the documentation fix was verified after
+      review, confirming that preserved pending-decision behavior needed explicit
+      restoration in docs rather than falling out automatically from the shelved-path
+      rewrite.
+- claim: When replacing an automated flow with an immediate shelved outcome, narrative
+    comments and module docstrings need the same per-entrypoint audit as executable
+    logic; otherwise they retain the old multi-step story and mislead future readers
+    about what still runs.
+  evidence:
+  - type: review_finding
+    finding_id: df1a014c81dafeac
+    description: Review flagged that post-sprint triage's docstring still described
+      report collection, proposal, adversarial review, persistence, and supersession
+      after the function had been changed to return the ADR-0010 shelved result immediately,
+      demonstrating that code-path replacement does not update explanatory text unless
+      audited directly.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 specifically verified the docstring correction, showing this
+      mismatch mattered enough to block completion until the explanatory surface matched
+      the new shelved behavior.
+learned_patterns:
+- preserved-flow-doc-audit
+- docstring-runtime-alignment
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - "Review mainly surfaced stale explanatory surfaces\u2014operator docs and module\
+    \ narrative\u2014that still described pre-shelving triage behavior after the runtime\
+    \ guards were in place."
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: null
+  dominant_difficulty: Keeping every decision surface aligned on mode-based triage
+    behavior, including non-interactive and automated routes, rather than changing
+    only the obvious CLI flags.

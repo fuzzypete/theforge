@@ -1,0 +1,93 @@
+schema_version: 2
+run_id: 65adafba8843
+authoritative_run_record: .forge/audits/runs/65adafba8843.json
+generated_at: '2026-08-28T15:56:26.823568+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0074075
+story:
+  slug: issue-2511
+  name: Diagnosis evidence and speculative repair advice share untyped fields, so
+    an investigator's fix guess lands in the body the dev reads as spec
+  github_issue: 2511
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- src/theforge/shape_check/issue_spec.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The diagnosis artifact contract and rendering path were updated so
+    speculative repair advice has its own advisory-typed field instead of sharing
+    untyped diagnosis fields. The issue body preserves confirmed localization content
+    as before, while optional repair proposals are carried and rendered distinctly
+    only when present.
+  approach: The change threaded a new optional advisory field through diagnosis typing,
+    prompt/schema validation, coordinator rendering, and parser handling, with focused
+    verification of both normal rendering and empty/null advisory cases.
+  files_modified: *id002
+what_was_learned:
+- claim: Optional YAML text fields need explicit normalization of nulls before rendering
+    decisions; otherwise a present-but-empty key can escape as the literal string
+    'None' and create user-visible bogus content.
+  evidence:
+  - type: review_finding
+    finding_id: c36b020adedb5d93
+    description: The review reproduced a bare 'advisory_repair_proposal:' YAML key
+      loading as null, then being stored as the literal string 'None' and rendered
+      into the issue body, demonstrating that optional text fields cannot rely on
+      generic parsing if empty values must suppress output.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 records that the null advisory parsing bug was fixed by normalizing
+      YAML null optional fields to empty, confirming the mechanism that resolved the
+      user-visible bad render was explicit null-to-empty handling.
+  - type: file
+    path: src/theforge/task/diagnose_prompts.py
+    description: This file is where diagnosis output parsing was adjusted, and the
+      review notes tie the fix to optional-field normalization there, showing the
+      parser layer is the control point for preventing null YAML values from becoming
+      rendered text.
+learned_patterns:
+- optional-yaml-null-normalization
+- typed-advisory-separation
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: c36b020adedb5d93
+    severity: P1
+    file: src/theforge/task/diagnose_prompts.py
+    description: When a diagnosis emits the optional advisory repair key with no value
+      (a bare 'advisory_repair_proposal:' line, which YAML loads as null), the parser
+      stores the literal string None and the landed issue body gains an advisory section
+      whose entire content is the word None, instead of emitting no advisory apparatus
+      at all.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop centered on one edge case: an optional advisory key present with
+    no value must be treated as absent all the way through rendering.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.2990022
+  dominant_difficulty: Separating advisory and confirmed diagnosis content without
+    changing the existing confirmed-localization rendering contract.

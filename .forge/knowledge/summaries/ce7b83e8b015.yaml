@@ -1,0 +1,181 @@
+schema_version: 2
+run_id: ce7b83e8b015
+authoritative_run_record: .forge/audits/runs/ce7b83e8b015.json
+generated_at: '2026-08-29T03:14:16.802745+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.014580000000000001
+story:
+  slug: issue-2673
+  name: Bug-typed issues reach diagnosis without a substantive observed-symptom or
+    expected-behavior section, so scope inference falls back to scanning unrelated
+    prose
+  github_issue: 2673
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- docs/reference/bug-shape.md
+- docs/reference/issue-shape.md
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/reporting/render.py
+- src/theforge/shape_check/check.py
+- src/theforge/shape_check/diagnosis_spec.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/issue_spec.py
+- src/theforge/shape_check/placeholders.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnosis_spec.py
+- tests/test_fix_readiness.py
+- tests/test_intake/test_author_flow.py
+- tests/test_operator_action_lifecycle.py
+- tests/test_reporting_target_gate.py
+- tests/test_shape_check.py
+- tests/test_shape_check_placeholders.py
+what_changed:
+  description: This run closed the structural gap that let bug-labeled issues reach
+    diagnosis without substantive observed-symptom and expected-behavior capture content,
+    and it prevented diagnose reruns from treating forge-generated text as if it were
+    the original bug report.
+  approach: The change enforced bug capture-content requirements in both shape checking
+    and direct diagnose flow, used placeholder-aware structural checks rather than
+    heading presence alone, and remediated landing paths so coordinator-written output
+    would not be blocked or misread on rerun.
+  files_modified: *id002
+what_was_learned:
+- claim: When a structural prerequisite is meant to constrain diagnosis input, enforcing
+    it only in intake or shape-gate paths is insufficient; direct invocation paths
+    must apply the same prerequisite before any scope derivation or agent dispatch,
+    or they will reconstruct the original bug through an alternate entry point.
+  evidence:
+  - type: review_finding
+    finding_id: fc1c40926aad8f4f
+    description: This finding shows the initial change left `forge diagnose` able
+      to derive scope from the raw body and start investigation even after the shape-gate
+      issue was addressed, demonstrating that equivalent preconditions must be enforced
+      at every diagnose entry seam, not assumed from earlier intake.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 explicitly reported that the shape gate path was covered
+      while direct diagnose still dispatched investigation first, showing the failure
+      mode came from path asymmetry rather than from the content rule itself.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after direct diagnose refused bug issues missing
+      capture content before agent dispatch, confirming that parity across entry paths
+      was the condition needed to close the bug.
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file is where direct diagnose flow was corrected, which ties
+      the lesson to coordinator-level enforcement rather than only to shape-spec parsing.
+- claim: For bug capture contracts, checking only that canonical headings exist does
+    not prevent malformed inputs from influencing diagnosis; placeholder and empty-section
+    handling must be treated as structurally equivalent to absence when downstream
+    logic would otherwise fall back to unrelated prose.
+  evidence:
+  - type: file
+    path: src/theforge/shape_check/placeholders.py
+    description: This file is evidence that the run distinguished placeholder scaffolding
+      from substantive content, which is the mechanism needed because heading presence
+      alone leaves scope inference in the same state as omission.
+  - type: file
+    path: src/theforge/shape_check/diagnosis_spec.py
+    description: Changes here connect the structural requirement to diagnosis gating,
+      showing that the contract being enforced is content-bearing sections rather
+      than mere section labels.
+  - type: file
+    path: src/theforge/shape_check/heuristics.py
+    description: Heuristic changes support content-sensitive structural checks, demonstrating
+      the run handled mechanically decidable emptiness and placeholder cases instead
+      of relying on semantic judgments about prose quality.
+  - type: review_finding
+    finding_id: f9768a301fdce278
+    description: This finding surfaced because empty or placeholder bug sections remained
+      blocking during landing, which demonstrates that those states were intentionally
+      treated as missing-content cases rather than accepted by heading presence.
+- claim: If diagnose writes remediation or summary text back into an issue body, future
+    runs can silently change their own input contract unless generated sections are
+    accounted for at the landing seam as well as at initial validation.
+  evidence:
+  - type: review_finding
+    finding_id: f9768a301fdce278
+    description: This finding shows that coordinator-written output interacted with
+      the new body validation during landing, demonstrating that body mutation is
+      part of the effective input pipeline and must be handled explicitly to avoid
+      self-induced contract changes.
+  - type: review_finding
+    finding_id: 738f35896967557f
+    description: This finding identified the diagnose landing seam as a distinct risk
+      area lacking coverage, showing that write-back behavior can diverge from intake
+      behavior and needs separate verification because it can alter what reruns read.
+  - type: file
+    path: src/theforge/reporting/render.py
+    description: This file's involvement shows the run addressed not just validators
+      but also the generated text path that becomes future rerun input, which is the
+      mechanism behind false convergence in the reported bug.
+  - type: file
+    path: tests/test_diagnose_flow.py
+    description: This file evidences that the landing seam was exercised specifically
+      where body mutation occurs, reinforcing that rerun safety depends on behavior
+      at write-back time, not only on parse-time checks.
+learned_patterns:
+- entry-path-parity
+- placeholder-equals-missing
+- generated-text-becomes-input
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: fc1c40926aad8f4f
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: When forge diagnose is run directly on a bug issue without Observed
+      or Expected sections, the flow still derives the scope requirement from the
+      raw issue body and enters the investigation phase before any capture-section
+      refusal or remediation occurs.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: f9768a301fdce278
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: When forge diagnose lands a completed diagnosis into the body of
+      a bug-labeled issue whose Observed or Expected heading exists but holds no content
+      (or only placeholder scaffolding), the pre-write body validation refuses the
+      edit because the body still carries a blocking missing_observed / missing_expected
+      finding, and the run ends with 'LAND failed' after the investigation has already
+      been paid for, leaving the diagnosis only in the audit file.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 738f35896967557f
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: The new coordinator-side body mutation that backfills bug capture
+      sections before producer validation has no test at any level; no test file in
+      the change exercises the diagnose landing seam, so neither the backfill firing
+      on a bug-labeled body nor its no-op on a non-bug body is covered.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly surfaced seam mismatches: fixing intake/shape validation alone
+    was not enough until direct diagnose dispatch and diagnose landing were brought
+    under the same bug-capture contract.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 9.677132649999999
+  dominant_difficulty: The hard part was enforcing one structural contract consistently
+    across multiple lifecycle seams where the issue body is both read and rewritten.

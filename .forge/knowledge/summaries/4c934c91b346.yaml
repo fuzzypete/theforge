@@ -1,0 +1,68 @@
+schema_version: 2
+run_id: 4c934c91b346
+authoritative_run_record: .forge/audits/runs/4c934c91b346.json
+generated_at: '2026-08-29T02:59:34.034338+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00547625
+story:
+  slug: issue-2680
+  name: Preflight scoring distinguishes a story beyond reasonable single-story scope
+    from the largest coherent one
+  github_issue: 2680
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/routing-policy.md
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/preflight.py
+- src/theforge/coordinator/preflight_cache.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/resume_persistence.py
+- src/theforge/coordinator/routing_persistence.py
+- src/theforge/coordinator/state.py
+- src/theforge/task/plan_prompts.py
+- tests/test_preflight_scope_exceeded.py
+- tests/test_routing.py
+what_changed:
+  description: Preflight scoring semantics were split so score 9 means the largest
+    coherent single story and score 10 means the work exceeds reasonable single-story
+    scope, while routing behavior stayed unchanged. The run also carried this scope-exceeded
+    outcome as a distinct signal that can be read directly by downstream consumers.
+  approach: The change was made by updating the scoring guidance and planner prompt
+    wording, then threading a separate scope-exceeded signal through preflight state,
+    flow, persistence, and audit surfaces, with routing left on its existing coarse
+    buckets and verified unchanged.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- separate-scoring-semantics-from-routing
+- persist-derived-preflight-signals
+- verify-routing-invariance-when-semantics-shift
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review confirmed the intended shape: 9/10 semantics were separated, the scope-exceeded
+    signal was propagated, and routing buckets remained unchanged.'
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 10.276721700000001
+  dominant_difficulty: Changing the meaning at the top of the scoring scale without
+    altering any routing outcomes required keeping semantics, state propagation, and
+    routing policy strictly decoupled.
