@@ -1114,10 +1114,8 @@ def test_migrate_v38_to_v39_leaves_ambiguous_gate_diagnostic_without_alias() -> 
     assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
 
 
-def test_migrate_v38_to_v39_backfills_gate_diagnostic_workload_executed_when_summary_parses() -> (
-    None
-):
-    """Parseable legacy output is strong enough to backfill the alias."""
+def test_migrate_v38_to_v39_leaves_text_only_success_without_alias() -> None:
+    """Legacy runner text alone is not enough to infer executed workload."""
     record = {
         "schema_version": 38,
         "iterations": {
@@ -1138,11 +1136,38 @@ def test_migrate_v38_to_v39_backfills_gate_diagnostic_workload_executed_when_sum
 
     diagnostic = migrated["iterations"]["gate_diagnostic"][0]
     assert diagnostic["ran"] is True
+    assert "workload_executed" not in diagnostic
+
+
+def test_migrate_v38_to_v39_backfills_gate_diagnostic_true_when_hanging_test_was_recorded() -> (
+    None
+):
+    """A recorded hanging test is structured evidence that workload executed."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [
+                {
+                    "trace_index": 5,
+                    "command": "pytest -n 0 --timeout=10",
+                    "ran": True,
+                    "timed_out": False,
+                    "hanging_test": "tests/test_hang.py::test_deadlock",
+                    "output_tail": "unparseable runner text\n",
+                }
+            ]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is True
     assert diagnostic["workload_executed"] is True
 
 
-def test_migrate_v38_to_v39_backfills_gate_diagnostic_false_for_argument_rejection() -> None:
-    """Historical launcher failures that rejected pytest args never claim execution."""
+def test_migrate_v38_to_v39_leaves_argument_rejection_without_alias() -> None:
+    """Legacy launcher failures remain inconclusive when only runner text says so."""
     record = {
         "schema_version": 38,
         "iterations": {
@@ -1168,7 +1193,8 @@ def test_migrate_v38_to_v39_backfills_gate_diagnostic_false_for_argument_rejecti
 
     diagnostic = migrated["iterations"]["gate_diagnostic"][0]
     assert diagnostic["ran"] is True
-    assert diagnostic["workload_executed"] is False
+    assert "workload_executed" not in diagnostic
+    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
 
 
 def test_migrate_record_chains_up_to_v14() -> None:
