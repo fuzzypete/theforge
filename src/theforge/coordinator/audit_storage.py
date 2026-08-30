@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -2111,14 +2112,30 @@ def _migrate_v37_to_v38(record: dict) -> dict:
     return record
 
 
+_LEGACY_PYTEST_RESULT_SUMMARY_RE = re.compile(
+    r"\b\d+\s+(?:passed|failed|error|errors|skipped|xfailed|xpassed|rerun|reruns)\b",
+    re.IGNORECASE,
+)
+_LEGACY_PYTEST_NODE_RESULT_RE = re.compile(
+    r"^\S+::\S+\s+(?:PASSED|FAILED|ERROR|SKIPPED|XPASS|XFAIL)\b",
+    re.MULTILINE,
+)
+_LEGACY_PYTEST_NO_TESTS_RAN_RE = re.compile(r"\bno tests ran\b", re.IGNORECASE)
+_LEGACY_PYTEST_ARGUMENT_ERROR_RE = re.compile(
+    r"^\S+:\s*error:\s+unrecognized arguments:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def _migrate_v38_to_v39(record: dict) -> dict:
     """Advance v38 records across explicit gate-diagnostic workload meaning.
 
     v39 keeps the historical ``ran`` field for compatibility but also writes
     ``workload_executed`` so the audit record itself states what that value
-    means. Older records only carry ``ran``, whose v38 writer already used for
-    this exact concept, so the migration copies the value verbatim when the new
-    field is absent.
+    means. Some v38 records, however, persisted ``ran`` for attempted
+    invocations whose output never proved workload execution, so migration only
+    backfills the clearer alias when the legacy entry already carries
+    independent evidence strong enough to classify honestly.
     """
     migrated = copy.deepcopy(record)
     iterations = migrated.get("iterations")
@@ -2128,8 +2145,31 @@ def _migrate_v38_to_v39(record: dict) -> dict:
     if not isinstance(diagnostics, list):
         return migrated
     for entry in diagnostics:
-        if isinstance(entry, dict) and "workload_executed" not in entry and "ran" in entry:
-            entry["workload_executed"] = entry["ran"]
+        if not isinstance(entry, dict) or "workload_executed" in entry:
+            continue
+        # v38 ``ran`` sometimes meant only "the diagnostic invocation was
+        # attempted", so migration re-derives the clearer alias from evidence
+        # that independently proves or refutes test execution.
+        if entry.get("timed_out") is True:
+            entry["workload_executed"] = True
+            continue
+        hanging_test = entry.get("hanging_test")
+        if isinstance(hanging_test, str) and hanging_test.strip():
+            entry["workload_executed"] = True
+            continue
+        output_tail = entry.get("output_tail")
+        if not isinstance(output_tail, str):
+            continue
+        has_pytest_summary = _LEGACY_PYTEST_RESULT_SUMMARY_RE.search(output_tail)
+        has_pytest_node_result = _LEGACY_PYTEST_NODE_RESULT_RE.search(output_tail)
+        if has_pytest_summary or has_pytest_node_result:
+            entry["workload_executed"] = True
+            continue
+        if _LEGACY_PYTEST_NO_TESTS_RAN_RE.search(output_tail):
+            entry["workload_executed"] = False
+            continue
+        if _LEGACY_PYTEST_ARGUMENT_ERROR_RE.search(output_tail):
+            entry["workload_executed"] = False
     return migrated
 
 
