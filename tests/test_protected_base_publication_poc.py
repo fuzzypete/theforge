@@ -59,7 +59,7 @@ from theforge.coordinator.state import (
     ReviewCycleMetadata,
 )
 from theforge.coordinator.workspace import landing_precondition_error
-from theforge.sprint.memory_publication import MEMORY_BRANCH
+from theforge.sprint.memory_publication import MEMORY_BRANCH, MEMORY_PUBLISH_CLEAN
 
 BASE = "main"
 
@@ -608,6 +608,20 @@ def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
         patch(
             "theforge.coordinator.completion.land_story",
             side_effect=lambda *a, **k: ({"action": "merge-pr", "merged": False}, "failed"),
+        ),
+        # Only the drain half of the transport is under test here.
+        # ``stage_and_publish_project_memory`` states the split as its contract:
+        # "Staging is what unblocks the next story; the publish is what gets the
+        # corpus off this machine." This asserts a position in the schedule and a
+        # clean checkout at admission — both the drain's doing — so the remote
+        # half is stubbed rather than exercised. It costs ~80 real git
+        # subprocesses per run, which is what put this test past the enforced
+        # five-second bound, and leaving it out makes the claim stricter: the
+        # drain alone now has to clear the checkout, with no publish able to
+        # clear it instead.
+        patch(
+            "theforge.sprint.memory_publication.publish_staged_project_memory",
+            return_value=(MEMORY_PUBLISH_CLEAN, None),
         ),
     ):
         run_sprint_ctx(config, manifest)
