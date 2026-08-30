@@ -145,12 +145,20 @@ def test_httpx_https_external_is_blocked():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.orchestration
 def test_openai_compatible_base_url_is_blocked():
     """OpenAI SDK with a custom base_url must not bypass the network guard.
 
     Regression for the DeepSeek/OpenAI-compatible provider pattern: using the
     OpenAI SDK pointed at a different endpoint is still an external network call
     and must be blocked.  Uses a bare IP to avoid DNS dependency.
+
+    Marked because its 2.09s (measured serially) is the SDK's own connect and
+    retry stack running against a blocked socket — real machinery, reached
+    through a client object rather than through any call
+    ``tests/orchestration_scope.py`` can see in this source. At the 4.7x
+    inflation the shared bound's ceiling is sized for, 2.09s does not fit in
+    five seconds.
     """
     openai = pytest.importorskip("openai")
     # Point at a numeric IP so DNS can't fail before the socket connect.

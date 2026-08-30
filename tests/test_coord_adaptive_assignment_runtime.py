@@ -725,7 +725,6 @@ def _legacy_yaml(tmp_path: Path) -> Path:
 
 
 @pytest.mark.orchestration
-@pytest.mark.timeout(15)
 def test_assignment_history_learning_end_to_end(tmp_path):
     """End-to-end proof of escalation-history learning through the substrate.
 
