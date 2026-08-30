@@ -1097,6 +1097,106 @@ def test_migrate_v13_to_v14_leaves_an_already_renamed_entry_alone() -> None:
     assert entry == {"trace_index": 7, "trace_path": ".forge/traces/7-gate-debug.txt"}
 
 
+def test_migrate_v38_to_v39_leaves_ambiguous_gate_diagnostic_without_alias() -> None:
+    """Ambiguous legacy ``ran`` values do not become affirmative evidence."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [{"trace_index": 3, "command": "pytest -n 0", "ran": False}]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is False
+    assert "workload_executed" not in diagnostic
+    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
+
+
+def test_migrate_v38_to_v39_leaves_text_only_success_without_alias() -> None:
+    """Legacy runner text alone is not enough to infer executed workload."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [
+                {
+                    "trace_index": 4,
+                    "command": "pytest -n 0",
+                    "ran": True,
+                    "timed_out": False,
+                    "hanging_test": None,
+                    "output_tail": "captured stderr: helper not found\n500 passed in 30.2s\n",
+                }
+            ]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is True
+    assert "workload_executed" not in diagnostic
+
+
+def test_migrate_v38_to_v39_backfills_gate_diagnostic_true_when_hanging_test_was_recorded() -> (
+    None
+):
+    """A recorded hanging test is structured evidence that workload executed."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [
+                {
+                    "trace_index": 5,
+                    "command": "pytest -n 0 --timeout=10",
+                    "ran": True,
+                    "timed_out": False,
+                    "hanging_test": "tests/test_hang.py::test_deadlock",
+                    "output_tail": "unparseable runner text\n",
+                }
+            ]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is True
+    assert diagnostic["workload_executed"] is True
+
+
+def test_migrate_v38_to_v39_leaves_argument_rejection_without_alias() -> None:
+    """Legacy launcher failures remain inconclusive when only runner text says so."""
+    record = {
+        "schema_version": 38,
+        "iterations": {
+            "gate_diagnostic": [
+                {
+                    "trace_index": 5,
+                    "command": "pytest -n 0 --timeout=10",
+                    "ran": True,
+                    "exit_code": 4,
+                    "timed_out": False,
+                    "hanging_test": None,
+                    "output_tail": (
+                        "ERROR: usage: __main__.py [options] [file_or_dir] [file_or_dir] [...]\n"
+                        "__main__.py: error: unrecognized arguments: --timeout=10"
+                        " --timeout-method=thread\n"
+                    ),
+                }
+            ]
+        },
+    }
+
+    migrated = sub._migrate_v38_to_v39(record)
+
+    diagnostic = migrated["iterations"]["gate_diagnostic"][0]
+    assert diagnostic["ran"] is True
+    assert "workload_executed" not in diagnostic
+    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
+
+
 def test_migrate_record_chains_up_to_v14() -> None:
     """The registry reaches the current version, so v12 records load migrated."""
     record = {

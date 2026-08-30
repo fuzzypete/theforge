@@ -39,6 +39,19 @@ _TIMEOUT_SUMMARY_RE = re.compile(
     r"^(?:FAILED|ERROR)\s+(?P<node>\S+::\S+)\b.*?Timeout", re.MULTILINE
 )
 _TIMEOUT_BANNER_RE = re.compile(r"(?P<node>\S+::\S+)\s*\n[+~]+\s*Timeout", re.MULTILINE)
+_PYTEST_RESULT_SUMMARY_RE = re.compile(
+    r"\b\d+\s+(?:passed|failed|error|errors|skipped|xfailed|xpassed|rerun|reruns)\b",
+    re.IGNORECASE,
+)
+_PYTEST_NODE_RESULT_RE = re.compile(
+    r"^\S+::\S+\s+(?:PASSED|FAILED|ERROR|SKIPPED|XPASS|XFAIL)\b",
+    re.MULTILINE,
+)
+_PYTEST_NO_TESTS_RAN_RE = re.compile(r"\bno tests ran\b", re.IGNORECASE)
+_PYTEST_ARGUMENT_ERROR_RE = re.compile(
+    r"^\S+:\s*error:\s+unrecognized arguments:",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def extract_hanging_test(output: str) -> str | None:
@@ -58,6 +71,36 @@ def extract_hanging_test(output: str) -> str | None:
     distinct = list(dict.fromkeys(nodes))
     if len(distinct) == 1:
         return distinct[0]
+    return None
+
+
+def diagnostic_workload_executed(
+    output: str,
+    *,
+    timed_out: bool,
+    hanging_test: str | None,
+) -> bool | None:
+    """Return whether the diagnostic observed test execution strongly enough to support inference.
+
+    Returns ``True`` when execution is clearly observed from a parseable test
+    result, ``False`` when output clearly shows no test workload ran, and
+    ``None`` when the invocation finished but the output is too runner-specific
+    to classify honestly.
+
+    This is intentionally conservative. A launched command is not enough: the
+    timeout RCA consumer must be able to distinguish "the diagnostic ran and
+    found nothing" from "the invocation failed before any useful workload ran",
+    while operator-overridden non-pytest runners may only justify
+    "indeterminate".
+    """
+    if timed_out or hanging_test is not None:
+        return True
+    if _PYTEST_RESULT_SUMMARY_RE.search(output) or _PYTEST_NODE_RESULT_RE.search(output):
+        return True
+    if _PYTEST_NO_TESTS_RAN_RE.search(output):
+        return False
+    if _PYTEST_ARGUMENT_ERROR_RE.search(output):
+        return False
     return None
 
 
@@ -122,6 +165,11 @@ def run_gate_diagnostic_pass(
     hanging_test = extract_hanging_test(output)
     if hanging_test:
         _cu._log(f"  Gate diagnostic pass isolated hanging test: {hanging_test}")
+    workload_executed = diagnostic_workload_executed(
+        output,
+        timed_out=timed_out,
+        hanging_test=hanging_test,
+    )
 
     tail_chars = val.gate_output_tail_chars
     output_tail = output[-tail_chars:]
@@ -133,7 +181,7 @@ def run_gate_diagnostic_pass(
         trace_index=iter_num,
         trace_path=trace_rel,
         command=diagnostic_cmd,
-        ran=True,
+        ran=workload_executed,
         budget_s=budget,
         per_test_timeout_s=per_test_timeout,
         exit_code=exit_code,
