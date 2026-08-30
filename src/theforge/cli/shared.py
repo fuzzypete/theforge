@@ -332,9 +332,16 @@ def _write_audit(
     audits_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audits_dir / "forge_audit.yaml"
 
+    # Rendered once per content state rather than once per copy. The same
+    # document goes to up to three paths, and a real run's audit is large enough
+    # that re-serialising it each time dominated this path — 1.37s of a single
+    # test's 3.4s, which put it over the enforced five-second per-test bound.
+    # `audit` changes exactly once below, at the knowledge summary, so the one
+    # re-render after it covers every remaining copy.
+    audit_text = yaml.dump(audit, default_flow_style=False, sort_keys=False)
+
     def _write_yaml_copy(path: Path) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+        path.write_text(audit_text, encoding="utf-8")
 
     _write_yaml_copy(audit_path)
     final_phase = result.phase.name
@@ -357,6 +364,7 @@ def _write_audit(
     # exists and never raises — the audit write path above is what this run's
     # outcome depends on, not this.
     maybe_generate_run_summary(audit_config, result, audit)
+    audit_text = yaml.dump(audit, default_flow_style=False, sort_keys=False)
     _write_yaml_copy(audit_path)
     if (
         final_phase == "ESCALATE"
