@@ -77,7 +77,6 @@ def test_diagnostic_workload_executed_false_when_pytest_rejects_arguments() -> N
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=4,
             timed_out=False,
             hanging_test=None,
         )
@@ -90,7 +89,6 @@ def test_diagnostic_workload_executed_none_when_command_is_missing() -> None:
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -103,7 +101,6 @@ def test_diagnostic_workload_executed_none_when_posix_shell_reports_command_miss
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -116,7 +113,6 @@ def test_diagnostic_workload_executed_none_when_interpreter_is_unavailable() -> 
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=None,
             timed_out=False,
             hanging_test=None,
         )
@@ -129,7 +125,6 @@ def test_diagnostic_workload_executed_none_when_shell_reports_missing_executable
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -142,7 +137,6 @@ def test_diagnostic_workload_executed_none_when_shell_reports_missing_absolute_p
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -155,7 +149,6 @@ def test_diagnostic_workload_executed_none_when_shell_reports_no_such_file_for_p
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=127,
             timed_out=False,
             hanging_test=None,
         )
@@ -168,7 +161,6 @@ def test_diagnostic_workload_executed_none_when_runner_output_is_indeterminate()
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=1,
             timed_out=False,
             hanging_test=None,
         )
@@ -181,7 +173,6 @@ def test_diagnostic_workload_executed_none_when_success_output_is_unparseable() 
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=0,
             timed_out=False,
             hanging_test=None,
         )
@@ -196,7 +187,6 @@ def test_diagnostic_workload_executed_true_when_parseable_summary_contains_incid
     assert (
         diagnostic_workload_executed(
             output,
-            exit_code=0,
             timed_out=False,
             hanging_test=None,
         )

@@ -77,7 +77,6 @@ def extract_hanging_test(output: str) -> str | None:
 def diagnostic_workload_executed(
     output: str,
     *,
-    exit_code: int | None,
     timed_out: bool,
     hanging_test: str | None,
 ) -> bool | None:
@@ -168,7 +167,6 @@ def run_gate_diagnostic_pass(
         _cu._log(f"  Gate diagnostic pass isolated hanging test: {hanging_test}")
     workload_executed = diagnostic_workload_executed(
         output,
-        exit_code=exit_code,
         timed_out=timed_out,
         hanging_test=hanging_test,
     )
