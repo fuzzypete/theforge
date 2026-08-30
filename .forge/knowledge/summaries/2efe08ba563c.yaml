@@ -1,0 +1,161 @@
+schema_version: 2
+run_id: 2efe08ba563c
+authoritative_run_record: .forge/audits/runs/2efe08ba563c.json
+generated_at: '2026-08-30T08:17:54.159124+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012223750000000002
+story:
+  slug: issue-2805
+  name: A gate diagnostic whose test pass never starts is reported to DEV as evidence
+    that the hang is concurrency-specific
+  github_issue: 2805
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- testing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/state.py
+- src/theforge/coordinator/validate_phase.py
+- src/theforge/gate_diagnostics.py
+- tests/fixtures/audit_record_schema_v39.json
+- tests/test_audit_substrate.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_gate_diagnostics.py
+what_changed:
+  description: This run changed gate-timeout diagnostic result handling so attempted
+    invocations that do not yield positive, parseable execution evidence remain inconclusive
+    instead of being reported as evidence for a concurrency-specific hang. It also
+    aligned audit-schema migration so legacy records do not turn attempted-only diagnostics
+    into affirmative workload-executed evidence.
+  approach: The change introduced a stricter classification boundary between attempted
+    invocation, executed workload, and parseable findings, then applied that classification
+    both where the timeout RCA packet is built and where older audit records are migrated
+    into the newer schema.
+  files_modified: *id002
+what_was_learned:
+- claim: For diagnostics against repository-specific runners, 'workload executed'
+    must be derived only from positive structured evidence of execution, not from
+    the absence of an extracted culprit or from heuristic interpretation of output.
+  evidence:
+  - type: review_finding
+    finding_id: 9869863a00d1a80c
+    description: This finding shows that a zero-exit invocation with only unparseable
+      runner output was previously treated as a completed serialized pass with no
+      timeout finding, which manufactured a concurrency RCA without any evidence that
+      test workload ran.
+  - type: review_finding
+    finding_id: 8156f87ea32ff1ff
+    description: 'This finding demonstrates the same failure mode on another success-path
+      shape: custom runner output that cannot be parsed as test results was still
+      recorded as executed workload, proving that successful process exit is not sufficient
+      evidence of diagnostic execution.'
+  - type: review_cycle
+    cycle: '2'
+    description: Approval in cycle 2 explicitly hinged on the RCA staying inconclusive
+      unless there was positive parsed diagnostic evidence, confirming that this evidentiary
+      threshold was the key condition for correctness.
+- claim: Negative classification of diagnostic execution should not depend on matching
+    shell or runner error phrases, because output text can contain misleading substrings
+    even when the suite actually ran.
+  evidence:
+  - type: review_finding
+    finding_id: 0e93c9d68cf9d407
+    description: This finding shows that phrase-based output matching misclassified
+      a full successful run as 'did not execute' when its output happened to contain
+      text resembling an error signature, demonstrating that text-pattern rejection
+      is not a reliable classifier.
+  - type: file
+    path: src/theforge/gate_diagnostics.py
+    description: This was the classification site implicated by repeated review findings,
+      showing that the execution decision lived close to raw command output and therefore
+      needed a rule based on structured success evidence rather than brittle phrase
+      matching.
+- claim: When audit schemas evolve, migration logic must preserve epistemic uncertainty
+    from legacy records; otherwise historical 'attempted but not evidenced' diagnostics
+    can become false affirmative evidence in downstream consumers.
+  evidence:
+  - type: review_finding
+    finding_id: 3efe772002d875f4
+    description: This finding shows that v38 records shaped like production argument-rejection
+      diagnostics were migrated into v39 as workload_executed=true, proving that schema
+      migration itself can create false evidence even after live-path logic is corrected.
+  - type: review_cycle
+    cycle: '4'
+    description: Cycle 4 approval notes that the migration fix backfills workload_executed
+      only from structured legacy evidence, demonstrating that preserving uncertainty
+      in migrated records was necessary to resolve the remaining blocker.
+learned_patterns:
+- positive-evidence-only
+- no-phrase-based-classification
+- uncertainty-preserving-migration
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 9869863a00d1a80c
+    severity: P1
+    file: src/theforge/gate_diagnostics.py
+    description: 'When a diagnostic command exits 0 after only unparseable runner
+      output like runner: bootstrap complete, the RCA packet reports that serialized
+      execution found no per-test timeout and suggests a concurrency-specific bug.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 8156f87ea32ff1ff
+    severity: P1
+    file: src/theforge/gate_diagnostics.py
+    description: "A diagnostic invocation that exits zero with output the code cannot\
+      \ parse as a test result \u2014 for example an operator-configured runner printing\
+      \ 'custom runner: all green' \u2014 is recorded as having executed test workload,\
+      \ and the timeout RCA packet then tells DEV that no single test exceeded the\
+      \ per-test timeout under serialized execution and that this suggests a concurrency-specific\
+      \ bug."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 0e93c9d68cf9d407
+    severity: P1
+    file: src/theforge/gate_diagnostics.py
+    description: "Whether the diagnostic workload executed is decided by matching\
+      \ the command's output against shell and runner error phrases, so a serialized\
+      \ pass that ran the whole suite and printed '500 passed in 30.2s' is reported\
+      \ to DEV as an invocation that did not execute test workload whenever any line\
+      \ of that output resembles a launcher failure \u2014 for example a subprocess\
+      \ test capturing 'sh: 1: helper-tool: not found' or a traceback line ending\
+      \ in 'No such file or directory'."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 3efe772002d875f4
+    severity: P1
+    file: src/theforge/coordinator/audit_storage.py
+    description: When a v38 audit record contains the production-shaped argument-rejection
+      diagnostic with ran true, exit_code 4, and no hanging test, migration to v39
+      records workload_executed true even though the diagnostic workload never ran.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced places where missing or unparseable diagnostic
+    evidence was being converted into affirmative claims, first in live RCA generation
+    and later in audit migration.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: null
+  cost_usd: 30.5472718
+  dominant_difficulty: Separating 'attempted invocation' from 'executed and parseable
+    diagnostic workload' across both live control flow and historical audit migration
+    without letting absence of evidence turn into behavioral claims.
