@@ -202,7 +202,7 @@ _CHILD_PYPROJECT = """\
 [tool.pytest.ini_options]
 timeout = 5
 timeout_method = "thread"
-addopts = "-n 2 --dist worksteal --max-worker-restart=0 -p no:cacheprovider"
+addopts = "-p no:cacheprovider"
 """
 
 _CHILD_TESTS = '''\
@@ -223,31 +223,33 @@ def test_blocks_forever():
 '''
 
 
-def test_a_blocked_test_is_named_with_its_stack_under_xdist(tmp_path):
-    """The failure the story is about: a test blocks, the worker dies, and the
-    run must still say which test it was and where it was stuck.
+def test_a_real_timeout_names_the_blocked_test_and_where_it_was_stuck(tmp_path):
+    """The failure the story is about, driven by a genuine pytest timeout.
 
-    The child mirrors the real execution path (xdist + worksteal + the thread
-    method) because that is where the attribution was lost: the thread method
-    ends the test with ``os._exit(1)``, so the worker never gets its stack back
-    to the controller on its own.
+    A child pytest run blocks past its own bound, so pytest-timeout's thread
+    handler fires for real and ends the process with ``os._exit(1)``. That exit
+    is exactly what used to lose the evidence. The dump this test reads back is
+    written on the way out, and it has to name the culprit and show the frame it
+    was parked on.
 
-    It uses its own 0.25s bound, so the demonstration costs a quarter second
-    rather than adding the shared five seconds to every run. Plugin autoload is
-    off and the child runs two workers to keep its startup ~0.6s, which is what
-    keeps this test inside the shared bound while the rest of the suite is
-    saturating the machine.
+    The child uses its own 0.25s bound so the demonstration costs a quarter
+    second rather than adding the shared five to every run, and it runs in a
+    single process: measured under a saturated machine an xdist child spiked to
+    13.3s of pure startup contention, which no test living inside a five-second
+    bound can absorb. The controller-side re-emit that turns this file into
+    run output is covered by
+    :func:`test_the_culprit_and_its_stack_survive_the_worker_exit`.
     """
     (tmp_path / "pyproject.toml").write_text(_CHILD_PYPROJECT)
     (tmp_path / "test_blocking.py").write_text(_CHILD_TESTS)
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
 
     proc = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
-            "-p",
-            "xdist",
             "-p",
             "pytest_timeout",
             "-p",
@@ -262,6 +264,9 @@ def test_a_blocked_test_is_named_with_its_stack_under_xdist(tmp_path):
             "PYTHONPATH": str(REPO_ROOT / "tests"),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            # Hand the child a directory we own, so the dump outlives the
+            # os._exit that stops it cleaning up after itself.
+            "THEFORGE_TIMEOUT_DUMP_DIR": str(dumps),
         },
         capture_output=True,
         text=True,
@@ -269,18 +274,19 @@ def test_a_blocked_test_is_named_with_its_stack_under_xdist(tmp_path):
         timeout=4,
     )
     output = proc.stdout + proc.stderr
-
     assert proc.returncode != 0, output
-    # Named...
-    assert "test_blocking.py::test_blocks_forever" in output, output
-    # ...and located at the wait it was stuck on.
-    assert "in test_blocks_forever" in output, output
-    assert "threading.py" in output, output
-    # The test that completed contributes no stack: its worker's dump slot is
-    # cleared when the test ends, so only the culprit is reported.
-    dump_section = output.split("per-test timeout stack dumps")[-1]
-    assert "test_finishes_promptly" not in dump_section, output
-    assert "1 passed" in output, output
+
+    recovered = collect_dumps(dumps)
+    assert [nodeid for nodeid, _ in recovered] == ["test_blocking.py::test_blocks_forever"], (
+        f"{recovered!r}\n{output}"
+    )
+    body = recovered[0][1]
+    # Located at the wait it was stuck on, not merely named.
+    assert "test_blocks_forever" in body, body
+    assert "threading.py" in body, body
+    assert "0.25s per-test bound" in body, body
+    # The test that completed contributes nothing to misattribute.
+    assert "test_finishes_promptly" not in body, body
 
 
 def test_the_blocking_demonstration_source_is_what_the_child_runs():

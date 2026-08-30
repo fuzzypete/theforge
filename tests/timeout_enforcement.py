@@ -256,13 +256,24 @@ def pytest_configure(config: pytest.Config) -> None:
 
     ``tryfirst`` matters: the controller has to publish ``DUMP_DIR_ENV`` before
     xdist spawns workers, which inherit it through the environment.
+
+    A controller that is *given* a directory uses it and does not delete it.
+    That is what makes the dump readable when the timeout kills the controller
+    itself: in a serial run the process exits through ``os._exit(1)``, so
+    neither terminal summary nor cleanup ever runs, and a self-made temporary
+    directory would strand the one artifact worth having.
     """
     worker_input = getattr(config, "workerinput", None)
     if worker_input is None:
-        dump_dir = Path(tempfile.mkdtemp(prefix="theforge-timeout-dumps-"))
-        os.environ[DUMP_DIR_ENV] = str(dump_dir)
-        _state.dir = dump_dir
-        _state.owns_dir = True
+        provided = os.environ.get(DUMP_DIR_ENV)
+        if provided:
+            _state.dir = Path(provided)
+            _state.owns_dir = False
+        else:
+            dump_dir = Path(tempfile.mkdtemp(prefix="theforge-timeout-dumps-"))
+            os.environ[DUMP_DIR_ENV] = str(dump_dir)
+            _state.dir = dump_dir
+            _state.owns_dir = True
         _state.worker_id = "controller"
     else:
         raw = os.environ.get(DUMP_DIR_ENV)
