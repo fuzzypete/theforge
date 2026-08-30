@@ -622,28 +622,18 @@ def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
     assert refused == {}, f"stories admitted into a dirty checkout: {refused}"
 
 
-def test_a_reachable_refusal_is_prevented_by_the_publication_seam(
-    protected_project: Path, tmp_path: Path
-) -> None:
-    """The counterfactual the mandated configuration cannot supply.
+def _install_base_refusing_pre_commit_hook(project: Path) -> None:
+    """The protected-base policy, applied where a local-merge run meets it.
 
-    ``on_approve: merge`` evaluates the landing precondition at every story's
-    entry, and a base branch that refuses forge's memory commit leaves the first
-    story's artifacts standing in the shared checkout — which is precisely the
-    reported failure, one step downstream. The refusal is therefore reachable
-    here, and this asserts both halves: it happens when the transport is forced
-    back to the direct path, and it does not happen with the seam in place.
+    A protected branch refuses forge's memory commit at the commit itself, which
+    is what leaves the first story's artifacts standing in the shared checkout.
     """
-    config = _config(protected_project, "merge")
-    manifest = _manifest(protected_project, ["story-a", "story-b"], max_parallel=1)
-    _protect_base(tmp_path)
-    # The policy, applied where a local-merge run meets it: the commit itself.
-    hook = protected_project / ".git" / "hooks" / "pre-commit"
+    hook = project / ".git" / "hooks" / "pre-commit"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text(
         "#!/bin/sh\n"
         "if git diff --cached --name-only | grep -q '^\\.forge/'; then\n"
-        "  echo '⛔ COMMIT BLOCKED: Non-doc changes on main.' >&2\n"
+        "  echo '\u26d4 COMMIT BLOCKED: Non-doc changes on main.' >&2\n"
         "  exit 1\n"
         "fi\n"
         "exit 0\n",
@@ -651,61 +641,86 @@ def test_a_reachable_refusal_is_prevented_by_the_publication_seam(
     )
     hook.chmod(0o755)
 
-    def run_with(patched_transport: bool) -> dict[str, str | None]:
-        observed: dict[str, str | None] = {}
 
-        def fake_run_task(_config, task, *args, **kwargs):
-            observed[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
-            _write_run_artifacts(protected_project, task.slug)
-            state = CoordinatorState()
-            state.run_id = f"run-{task.slug}"
-            state.preflight_verdict = "PROCEED"
-            preflight = MagicMock()
-            preflight.cost_usd = 1.0
-            state.preflight_result = preflight
-            return CoordinatorResult(
-                success=True,
-                phase=Phase.DONE,
-                state=state,
-                message="Done.",
-                merge={"merged": True},
-            )
+def _preconditions_seen_by_each_story(
+    project: Path, tmp_path: Path, *, seam_in_place: bool
+) -> dict[str, str | None]:
+    """Run one ``merge`` sprint and return what each story saw at its entry.
 
-        patches = [patch("theforge.sprint.runner.run_task", side_effect=fake_run_task)]
-        if not patched_transport:
-            # Force the pre-#2598 behaviour: direct commit, no memory-branch
-            # fallback. This is the counterfactual, not a supported mode.
-            patches.append(
-                patch(
-                    "theforge.sprint.audit_publish._REFUSED_BY_POLICY",
-                    frozenset(),
-                )
-            )
-        with contextlib.ExitStack() as stack:
-            for patcher in patches:
-                stack.enter_context(patcher)
-            # The counterfactual ends the way the report did: the terminal
-            # publish raises because the base branch refuses forge's commit.
-            # That is the bug, not a test failure — what is under test is what
-            # the *second* story saw before it got there.
-            with contextlib.suppress(RuntimeError):
-                run_sprint_ctx(config, manifest)
-        return observed
+    Split out so each half of the counterfactual is its own test running a
+    single sprint. Asserting both halves in one test meant running two sprints
+    over real git back to back, which put it past the enforced five-second
+    per-test bound. The halves are independent claims, and neither needs the
+    other to have run first — each starts from its own fresh ``protected_project``
+    checkout, which is also why the reset between the two runs is gone.
+    """
+    config = _config(project, "merge")
+    manifest = _manifest(project, ["story-a", "story-b"], max_parallel=1)
+    _protect_base(tmp_path)
+    _install_base_refusing_pre_commit_hook(project)
 
-    # Counterfactual: without the fallback, story-b is refused by story-a's
-    # artifacts, which the refused commit could not clear.
-    without_seam = run_with(patched_transport=False)
-    assert without_seam["story-b"] is not None
-    assert ".forge/audits/runs" in without_seam["story-b"]
+    observed: dict[str, str | None] = {}
 
-    # Reset the checkout for the second run.
-    subprocess.run(["git", "checkout", "--", "."], cwd=str(protected_project), check=False)
-    subprocess.run(["git", "reset", "-q"], cwd=str(protected_project), check=False)
-    subprocess.run(
-        ["git", "clean", "-qfdx", "--", ".forge"], cwd=str(protected_project), check=False
-    )
+    def fake_run_task(_config, task, *args, **kwargs):
+        observed[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
+        _write_run_artifacts(project, task.slug)
+        state = CoordinatorState()
+        state.run_id = f"run-{task.slug}"
+        state.preflight_verdict = "PROCEED"
+        preflight = MagicMock()
+        preflight.cost_usd = 1.0
+        state.preflight_result = preflight
+        return CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"merged": True},
+        )
 
-    with_seam = run_with(patched_transport=True)
-    assert with_seam["story-b"] is None, (
-        f"the seam did not prevent the refusal: {with_seam['story-b']}"
+    patches = [patch("theforge.sprint.runner.run_task", side_effect=fake_run_task)]
+    if not seam_in_place:
+        # Force the pre-#2598 behaviour: direct commit, no memory-branch
+        # fallback. This is the counterfactual, not a supported mode.
+        patches.append(patch("theforge.sprint.audit_publish._REFUSED_BY_POLICY", frozenset()))
+    with contextlib.ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        # The counterfactual ends the way the report did: the terminal publish
+        # raises because the base branch refuses forge's commit. That is the
+        # bug, not a test failure — what is under test is what the *second*
+        # story saw before it got there.
+        with contextlib.suppress(RuntimeError):
+            run_sprint_ctx(config, manifest)
+    return observed
+
+
+def test_the_refusal_is_reachable_when_the_transport_is_forced_to_direct_commit(
+    protected_project: Path, tmp_path: Path
+) -> None:
+    """The counterfactual the mandated configuration cannot supply.
+
+    ``on_approve: merge`` evaluates the landing precondition at every story's
+    entry, and a base branch that refuses forge's memory commit leaves the first
+    story's artifacts standing in the shared checkout — precisely the reported
+    failure, one step downstream. Without the fallback, story-b is refused by
+    story-a's artifacts, which the refused commit could not clear.
+    """
+    observed = _preconditions_seen_by_each_story(protected_project, tmp_path, seam_in_place=False)
+    assert observed["story-b"] is not None
+    assert ".forge/audits/runs" in observed["story-b"]
+
+
+def test_a_reachable_refusal_is_prevented_by_the_publication_seam(
+    protected_project: Path, tmp_path: Path
+) -> None:
+    """The other half: with the seam in place the same run does not refuse.
+
+    Paired with the counterfactual above — that one establishes the refusal is
+    reachable at all, this one that the publication seam is what prevents it.
+    Neither claim means much alone.
+    """
+    observed = _preconditions_seen_by_each_story(protected_project, tmp_path, seam_in_place=True)
+    assert observed["story-b"] is None, (
+        f"the seam did not prevent the refusal: {observed['story-b']}"
     )
