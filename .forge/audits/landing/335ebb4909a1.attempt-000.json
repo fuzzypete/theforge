@@ -1,0 +1,15 @@
+{
+  "detail": "fresh-merge",
+  "gated_commit": "6eccc1b6e8c20c08bcdf639c45a4ceaa9d74cf9d",
+  "kind": "landing_attempt",
+  "landing_mode": "merge-pr",
+  "observed_at": "2026-08-29T19:31:12.375374+00:00",
+  "observer": "sprint.integration",
+  "outcome": "queued",
+  "pr_url": "https://github.com/fuzzypete/theforge/pull/2801",
+  "run_id": "335ebb4909a1",
+  "schema_version": 1,
+  "slug": "issue-2798",
+  "source_commit": "6eccc1b6e8c20c08bcdf639c45a4ceaa9d74cf9d",
+  "target_branch": "release/v0.16"
+}

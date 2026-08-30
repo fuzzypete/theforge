@@ -1,0 +1,59 @@
+schema_version: 2
+run_id: bf9934015c33
+authoritative_run_record: .forge/audits/runs/bf9934015c33.json
+generated_at: '2026-08-29T21:24:31.498112+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0049325
+story:
+  slug: issue-2804
+  name: The delegation-placeholder detector requires an English phrase match even
+    when the tool trace already shows the turn delegated, missing 5 of 12 known occurrences
+  github_issue: 2804
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+what_changed:
+  description: The run removed the requirement that a delegated-placeholder diagnosis
+    also match specific English waiting phrases when the tool trace already shows
+    the Agent tool was used. It kept the prose-matching path as the fallback for cases
+    where delegation is not mechanically observed.
+  approach: 'The change tightened the decision order around the stronger runtime signal:
+    tool-trace-confirmed delegation became sufficient on its own, while the existing
+    text-pattern detector remained in place only for text-only detection. Verification
+    focused on parse-retry behavior around delegated turns.'
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- prefer-mechanical-signal-over-prose-gate
+- text-match-as-fallback-only
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review converged immediately on the same point: mechanically observed delegation
+    should not be vetoed by phrase matching.'
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.4032712
+  dominant_difficulty: Aligning detection logic with the stronger harness-observed
+    signal instead of the narrower, wording-dependent placeholder text.

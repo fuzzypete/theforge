@@ -1,0 +1,91 @@
+schema_version: 2
+run_id: 6e8871bec163
+authoritative_run_record: .forge/audits/runs/6e8871bec163.json
+generated_at: '2026-08-29T19:09:57.210788+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0061702499999999995
+story:
+  slug: issue-2797
+  name: 'diagnose discards a completed investigation at LAND: producer declares needs_diagnosis
+    but evaluates the same issue as runnable'
+  github_issue: 2797
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The run fixed the diagnose landing mismatch where a completed investigation
+    could be marked partial for metadata reasons and then be rejected at LAND because
+    lifecycle evaluation no longer matched the producer's declared state. It separated
+    strict diagnosis completeness checks from the fields that should actually block
+    landing as needs_diagnosis.
+  approach: The change traced the coordinator path that forces UNCLASSIFIED_PARTIAL,
+    split the diagnosis field validation so verification-oriented omissions do not
+    change lifecycle eligibility, and locked the behavior down with focused flow and
+    type-level regression tests.
+  files_modified: *id002
+what_was_learned:
+- claim: When a producer both computes run completeness and declares a lifecycle precondition,
+    future fixes should verify that the same validation rules drive both decisions;
+    if metadata-only 'missing field' checks feed partial classification but lifecycle
+    evaluation uses a different threshold, LAND can reject otherwise valid artifacts
+    with an unreproducible state mismatch.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file is where the coordinator converts a non-empty missing_required_fields
+      result or partial flag into artifact.partial and UNCLASSIFIED_PARTIAL, showing
+      that completeness metadata directly affects the run state before landing.
+  - type: file
+    path: src/theforge/diagnose_types.py
+    description: This file contains the diagnosis field validation logic, so its involvement
+      demonstrates that the root cause lived in how required-field checks were defined
+      relative to lifecycle-significant content.
+  - type: diff
+    ref: 07c84a6b121373476dc9bdbfb6955df0dfcfc46f
+    description: This diff captures the behavioral split between strict missing-field
+      validation and lifecycle-blocking validation, demonstrating that the fix depended
+      on aligning those semantics rather than changing output formatting or write
+      mechanics.
+  - type: review_cycle
+    cycle: '1'
+    description: The approval notes explicitly call out that the metadata-only validation
+      mismatch was resolved by partitioning strict missing fields from lifecycle-blocking
+      content fields, confirming that this mismatch was the key reusable lesson from
+      the run.
+learned_patterns:
+- lifecycle-validation-alignment
+- separate-completeness-from-landing-gates
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether metadata-only diagnosis validation was incorrectly
+    influencing lifecycle gating.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 4.8278546
+  dominant_difficulty: The bug came from an interaction between completion/partial
+    classification and lifecycle gate evaluation rather than from the investigation
+    content itself.
