@@ -122,6 +122,82 @@ def test_collect_dumps_ignores_empty_and_foreign_files(tmp_path):
 # A blocked test is named, with the stack where it was stuck
 # ---------------------------------------------------------------------------
 
+
+class _RecordingReporter:
+    """Captures what the controller would print at terminal summary."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def write_sep(self, ch, title="", **kwargs):
+        self.lines.append(f"{ch * 8} {title} {ch * 8}")
+
+    def write_line(self, text="", **kwargs):
+        self.lines.append(str(text))
+
+
+def test_the_culprit_and_its_stack_survive_the_worker_exit(tmp_path, monkeypatch):
+    """The dump channel, proven without spawning anything.
+
+    This is the deterministic anchor for attribution: it exercises the exact
+    code that runs on pytest-timeout's timer thread just before ``os._exit(1)``
+    kills an xdist worker, then the controller-side re-emit. The xdist test
+    below proves the same path end to end, but it pays real process startup and
+    so is the more fragile of the two; this one cannot flake.
+    """
+    import timeout_enforcement as te
+
+    monkeypatch.setattr(te._state, "dir", tmp_path)
+    monkeypatch.setattr(te._state, "worker_id", "gw7")
+
+    class _Item:
+        nodeid = "tests/test_thing.py::test_blocks"
+
+    class _Settings:
+        timeout = 5
+
+    te._write_dump(_Item(), _Settings())
+
+    # The worker recorded who was running and where it was.
+    dumps = collect_dumps(tmp_path)
+    assert [nodeid for nodeid, _ in dumps] == ["tests/test_thing.py::test_blocks"]
+    body = dumps[0][1]
+    assert "test_the_culprit_and_its_stack_survive_the_worker_exit" in body, body
+    assert "5s per-test bound" in body
+
+    # The controller re-emits it, naming the culprit.
+    reporter = _RecordingReporter()
+
+    class _Config:
+        pass
+
+    te.pytest_terminal_summary(reporter, 1, _Config())
+    printed = "\n".join(reporter.lines)
+    assert "per-test timeout stack dumps" in printed
+    assert "tests/test_thing.py::test_blocks" in printed
+    assert "test_the_culprit_and_its_stack_survive_the_worker_exit" in printed
+
+
+def test_a_worker_that_never_timed_out_leaves_no_dump(tmp_path, monkeypatch):
+    """Only the process that actually timed out writes anything at all.
+
+    This is what keeps a re-emitted stack attributable: there is no per-test
+    arming, so a worker that finished its tests normally contributes nothing
+    the controller could misattribute.
+    """
+    import timeout_enforcement as te
+
+    monkeypatch.setattr(te._state, "dir", tmp_path)
+    assert collect_dumps(tmp_path) == []
+    reporter = _RecordingReporter()
+
+    class _Config:
+        pass
+
+    te.pytest_terminal_summary(reporter, 0, _Config())
+    assert reporter.lines == []
+
+
 _CHILD_PYPROJECT = """\
 [tool.pytest.ini_options]
 timeout = 5
