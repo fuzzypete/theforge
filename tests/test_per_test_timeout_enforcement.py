@@ -5,6 +5,11 @@ configuration: declared once in ``pyproject.toml`` so every invocation inherits
 it, backed by a declared dev dependency, only shortenable per test, and — the
 part that made the rule worth enforcing — attributable to a named test with a
 stack trace even when the timeout kills an xdist worker outright.
+
+The last section holds the other half of the contract: which tests are bound
+higher, and that the answer comes from what a test *does* rather than from a
+list of the tests someone watched time out. A list is complete only up to the
+last red gate (#2825), so these check the rule, not a membership.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from pathlib import Path
 
 import pytest
 import timeout_enforcement as te
+from orchestration_scope import machinery_driving_functions
 from timeout_enforcement import (
     collect_dumps,
     configured_timeout,
@@ -337,37 +343,253 @@ def test_the_dump_hook_is_installed_and_costs_no_extra_thread():
 
 
 # ---------------------------------------------------------------------------
-# The one category allowed a larger bound, and only by enumeration
+# The category allowed a larger bound, decided from the test's own source
 # ---------------------------------------------------------------------------
+
+#: A module shaped like the machinery-driving test files in this suite: the
+#: sprint entrypoint called directly, through an import alias, through a
+#: module-local wrapper, and through a fixture that runs one; a real subprocess;
+#: a walk of the repository's own source — plus the shapes that must *not*
+#: qualify: a mention that is not a call, an ordinary object's ``.run()``, a
+#: walk of a scratch directory, and a test that drives nothing at all.
+_DRIVER_MODULE = '''\
+"""A module docstring that names run_sprint_ctx without calling it."""
+
+import subprocess
+from pathlib import Path
+
+import pytest
+from sprint_test_helpers import run_sprint_ctx
+from sprint_test_helpers import run_sprint_ctx as drive
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCES = REPO_ROOT / "src"
+
+
+def _wrapper(root):
+    """Local helper standing in for the _run_sprint_* wrappers in this suite."""
+    return run_sprint_ctx(object(), root)
+
+
+@pytest.fixture
+def sprinted(tmp_path):
+    return _wrapper(tmp_path)
+
+
+def test_direct(tmp_path):
+    run_sprint_ctx(object(), tmp_path)
+
+
+def test_through_an_alias(tmp_path):
+    drive(object(), tmp_path)
+
+
+def test_through_a_local_wrapper(tmp_path):
+    _wrapper(tmp_path)
+
+
+def test_through_a_fixture(sprinted):
+    assert sprinted
+
+
+def test_a_real_process(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True)
+
+
+def test_a_source_tree_walk():
+    assert [path for path in SOURCES.rglob("*.py")]
+
+
+def test_a_scratch_directory_walk_is_not_one(tmp_path):
+    assert not [path for path in tmp_path.rglob("*.py")]
+
+
+def test_only_mentions_it(tmp_path):
+    """Names run_sprint_ctx in a docstring."""
+    # ...and in a comment: run_sprint_ctx(config, manifest)
+    assert "run_sprint_ctx" != str(tmp_path)
+
+
+def test_a_mocked_runners_own_run_is_not_a_process(fake_runner):
+    fake_runner.run("nothing real happens here")
+
+
+def test_drives_nothing():
+    assert True
+'''
+
+
+@pytest.fixture
+def driver_module(tmp_path) -> Path:
+    path = tmp_path / "test_driver_module.py"
+    path.write_text(_DRIVER_MODULE)
+    return path
 
 
 class _FakeItem:
-    """Enough of an item for the raised-bound decision: nodeid and markers."""
+    """Enough of a collected item for the collection hook to act on it."""
 
-    def __init__(self, nodeid: str, *, marked: bool) -> None:
-        self.nodeid = nodeid
-        self._marked = marked
+    def __init__(self, path: Path, name: str, *marks: pytest.Mark) -> None:
+        self.path = path
+        self.name = name
+        self.originalname = name
+        self.nodeid = f"{path.name}::{name}"
+        self.own_markers = list(marks)
+        self.stash = pytest.Stash()
 
-    def get_closest_marker(self, name):
-        return object() if (self._marked and name == te.ORCHESTRATION_MARKER) else None
+    def iter_markers(self, name=None):
+        for mark in self.own_markers:
+            if name is None or mark.name == name:
+                yield mark
+
+    def get_closest_marker(self, name, default=None):
+        return next(self.iter_markers(name), default)
+
+    def add_marker(self, marker, append=False):
+        mark = marker.mark if hasattr(marker, "mark") else marker
+        self.own_markers.append(mark) if append else self.own_markers.insert(0, mark)
 
 
-def test_the_category_needs_both_the_marker_and_the_enumeration():
-    """Either alone would let a raised bound arrive as a side effect."""
-    listed = sorted(te.ORCHESTRATION_BOUND_TESTS)[0]
-    assert te.raised_bound_allowed(_FakeItem(listed, marked=True))
-    assert not te.raised_bound_allowed(_FakeItem(listed, marked=False))
-    assert not te.raised_bound_allowed(_FakeItem("tests/test_other.py::test_x", marked=True))
+class _FakeConfig:
+    """A config carrying the shared bound and nothing else."""
+
+    def getoption(self, name, default=None):
+        return default
+
+    def getini(self, name):
+        if name == "timeout":
+            return SHARED_BOUND
+        raise KeyError(name)
+
+
+def _effective_bound(item: _FakeItem) -> float | None:
+    """The bound pytest-timeout would read off *item* after collection."""
+    mark = item.get_closest_marker("timeout")
+    if mark is None:
+        return None
+    raw = mark.args[0] if mark.args else mark.kwargs.get("timeout")
+    return None if raw is None else float(raw)
+
+
+def _collect(*items: _FakeItem) -> None:
+    """Run the collection hook over *items*, leaving this run's own record intact.
+
+    The hook rebuilds the module-level sets describing the collection it was
+    handed; a test driving it with fakes would otherwise erase what the real
+    collection recorded, which the marker guard below reads.
+    """
+    recorded = (
+        set(te.collected_orchestration_nodeids),
+        set(te.collected_machinery_driven_nodeids),
+    )
+    try:
+        te.pytest_collection_modifyitems(_FakeConfig(), list(items))
+    finally:
+        for live, saved in zip(
+            (te.collected_orchestration_nodeids, te.collected_machinery_driven_nodeids),
+            recorded,
+        ):
+            live.clear()
+            live.update(saved)
+
+
+# --- classification ---------------------------------------------------------
+
+
+def test_source_structure_decides_the_category_not_a_list_of_nodeids(driver_module):
+    """Every shape that reaches real machinery qualifies; naming one does not."""
+    classified = machinery_driving_functions(str(driver_module))
+    assert {name for name in classified if name.startswith("test")} == {
+        "test_direct",
+        "test_through_an_alias",
+        "test_through_a_local_wrapper",
+        "test_through_a_fixture",
+        "test_a_real_process",
+        "test_a_source_tree_walk",
+    }
+    # Only executable call nodes count: prose about a sprint is not a sprint.
+    assert "test_only_mentions_it" not in classified
+    # And the receiver matters: an ordinary object's .run() is not a subprocess,
+    # and a walk of three files under tmp_path is not a walk of the repository.
+    assert "test_a_mocked_runners_own_run_is_not_a_process" not in classified
+    assert "test_a_scratch_directory_walk_is_not_one" not in classified
+    assert "test_drives_nothing" not in classified
+
+
+def test_a_sprint_driving_test_is_eligible_without_being_named_anywhere(driver_module):
+    """The property the story is about: no nodeid entry, no marker, still in."""
+    item = _FakeItem(driver_module, "test_direct")
+    assert te.raised_bound_allowed(item)
+    assert not te.raised_bound_allowed(_FakeItem(driver_module, "test_drives_nothing"))
+
+
+def test_the_marker_still_admits_machinery_the_source_cannot_show(driver_module):
+    item = _FakeItem(driver_module, "test_drives_nothing", pytest.mark.orchestration.mark)
+    assert te.raised_bound_allowed(item)
+
+
+def test_nothing_in_the_module_names_a_curated_allowlist():
+    """The mechanism the story removes must not come back by another name."""
+    source = (REPO_ROOT / "tests" / "timeout_enforcement.py").read_text()
+    assert "ORCHESTRATION_BOUND_TESTS" not in source
+    assert not hasattr(te, "ORCHESTRATION_BOUND_TESTS")
+
+
+# --- the bound each test actually ends up with ------------------------------
+
+
+def test_collection_gives_a_sprint_driving_test_the_orchestration_bound(driver_module):
+    item = _FakeItem(driver_module, "test_direct")
+    _collect(item)
+    assert _effective_bound(item) == te.ORCHESTRATION_BOUND_SECONDS
+
+
+def test_collection_leaves_an_ordinary_test_on_the_shared_bound(driver_module):
+    item = _FakeItem(driver_module, "test_drives_nothing")
+    _collect(item)
+    assert _effective_bound(item) is None  # no mark: the shared 5s applies
+
+
+def test_collection_gives_a_marked_test_the_orchestration_bound(driver_module):
+    item = _FakeItem(driver_module, "test_drives_nothing", pytest.mark.orchestration.mark)
+    _collect(item)
+    assert _effective_bound(item) == te.ORCHESTRATION_BOUND_SECONDS
+
+
+def test_a_deliberate_shortening_survives_collection(driver_module):
+    """A test that asked for less keeps it; the rule raises, it does not widen."""
+    item = _FakeItem(driver_module, "test_direct", _mark(1))
+    _collect(item)
+    assert _effective_bound(item) == 1.0
+
+
+def test_the_bound_the_run_attaches_is_never_itself_rejected(driver_module):
+    """Validation reads author-declared marks only.
+
+    The attached bound is above the shared five seconds by construction, so a
+    run that validated its own injection would fail every orchestration test in
+    the suite on a mark no author wrote.
+    """
+    item = _FakeItem(driver_module, "test_direct")
+    _collect(item)
+    assert item.stash.get(te._VIOLATION_KEY, None) is None
+    assert te.validate_item_timeout_marks(item, SHARED_BOUND) is None
 
 
 def test_an_ordinary_test_still_cannot_raise_the_bound():
     reason = validate_timeout_mark(_mark(20), SHARED_BOUND)
     assert reason is not None
     assert "exceeds the shared" in reason
-    # The message has to say how a raised bound is legitimately obtained,
-    # or the next person reaches for the nearest workaround instead.
+    # The message has to say how the raised bound is legitimately reached, or
+    # the next person reaches for the nearest workaround instead.
     assert te.ORCHESTRATION_MARKER in reason
-    assert "ORCHESTRATION_BOUND_TESTS" in reason
+    assert "ORCHESTRATION_BOUND_TESTS" not in reason
+
+
+def test_an_ordinary_tests_raised_mark_is_rejected_at_collection(driver_module):
+    item = _FakeItem(driver_module, "test_drives_nothing", _mark(20))
+    _collect(item)
+    assert "exceeds the shared" in item.stash[te._VIOLATION_KEY]
 
 
 def test_the_category_raises_the_bound_but_does_not_remove_it():
@@ -380,27 +602,94 @@ def test_the_category_raises_the_bound_but_does_not_remove_it():
     assert "disables" in (validate_timeout_mark(_mark(0), SHARED_BOUND, ceiling=ceiling) or "")
 
 
-def test_the_enumeration_cannot_rot_or_grow_unnoticed():
-    """The list must keep describing the set it claims to enumerate.
+def test_the_ceiling_binds_every_orchestration_test(driver_module):
+    """Eligible or marked, the bound attached and the bound allowed both stop here."""
+    assert te.ORCHESTRATION_BOUND_SECONDS <= te.ORCHESTRATION_MAX_SECONDS
+    for name, marks in (("test_direct", ()), ("test_drives_nothing", (te.ORCHESTRATION_MARKER,))):
+        extra = tuple(getattr(pytest.mark, m).mark for m in marks)
+        item = _FakeItem(driver_module, name, _mark(te.ORCHESTRATION_MAX_SECONDS + 1), *extra)
+        _collect(item)
+        assert "ceiling" in item.stash[te._VIOLATION_KEY]
 
-    Two ways it could stop: an entry naming a test that no longer exists after a
-    rename, and a test acquiring the marker without being listed. The second is
-    the one that matters — it is the side-effect path the criterion forbids —
-    and it is checked against the marked set this very collection produced, so
-    the check costs nothing. Both directions hold under a partial collection,
-    which is what lets this run when only one file is selected.
+
+# --- the classification cannot silently stop finding anything ---------------
+
+
+def test_every_module_that_drives_sprints_has_a_classified_test():
+    """A mechanical guard on the classifier itself.
+
+    The failure this story is about was a test file whose sprint-driving tests
+    were not covered. If the classifier ever stops recognising a call shape
+    this suite uses — a new alias form, a wrapper it cannot follow — the module
+    it stops recognising goes quiet rather than red. Any test module that
+    imports the sprint helper must produce at least one classified test.
     """
-    for nodeid in te.ORCHESTRATION_BOUND_TESTS:
-        path, _, name = nodeid.partition("::")
-        source = REPO_ROOT / path
-        assert source.is_file(), f"enumerated test names a missing file: {nodeid}"
-        assert f"def {name}(" in source.read_text(), (
-            f"enumerated test no longer exists (renamed?): {nodeid}"
-        )
+    unclassified = []
+    this_file = Path(__file__).resolve()
+    for path in sorted((REPO_ROOT / "tests").rglob("test_*.py")):
+        # This file names the helper only inside the fixture module above, which
+        # is the one place a mention that is not a call is the point.
+        if path.resolve() == this_file:
+            continue
+        source = path.read_text()
+        if "run_sprint_ctx" not in source:
+            continue
+        if not any(name.startswith("test") for name in machinery_driving_functions(str(path))):
+            unclassified.append(path.relative_to(REPO_ROOT))
+    assert not unclassified, f"modules driving sprints with nothing classified: {unclassified}"
 
-    marked = te.collected_orchestration_nodeids
-    assert marked <= te.ORCHESTRATION_BOUND_TESTS, (
-        "a test carries the orchestration marker without being enumerated, which is "
-        "exactly how a raised bound would arrive as a side effect: "
-        f"{sorted(marked - te.ORCHESTRATION_BOUND_TESTS)}"
+
+def test_the_reported_file_is_covered_in_full():
+    """The regression itself: every test in it drives a sprint, so all qualify."""
+    path = REPO_ROOT / "tests" / "test_sprint_run_artifact_publish_timing.py"
+    classified = machinery_driving_functions(str(path))
+    source = path.read_text()
+    declared = {
+        line.split("(")[0].removeprefix("def ")
+        for line in source.splitlines()
+        if line.startswith("def test_")
+    }
+    assert declared, source[:200]
+    assert declared <= classified, f"still on the shared bound: {sorted(declared - classified)}"
+
+
+@pytest.mark.parametrize(
+    ("module", "test_name"),
+    [
+        pytest.param(
+            "test_memory_publication.py",
+            "test_a_second_sprint_accumulates_onto_the_same_memory_branch",
+            id="real-repository",
+        ),
+        pytest.param(
+            "test_gate_seam_ownership_guard.py",
+            "test_no_inline_gate_dispatch_outside_sanctioned_seam",
+            id="source-tree-walk",
+        ),
+    ],
+)
+def test_the_other_two_arms_are_the_ones_a_loaded_gate_found(module, test_name):
+    """Sprint-driving was not the whole category, and load said so.
+
+    Both of these measure 1.0-1.2s serially and both were observed exceeding
+    the shared 5s bound on a machine under gate-scale load — the same 4-5x
+    inflation the ceiling exists for. One drives real git through real
+    subprocesses; the other parses every module under ``tests/``. Neither runs
+    a sprint, so a sprint-only rule would have left them to be discovered the
+    way the allowlist's members were: by a red release gate.
+    """
+    classified = machinery_driving_functions(str(REPO_ROOT / "tests" / module))
+    assert test_name in classified
+
+
+def test_the_marker_stays_the_exception_it_is_documented_to_be():
+    """A marker on a test the source already classifies rebuilds the old list.
+
+    Checked against the marked and classified sets this collection produced, so
+    it costs nothing, and it holds under a partial collection too.
+    """
+    redundant = te.collected_orchestration_nodeids & te.collected_machinery_driven_nodeids
+    assert not redundant, (
+        "these tests are already classified from their own source; the marker adds "
+        f"nothing but a hand-maintained membership list: {sorted(redundant)}"
     )
