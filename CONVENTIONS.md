@@ -770,11 +770,18 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     `fcntl.flock` rule above.
   - The thread method ends a timed-out test with `os._exit(1)`, which in an
     xdist worker kills the process before pytest-timeout's stack dump reaches
-    the controller. `tests/timeout_enforcement.py` recovers it: each worker
-    arms `faulthandler.dump_traceback_later` just under the running test's
-    bound, and the controller re-emits any surviving dump under a
-    "per-test timeout stack dumps" heading. Keep that module loaded — a child
-    pytest project with its own rootdir needs `-p timeout_enforcement`.
+    the controller. `tests/timeout_enforcement.py` recovers it by wrapping
+    `pytest_timeout.timeout_timer`: on the way out the worker writes the
+    culprit's nodeid and stacks to a file, and the controller re-emits it
+    under a "per-test timeout stack dumps" heading. The wrapper runs on
+    pytest-timeout's existing timer thread and does no per-test work — do not
+    replace it with a per-test `faulthandler.dump_traceback_later`, which was
+    measured deadlocking this suite at 99% for the same lock-inheritance
+    reason as above. Keep the module loaded: a child pytest project with its
+    own rootdir needs `-p timeout_enforcement`, and setting
+    `THEFORGE_TIMEOUT_DUMP_DIR` hands a run a dump directory it will use and
+    leave in place, which is how a dump survives a serial run whose timeout
+    kills the controller itself.
   - A test may **shorten** its own bound with `@pytest.mark.timeout(n)`.
     Nothing in the default suite may raise it above 5 seconds, disable it
     (`0` or negative), or change how it is enforced (`method=`,
