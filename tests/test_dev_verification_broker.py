@@ -340,33 +340,57 @@ class TestShutdownWithCommandInFlight:
         assert broker.records()[0]["refusal_reason"] == "iteration_ended"
 
     def test_a_cancelled_command_the_thread_never_records_is_backfilled(self, tmp_path):
-        """Last-resort guarantee: the audit trail names every started command."""
+        """Last-resort guarantee: the audit trail names every started command.
+
+        The serving thread has to be *still running* when ``stop`` gives up on
+        it, which is the whole condition under test — but it is released and
+        joined before this test returns. It used to sleep 30s and be abandoned:
+        the thread then woke inside whichever unrelated test that xdist worker
+        had reached half a minute later, and was measured there consuming a
+        patched ``time.monotonic``, failing a sprint worker-timeout test whose
+        scripted clock it exhausted. Which test it landed on depended on
+        worksteal scheduling, so the same commit passed or failed by luck —
+        the instability this story exists to remove (#2825).
+        """
         broker = _broker(tmp_path)
         started = threading.Event()
+        release = threading.Event()
 
         def wedged_command(cmd, cwd, **kwargs):
             kwargs["on_process_start"](object())
             started.set()
-            time.sleep(30)  # never observed; the thread is abandoned
+            assert release.wait(10), "the wedged command was never released"
             return (False, "", None, False)
 
-        with (
-            patch_gate_shell(side_effect=wedged_command),
-            patch("theforge.coordinator.util._kill_process_group", return_value=True),
-        ):
-            broker.start()
-            _request(broker, "r1", {"command": "verify-watch"})
-            assert started.wait(10), "command never started"
-            import theforge.coordinator.dev_verification as dv
+        serving: threading.Thread | None = None
+        try:
+            with (
+                patch_gate_shell(side_effect=wedged_command),
+                patch("theforge.coordinator.util._kill_process_group", return_value=True),
+            ):
+                broker.start()
+                serving = broker._thread
+                _request(broker, "r1", {"command": "verify-watch"})
+                assert started.wait(10), "command never started"
+                import theforge.coordinator.dev_verification as dv
 
-            with patch.object(dv, "_CANCEL_JOIN_SECONDS", 0.2):
-                broker.stop(timeout=0.2)
+                with patch.object(dv, "_CANCEL_JOIN_SECONDS", 0.2):
+                    broker.stop(timeout=0.2)
 
-        (record,) = broker.records()
-        assert record["request_id"] == "r1"
-        assert record["cancelled"] is True
-        assert record["exit_code"] is None
-        assert record["refusal_reason"] == "cancelled_at_iteration_end"
+            # Read before the thread is let go: the point is the record stop()
+            # backfilled for a thread that had not recorded anything yet.
+            (record,) = broker.records()
+            assert record["request_id"] == "r1"
+            assert record["cancelled"] is True
+            assert record["exit_code"] is None
+            assert record["refusal_reason"] == "cancelled_at_iteration_end"
+        finally:
+            release.set()
+            if serving is not None:
+                serving.join(timeout=10)
+                assert not serving.is_alive(), (
+                    "the serving thread must not outlive the test that started it"
+                )
 
 
 class TestShutdownBudgetIsTheDeclaredTimeout:
