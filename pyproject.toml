@@ -41,9 +41,11 @@ pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
 # CONVENTIONS.md's five-second-per-test rule, enforced (not advisory): pytest-timeout
 # kills any test that runs past this bound and reports its name plus a stack trace of
-# where it was stuck. A test may only shorten this via @pytest.mark.timeout(n); the
-# default suite may not raise it — tests/timeout_enforcement.py rejects overrides that
-# widen the bound or change how it is enforced.
+# where it was stuck. A test may only shorten it via @pytest.mark.timeout(n) —
+# tests/timeout_enforcement.py rejects overrides that widen the bound or change how it
+# is enforced. The one category bound higher is a test that drives a real sprint, and
+# it is identified from its own source rather than requested: see
+# tests/orchestration_scope.py and the "orchestration" marker below.
 #
 # The method must be "thread". Measured against the `-n auto --dist worksteal` addopts
 # above, the signal method parks every xdist worker at 0% CPU and the run never
@@ -52,7 +54,7 @@ addopts = "-n auto --dist worksteal"
 timeout = 5
 timeout_method = "thread"
 markers = [
-    "orchestration: marks a test that drives real processes, real repositories, or a full sprint workflow, and so may declare a bound above the shared 5s. Requires listing in tests/timeout_enforcement.py::ORCHESTRATION_BOUND_TESTS as well — the marker alone grants nothing.",
+    "orchestration: marks a test that drives real processes, real repositories, or a full sprint workflow through machinery tests/orchestration_scope.py cannot see in the test's own source, and so is given the raised bound (30s) that a sprint-driving test gets automatically. Do not add it to a test that already calls a sprint entrypoint — that is classified without it.",
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
     "cli_contract: marks tests that invoke real provider CLIs to validate argv contracts (requires THEFORGE_RUN_CLI_CONTRACT=1)",
 ]

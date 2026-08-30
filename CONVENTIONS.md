@@ -786,24 +786,31 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     Nothing may disable it (`0` or negative) or change how it is enforced
     (`method=`, `func_only=True`); `tests/timeout_enforcement.py` rejects those
     at collection and fails the offending test by name.
-  - **Raising** the bound takes two deliberate steps, and one is not enough.
-    A test that drives real processes, real repositories, or a full sprint
-    workflow carries `@pytest.mark.orchestration` *and* is listed in
-    `tests/timeout_enforcement.py::ORCHESTRATION_BOUND_TESTS`, then declares
-    its own larger `@pytest.mark.timeout(n)` up to a 30s category ceiling. It
-    stays in the default gate and stays bounded: exceeding its declared bound
-    still fails with the test named and a stack trace. Requiring both the
-    marker and the list is what stops a raised bound arriving as a side effect
-    of making a test pass — the list is the one place the set is enumerable,
-    and a test guards it against drifting from the marked set.
-  - The burden for adding one is a measurement, not an opinion: show that the
-    cost is the production machinery the test must drive rather than the
-    test's own design. The existing entries carry theirs, including what was
-    tried and rejected — splitting (every assertion reads state one sprint
-    produced, so a split runs it twice), removing the remote publish (it is
-    what prunes staging, so stubbing it made a test 3.5x *slower*), and three
-    candidate hot spots each measured away (lease sweep 8%, `gh` 0.03s,
-    tracker thread creation 0.02ms).
+  - **One category is bound higher, and it is not something a test asks for.**
+    A test that drives a real sprint pays for production machinery, and under
+    the gate's own parallelism that cost inflates several-fold (a 1.06s test
+    was measured reaching 5s, 4.7x). Those tests are bound at **30s**, and
+    `tests/timeout_enforcement.py` attaches that bound at collection. Which
+    tests they are is decided by `tests/orchestration_scope.py`, which parses
+    the test module and looks for an executable call to the sprint entrypoint
+    — directly, through an import alias, through a module-local helper, or
+    through a module-local fixture. A mention in a comment or docstring is
+    not a call and classifies nothing.
+  - There is **no list of the tests that get the raised bound**, and adding
+    one back is a regression. A list can only be complete up to the last red
+    gate: the tests it is missing announce themselves by failing a release cut
+    under contention they should have been allowed to absorb, and a re-run
+    turns that cut green — which is the gate lying (#2825).
+  - `@pytest.mark.orchestration` remains, as the opt-in of last resort for
+    equivalent machinery the test's own source cannot show — a cross-module
+    fixture, or a driver that is not the sprint entrypoint. Do **not** put it
+    on a test that already calls one; a marker that duplicates the
+    classification is the old hand-maintained list under another name, and a
+    test in `tests/test_per_test_timeout_enforcement.py` fails on it.
+  - The category raises the bound; it does not remove one. An orchestration
+    test stays in the default gate, and exceeding 30s still fails with the
+    test named and a stack trace. An explicit `@pytest.mark.timeout(n)` above
+    that ceiling is rejected for every test, marked or not.
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ### Flake discipline

@@ -300,8 +300,6 @@ def _set_prs(state_file: Path, prs: list[dict]) -> None:
     state_file.write_text(json.dumps({"prs": prs}), encoding="utf-8")
 
 
-@pytest.mark.orchestration
-@pytest.mark.timeout(20)
 def test_protected_base_parallel_merge_pr_poc(
     protected_project: Path, fake_gh: Path, tmp_path: Path
 ) -> None:
@@ -711,8 +709,6 @@ def _preconditions_seen_by_each_story(
     return observed
 
 
-@pytest.mark.orchestration
-@pytest.mark.timeout(10)
 def test_the_refusal_is_reachable_when_the_transport_is_forced_to_direct_commit(
     protected_project: Path, tmp_path: Path
 ) -> None:
@@ -729,8 +725,6 @@ def test_the_refusal_is_reachable_when_the_transport_is_forced_to_direct_commit(
     assert ".forge/audits/runs" in observed["story-b"]
 
 
-@pytest.mark.orchestration
-@pytest.mark.timeout(10)
 def test_a_reachable_refusal_is_prevented_by_the_publication_seam(
     protected_project: Path, tmp_path: Path
 ) -> None:

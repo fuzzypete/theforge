@@ -161,8 +161,6 @@ def _write_run_artifacts(root: Path, run_id: str) -> None:
     )
 
 
-@pytest.mark.orchestration
-@pytest.mark.timeout(10)
 def test_a_story_run_artifact_does_not_refuse_the_next_story(project_root: Path) -> None:
     """Three sequential landing stories, each leaving only its own artifacts."""
     config = _make_config(project_root)
@@ -437,8 +435,6 @@ def test_repeated_terminal_publishes_leave_no_dirt_and_no_empty_commits(
         assert changed.strip(), f"empty audit commit {sha}"
 
 
-@pytest.mark.orchestration
-@pytest.mark.timeout(12)
 def test_a_non_landing_workflow_is_unaffected(project_root: Path) -> None:
     """Nothing changes for a run whose stories never touch the project root."""
     config = dataclasses.replace(
