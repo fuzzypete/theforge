@@ -54,33 +54,49 @@ def _string_constants(node: ast.AST) -> set[str]:
 
 
 def _python_seams(tree: ast.AST) -> list[tuple[int, str]]:
-    """Return ``(line, enclosing function)`` for each Python argv body seam."""
+    """Return ``(line, enclosing function)`` for each Python argv body seam.
+
+    Each function is walked once and the results indexed, rather than re-walked
+    per candidate list. The straightforward nesting is O(functions x tree) and
+    made this scan the slowest thing in the suite — 2.7M ``ast.walk`` steps,
+    which pushed the parametrized cases below past the five-second per-test
+    bound once every xdist worker had to re-pay it.
+    """
     seams: list[tuple[int, str]] = []
     functions = [
         n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     for fn in functions:
+        nodes = list(ast.walk(fn))
+        lists = [n for n in nodes if isinstance(n, ast.List)]
+        if not lists:
+            continue
         # `command = ["gh", "issue", "create", ...]` followed by
         # `command += ["--body-file", path]` is one seam split over two lists.
         extended = {
             node.target.id
-            for node in ast.walk(fn)
+            for node in nodes
             if isinstance(node, ast.AugAssign)
             and isinstance(node.target, ast.Name)
             and _string_constants(node.value) & _BODY_FLAGS
         }
-        for lst in [n for n in ast.walk(fn) if isinstance(n, ast.List)]:
+        #: Names each list literal is assigned to, so the `extended` lookup
+        #: below is a dict hit instead of another walk of the whole function.
+        assigned_names: dict[int, set[str]] = {}
+        for node in nodes:
+            if isinstance(node, ast.Assign):
+                assigned_names.setdefault(id(node.value), set()).update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+        for lst in lists:
             literals = {e.value for e in lst.elts if isinstance(e, ast.Constant)}
             if not (_GH_TOKENS <= literals and literals & _VERBS):
                 continue
             if literals & _BODY_FLAGS:
                 seams.append((lst.lineno, fn.name))
                 continue
-            for node in ast.walk(fn):
-                if isinstance(node, ast.Assign) and node.value is lst:
-                    for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id in extended:
-                            seams.append((lst.lineno, fn.name))
+            if assigned_names.get(id(lst), frozenset()) & extended:
+                seams.append((lst.lineno, fn.name))
     return sorted(set(seams))
 
 
@@ -118,10 +134,17 @@ def discover_seams(path: Path) -> list[tuple[int, str]]:
     text = path.read_text(encoding="utf-8")
     if path.suffix != ".py":
         return [(line, SCRIPT) for line in _shell_seams(text)]
+    # Neither seam kind can exist without the bare token `issue` somewhere in
+    # the source: a Python argv seam needs it as a string constant, and an
+    # embedded hook needs it inside `gh issue create|edit`. Skipping the parse
+    # for files that lack it is exact, and it drops more than half the tree.
+    if "issue" not in text:
+        return []
     tree = ast.parse(text)
     seams = _python_seams(tree)
-    for template in _embedded_shell(tree):
-        seams += [(line, EMBEDDED_HOOK) for line in _shell_seams(template)]
+    if "#!" in text:
+        for template in _embedded_shell(tree):
+            seams += [(line, EMBEDDED_HOOK) for line in _shell_seams(template)]
     return sorted(seams)
 
 
