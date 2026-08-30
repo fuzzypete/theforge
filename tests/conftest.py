@@ -12,6 +12,18 @@ from unittest.mock import patch
 
 import pytest
 
+# Re-exported so pytest picks them up as conftest hooks. The implementation lives
+# in its own module so a child pytest project (with its own rootdir, which would
+# never load this conftest) can load exactly the same support with
+# `-p timeout_enforcement` — see tests/test_per_test_timeout_enforcement.py.
+from timeout_enforcement import (  # noqa: F401
+    pytest_collection_modifyitems,
+    pytest_configure,
+    pytest_runtest_setup,
+    pytest_terminal_summary,
+    pytest_unconfigure,
+)
+
 from theforge.config import (
     SCRUBBED_CLI_LAUNCHERS,
     SCRUBBED_ENV_VARS,

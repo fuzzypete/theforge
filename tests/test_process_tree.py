@@ -172,7 +172,15 @@ class TestTransitiveWalk:
             "start_new_session=True,"
             "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
             f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid));"
-            "time.sleep(2)"
+            # Held open until the finally block reaps it, rather than for a fixed
+            # couple of seconds. The parent link is the thing under observation
+            # here, so a child that exits on its own schedule races the observation
+            # instead of bounding it: under a loaded machine two interpreter
+            # startups plus the tracker's first sample can outlast a 2s hold, the
+            # grandchild reparents, and the assertion fails for want of the link
+            # rather than for the reason it exists. Waiting costs nothing — the
+            # test never waits for this process, it kills it.
+            "time.sleep(300)"
         )
         child = subprocess.Popen([sys.executable, "-c", script])  # noqa: S603
         tracker = process_tree.DescendantTracker(root_pid=child.pid)
