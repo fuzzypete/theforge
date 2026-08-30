@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 38
+CURRENT_RECORD_SCHEMA_VERSION = 39
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2111,6 +2111,39 @@ def _migrate_v37_to_v38(record: dict) -> dict:
     return record
 
 
+def _migrate_v38_to_v39(record: dict) -> dict:
+    """Advance v38 records across explicit gate-diagnostic workload meaning.
+
+    v39 keeps the historical ``ran`` field for compatibility but also writes
+    ``workload_executed`` so the audit record itself states what that value
+    means. Some v38 records, however, persisted ``ran`` for attempted
+    invocations whose output never proved workload execution, so migration only
+    backfills the clearer alias when the legacy entry already carries
+    independent structured evidence strong enough to classify honestly.
+    """
+    migrated = copy.deepcopy(record)
+    iterations = migrated.get("iterations")
+    if not isinstance(iterations, dict):
+        return migrated
+    diagnostics = iterations.get("gate_diagnostic")
+    if not isinstance(diagnostics, list):
+        return migrated
+    for entry in diagnostics:
+        if not isinstance(entry, dict) or "workload_executed" in entry:
+            continue
+        # v38 ``ran`` sometimes meant only "the diagnostic invocation was
+        # attempted", so migration re-derives the clearer alias from evidence
+        # that independently proves or refutes test execution.
+        if entry.get("timed_out") is True:
+            entry["workload_executed"] = True
+            continue
+        hanging_test = entry.get("hanging_test")
+        if isinstance(hanging_test, str) and hanging_test.strip():
+            entry["workload_executed"] = True
+            continue
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2157,6 +2190,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     35: _migrate_v35_to_v36,
     36: _migrate_v36_to_v37,
     37: _migrate_v37_to_v38,
+    38: _migrate_v38_to_v39,
 }
 
 
