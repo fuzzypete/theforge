@@ -25,6 +25,7 @@ from theforge.config import (
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest
+from theforge.sprint import runner as _runner
 from theforge.sprint.ci_checks import PrCheckState
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.lock import integration_lock
@@ -2936,6 +2937,17 @@ class TestCollisionGatePreservedWork:
     a base the pending decision was about to rewrite.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fast_gate_tick(self, monkeypatch):
+        """Drive the scheduling loop's gate-service tick faster.
+
+        These tests wait through several ticks each. None of them asserts how
+        long a tick is — only what the gate does when it fires — and at the 2s
+        production default that put them among the slowest in the suite, one of
+        them past the enforced five-second per-test bound.
+        """
+        monkeypatch.setattr(_runner, "PLAN_GATE_TICK_SECONDS", 0.2)
+
     def _run(self, tmp_path: Path):
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b")
@@ -3022,6 +3034,17 @@ class TestCollisionGateQueuedParent:
     therefore release the claim, or the gated sibling waits out its own timeout
     on work that landed minutes ago.
     """
+
+    @pytest.fixture(autouse=True)
+    def _fast_gate_tick(self, monkeypatch):
+        """Drive the scheduling loop's gate-service tick faster.
+
+        These tests wait through several ticks each. None of them asserts how
+        long a tick is — only what the gate does when it fires — and at the 2s
+        production default that put them among the slowest in the suite, one of
+        them past the enforced five-second per-test bound.
+        """
+        monkeypatch.setattr(_runner, "PLAN_GATE_TICK_SECONDS", 0.2)
 
     @staticmethod
     def _plan_result(tmp_path: Path, slug: str):

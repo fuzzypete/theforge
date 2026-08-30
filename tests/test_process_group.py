@@ -344,6 +344,10 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
         monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
         monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
         monkeypatch.setattr(process_group, "_kill_pid", _kill_only_the_direct_child)
+        # The kill is refused on purpose here, so every teardown pass waits out the
+        # full observation window. That window is not what this test verifies, and
+        # at the 2s default it put the test over the enforced five-second bound.
+        monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
         script = (
             "import subprocess,sys,pathlib,time;"
@@ -1109,7 +1113,13 @@ class TestClaudeGroupKillThroughSandbox(_RunnerGroupKillBase):
         )
         result = _run_claude(
             prompt="do the thing",
-            profile=self._profile(timeout_seconds=5),
+            # The test waits this out, so at 5s it could not fit the enforced
+            # five-second per-test bound however fast everything else ran. What
+            # it proves is that the group kill crosses the sandbox wrapper, not
+            # how long the agent was given: the unwrapped sibling above times
+            # out at 2s and finishes in 2.0s. Three leaves that margin again for
+            # sandbox-exec's own startup before the fake writes its pidfile.
+            profile=self._profile(timeout_seconds=3),
             working_dir=tmp_path,
             fallback_to_file=False,
         )

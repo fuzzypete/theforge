@@ -758,6 +758,52 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
   no `time.sleep()` longer than 1 second, no blocking I/O without a timeout, no
   `threading.Event.wait()` without a timeout. Every test must complete in under 5
   seconds. A hanging test kills the entire gate run for every story in the sprint.
+  This bound is **enforced, not advisory**: `pyproject.toml` declares
+  `timeout = 5` and `timeout_method = "thread"` under
+  `[tool.pytest.ini_options]`, so every invocation of the suite — the gate,
+  `make dev-check`, a bare `pytest` in a terminal — inherits it without a flag.
+  A test that runs past the bound is failed by name with a stack trace of where
+  it was stuck, so the run stays attributable instead of dying anonymously.
+  - The method must stay `thread`. Measured against the `-n auto --dist
+    worksteal` addopts, the `signal` method parks every xdist worker at 0% CPU
+    and the run never finishes — the same lock-inheritance hazard as the
+    `fcntl.flock` rule above.
+  - The thread method ends a timed-out test with `os._exit(1)`, which in an
+    xdist worker kills the process before pytest-timeout's stack dump reaches
+    the controller. `tests/timeout_enforcement.py` recovers it by wrapping
+    `pytest_timeout.timeout_timer`: on the way out the worker writes the
+    culprit's nodeid and stacks to a file, and the controller re-emits it
+    under a "per-test timeout stack dumps" heading. The wrapper runs on
+    pytest-timeout's existing timer thread and does no per-test work — do not
+    replace it with a per-test `faulthandler.dump_traceback_later`, which was
+    measured deadlocking this suite at 99% for the same lock-inheritance
+    reason as above. Keep the module loaded: a child pytest project with its
+    own rootdir needs `-p timeout_enforcement`, and setting
+    `THEFORGE_TIMEOUT_DUMP_DIR` hands a run a dump directory it will use and
+    leave in place, which is how a dump survives a serial run whose timeout
+    kills the controller itself.
+  - A test may **shorten** its own bound with `@pytest.mark.timeout(n)`.
+    Nothing may disable it (`0` or negative) or change how it is enforced
+    (`method=`, `func_only=True`); `tests/timeout_enforcement.py` rejects those
+    at collection and fails the offending test by name.
+  - **Raising** the bound takes two deliberate steps, and one is not enough.
+    A test that drives real processes, real repositories, or a full sprint
+    workflow carries `@pytest.mark.orchestration` *and* is listed in
+    `tests/timeout_enforcement.py::ORCHESTRATION_BOUND_TESTS`, then declares
+    its own larger `@pytest.mark.timeout(n)` up to a 30s category ceiling. It
+    stays in the default gate and stays bounded: exceeding its declared bound
+    still fails with the test named and a stack trace. Requiring both the
+    marker and the list is what stops a raised bound arriving as a side effect
+    of making a test pass — the list is the one place the set is enumerable,
+    and a test guards it against drifting from the marked set.
+  - The burden for adding one is a measurement, not an opinion: show that the
+    cost is the production machinery the test must drive rather than the
+    test's own design. The existing entries carry theirs, including what was
+    tried and rejected — splitting (every assertion reads state one sprint
+    produced, so a split runs it twice), removing the remote publish (it is
+    what prunes staging, so stubbing it made a test 3.5x *slower*), and three
+    candidate hot spots each measured away (lease sweep 8%, `gh` 0.03s,
+    tracker thread creation 0.02ms).
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ### Flake discipline

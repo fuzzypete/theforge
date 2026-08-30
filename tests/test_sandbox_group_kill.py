@@ -362,6 +362,10 @@ class TestSidecarSurvivesPartialTeardown:
         # The exact defect state: killpg refused, direct-pid kill accepted.
         monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
         monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: True)
+        # The kill is refused on purpose here, so every teardown pass waits out the
+        # full observation window. That window is not what this test verifies, and
+        # at the 2s default it put the test over the enforced five-second bound.
+        monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
         pidfile = tmp_path / "gc.pid"
         try:

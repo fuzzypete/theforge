@@ -568,13 +568,17 @@ def test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies(
     # for the reaper at all. Without this the lease sweep ends it at release
     # (#2309) and there is nothing left to orphan.
     monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
+    # The kill is refused on purpose here, so every teardown pass waits out the
+    # full observation window. That window is not what this test verifies, and
+    # at the 2s default it put the test over the enforced five-second bound.
+    monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
     cmd = (
         f'{sys.executable} -u -c "import subprocess, sys, time; '
         f"child = subprocess.Popen([{sys.executable!r}, '-c', 'import time; time.sleep(120)']); "
         'print(child.pid, flush=True); time.sleep(120)"'
     )
-    ok, output, _exit_code, timed_out = coord_util._run_shell_detailed(cmd, tmp_path, timeout=2)
+    ok, output, _exit_code, timed_out = coord_util._run_shell_detailed(cmd, tmp_path, timeout=0.5)
 
     assert ok is False and timed_out is True
     grandchild_pid = int(
@@ -629,13 +633,19 @@ def test_gate_teardown_records_survivors_so_a_leaderless_tree_can_be_reaped(
     # for the reaper at all. Without this the lease sweep ends it at release
     # (#2309) and there is nothing left to orphan.
     monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
+    # The kill is refused on purpose here, so every teardown pass waits out the
+    # full observation window. That window is not what this test verifies, and
+    # at the 2s default it put the test over the enforced five-second bound.
+    monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
     cmd = (
         f'{sys.executable} -u -c "import subprocess, sys, time; '
         f"child = subprocess.Popen([{sys.executable!r}, '-c', 'import time; time.sleep(120)']); "
         'print(child.pid, flush=True); time.sleep(120)"'
     )
-    _ok, output, _exit_code, _timed_out = coord_util._run_shell_detailed(cmd, tmp_path, timeout=2)
+    _ok, output, _exit_code, _timed_out = coord_util._run_shell_detailed(
+        cmd, tmp_path, timeout=0.5
+    )
     grandchild_pid = int(
         next(line for line in output.splitlines() if line.strip().isdigit()).strip()
     )
