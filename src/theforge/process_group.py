@@ -82,6 +82,20 @@ _RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
 # gate's timeout path is asserted against even when every kill is refused.
 KILL_GRACE_SECONDS = 2.0
 
+
+def _grace(seconds: float | None) -> float:
+    """Resolve a grace argument against the current ``KILL_GRACE_SECONDS``.
+
+    The callers below take ``None`` rather than defaulting to the constant
+    directly, because a default expression is bound once at definition time: a
+    test that shortens the constant would still get 2.0 everywhere the default
+    applied, and the teardown paths that deliberately let a kill fail would keep
+    paying the full window. Resolving here reads the value at call time, so the
+    constant is one knob rather than four copies of it.
+    """
+    return KILL_GRACE_SECONDS if seconds is None else seconds
+
+
 # Teardown actions recorded on a `ProcessTeardown`.
 TEARDOWN_KILLED_SURVIVORS = "killed_survivors"
 """The invocation finished but left live descendants; they were killed here."""
@@ -442,7 +456,7 @@ def _attach_partial_output(
     proc: subprocess.Popen[Any],
     exc: subprocess.TimeoutExpired,
     *,
-    drain_seconds: float = KILL_GRACE_SECONDS,
+    drain_seconds: float | None = None,
 ) -> None:
     """Populate ``exc.stdout``/``exc.stderr`` with the killed child's partial output.
 
@@ -458,7 +472,7 @@ def _attach_partial_output(
     hang teardown.
     """
     try:
-        out, err = proc.communicate(timeout=drain_seconds)
+        out, err = proc.communicate(timeout=_grace(drain_seconds))
     except (subprocess.TimeoutExpired, ValueError, OSError):
         return
     if out is not None:
@@ -481,9 +495,9 @@ def _group_is_empty(pgid: int) -> bool:
     return not members if enumerated else not group_is_alive(pgid)
 
 
-def _await_empty_group(pgid: int, *, grace_seconds: float = KILL_GRACE_SECONDS) -> bool:
+def _await_empty_group(pgid: int, *, grace_seconds: float | None = None) -> bool:
     """Poll until *pgid* holds no running process, bounded by *grace_seconds*."""
-    deadline = time.monotonic() + grace_seconds
+    deadline = time.monotonic() + _grace(grace_seconds)
     while True:
         if _group_is_empty(pgid):
             return True
@@ -686,7 +700,7 @@ def group_is_alive(pgid: int) -> bool:
 
 
 def terminate_process_group(
-    proc: subprocess.Popen[Any], *, grace_seconds: float = KILL_GRACE_SECONDS
+    proc: subprocess.Popen[Any], *, grace_seconds: float | None = None
 ) -> bool:
     """Kill the group led by *proc* and wait — bounded — for the tree to die.
 
@@ -707,13 +721,17 @@ def terminate_process_group(
     a real leak and the log line is the only trace of it, so it must not be
     swallowed the way the refused kill itself was.
     """
+    # Resolve before any wait: `_wait_bounded` passes this straight to
+    # `Popen.wait`, where None means "block forever" — the exact unbounded wait
+    # the docstring above says this function exists to prevent.
+    grace = _grace(grace_seconds)
     # Only ever wait on a signal that was actually delivered. A refused kill
     # tells us up front that nothing will change, so waiting out the grace period
     # for it buys nothing but the latency this function exists to avoid.
     if _killpg_for(proc.pid):
         # SIGKILL reached the group and is uncatchable, so every member is dead
         # or dying. The bounded wait only observes our own child being reaped.
-        if not _wait_bounded(proc, grace_seconds):
+        if not _wait_bounded(proc, grace):
             _log(f"  ⚠ pid={proc.pid} not reaped after its group was killed")
         return True
     # The group kill did not land. Signalling the direct pid is a strictly weaker
@@ -721,7 +739,7 @@ def terminate_process_group(
     # sandbox that denies cross-group signalling still permits. Report it as what
     # it is so the caller keeps tracking whatever survived.
     if _kill_pid(proc.pid):
-        _wait_bounded(proc, grace_seconds)
+        _wait_bounded(proc, grace)
     else:
         _log(f"  ⚠ pid={proc.pid} survived teardown; abandoning it rather than blocking on it")
     return False

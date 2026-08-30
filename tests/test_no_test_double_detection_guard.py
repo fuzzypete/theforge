@@ -33,6 +33,24 @@ def _iter_src_files() -> list[Path]:
     return sorted(SRC_ROOT.rglob("*.py"))
 
 
+def _could_violate(text: str) -> bool:
+    """True if *text* could possibly hold a violation, so it is worth parsing.
+
+    This only decides whether to *look*; everything that passes is still checked
+    through the AST, so the "strings and docstrings do not trip it" guarantee
+    above is untouched. The conditions are exact rather than heuristic: an
+    offending import always spells ``unittest``, and an offending isinstance
+    check always spells both ``isinstance`` and one of the mock type names.
+
+    Worth the four lines because parsing all of ``src/`` twice per call cost
+    0.88s, and under the enforced five-second per-test bound this guard was
+    crossing it once every xdist worker had to re-pay the scan.
+    """
+    if "unittest" in text:
+        return True
+    return "isinstance" in text and any(name in text for name in _MOCK_TYPE_NAMES)
+
+
 def _import_violations(tree: ast.AST) -> list[tuple[int, str]]:
     """Return (lineno, message) for any ``unittest.mock`` import."""
     out: list[tuple[int, str]] = []
@@ -80,7 +98,10 @@ def test_no_unittest_mock_or_mock_isinstance_in_src() -> None:
     """No production module may import unittest.mock or branch on isinstance(_, Mock)."""
     offenders: list[str] = []
     for path in _iter_src_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        text = path.read_text(encoding="utf-8")
+        if not _could_violate(text):
+            continue
+        tree = ast.parse(text, filename=str(path))
         rel = path.relative_to(REPO_ROOT)
         for lineno, what in _import_violations(tree) + _isinstance_mock_violations(tree):
             offenders.append(f"{rel}:{lineno}: {what}")
