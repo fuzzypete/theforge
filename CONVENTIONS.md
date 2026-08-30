@@ -783,12 +783,27 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     leave in place, which is how a dump survives a serial run whose timeout
     kills the controller itself.
   - A test may **shorten** its own bound with `@pytest.mark.timeout(n)`.
-    Nothing in the default suite may raise it above 5 seconds, disable it
-    (`0` or negative), or change how it is enforced (`method=`,
-    `func_only=True`); `tests/timeout_enforcement.py` rejects those at
-    collection and fails the offending test by name. Validation that
-    legitimately needs longer belongs behind a marker and its own make target,
-    outside the default gate.
+    Nothing may disable it (`0` or negative) or change how it is enforced
+    (`method=`, `func_only=True`); `tests/timeout_enforcement.py` rejects those
+    at collection and fails the offending test by name.
+  - **Raising** the bound takes two deliberate steps, and one is not enough.
+    A test that drives real processes, real repositories, or a full sprint
+    workflow carries `@pytest.mark.orchestration` *and* is listed in
+    `tests/timeout_enforcement.py::ORCHESTRATION_BOUND_TESTS`, then declares
+    its own larger `@pytest.mark.timeout(n)` up to a 30s category ceiling. It
+    stays in the default gate and stays bounded: exceeding its declared bound
+    still fails with the test named and a stack trace. Requiring both the
+    marker and the list is what stops a raised bound arriving as a side effect
+    of making a test pass — the list is the one place the set is enumerable,
+    and a test guards it against drifting from the marked set.
+  - The burden for adding one is a measurement, not an opinion: show that the
+    cost is the production machinery the test must drive rather than the
+    test's own design. The existing entries carry theirs, including what was
+    tried and rejected — splitting (every assertion reads state one sprint
+    produced, so a split runs it twice), removing the remote publish (it is
+    what prunes staging, so stubbing it made a test 3.5x *slower*), and three
+    candidate hot spots each measured away (lease sweep 8%, `gh` 0.03s,
+    tracker thread creation 0.02ms).
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ### Flake discipline

@@ -52,6 +52,7 @@ addopts = "-n auto --dist worksteal"
 timeout = 5
 timeout_method = "thread"
 markers = [
+    "orchestration: marks a test that drives real processes, real repositories, or a full sprint workflow, and so may declare a bound above the shared 5s. Requires listing in tests/timeout_enforcement.py::ORCHESTRATION_BOUND_TESTS as well — the marker alone grants nothing.",
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
     "cli_contract: marks tests that invoke real provider CLIs to validate argv contracts (requires THEFORGE_RUN_CLI_CONTRACT=1)",
 ]

@@ -24,9 +24,18 @@ two things that configuration alone cannot:
    never attributed to the wrong test.
 
 2. **Override validation.** A ``timeout`` mark may only *shorten* the shared
-   bound. Raising it, disabling it (``0`` or negative), or changing how it is
-   enforced (``method=``, ``func_only=True``) would put the test back outside the
-   budget the gate depends on, so those are rejected.
+   bound. Disabling it (``0`` or negative) or changing how it is enforced
+   (``method=``, ``func_only=True``) would put the test back outside the budget
+   the gate depends on, so those are rejected outright.
+
+   Raising the bound is possible for exactly one category — a test that drives
+   real processes, real repositories, or a full sprint workflow — and takes both
+   ``@pytest.mark.orchestration`` *and* an entry in
+   ``ORCHESTRATION_BOUND_TESTS``. Requiring both is the point: either alone
+   would let a raised bound arrive as a side effect of making a test pass. Such
+   a test stays in the default gate and stays bounded, up to
+   ``ORCHESTRATION_MAX_SECONDS``; exceeding its own declared bound still fails
+   with the test named and a stack trace.
 
 The signal method is not an option here: measured against this suite's
 ``-n auto --dist worksteal`` configuration it parks every worker at 0% CPU and
@@ -53,6 +62,69 @@ DUMP_DIR_ENV = "THEFORGE_TIMEOUT_DUMP_DIR"
 HEADER_PREFIX = "THEFORGE-TIMEOUT-DUMP nodeid="
 
 _SECTION_TITLE = "per-test timeout stack dumps"
+
+#: Marker naming the one category allowed a bound above the shared five seconds:
+#: a test that orchestrates real processes, real repositories, or a full sprint
+#: workflow, where the cost is the production machinery it must drive rather
+#: than the test's own design.
+ORCHESTRATION_MARKER = "orchestration"
+
+#: The ceiling the category itself may not exceed. Generous against the
+#: contention these tests actually see — a 1.06s test was measured reaching 5s
+#: under a loaded gate, a 4.7x inflation — and still far below the point where a
+#: genuinely hung test costs the run, which is the failure the bound exists to
+#: catch. The category raises the bound; it does not remove one.
+ORCHESTRATION_MAX_SECONDS = 30.0
+
+#: Every test carrying a raised bound, in one place. Adding one takes a
+#: deliberate edit here *and* the marker on the test, so a raised bound is never
+#: something a test acquires by being made to pass.
+#:
+#: Each entry was measured serially on an idle machine, and the cost traced to
+#: production machinery the test has to drive. In every case the test's own
+#: fixture work is the small part: in the smallest of them, 113 of 137
+#: subprocess spawns originate inside production sprint code and only 11 in the
+#: test. What was tried and rejected on measurement, rather than assumed:
+#:
+#:   * Splitting them. Every assertion group reads state one sprint produced, so
+#:     a split runs the sprint twice and raises the maximum instead of lowering
+#:     it. pytest-timeout runs func_only=False, so a sprint moved into a
+#:     module-scoped fixture is still charged to the first test that requests it.
+#:   * Removing the remote publish. It is what prunes staging, so stubbing it
+#:     made one test 3.5x *slower* (1.77s to 6.22s).
+#:   * Fewer runs in the adaptive test. It asserts the promotion floor itself
+#:     (``sample_size == min_runs == 3``), so fewer runs means promotion never
+#:     fires and the assertion has nothing to observe.
+#:   * Three candidate hot spots, each measured and rejected: the per-release
+#:     lease sweep (8% of one test, with an effective prune leaving ~1 candidate),
+#:     ``gh`` invocation (0.03s), and tracker thread creation (0.02ms worst case
+#:     under 500 extra processes). There is no hot frame; the cost is spread flat
+#:     across many small subprocess spawns.
+ORCHESTRATION_BOUND_TESTS = frozenset(
+    {
+        # 3.44s serial. Three stories at --parallel 2 over a protected base:
+        # 219 real subprocess spawns, 146 of them inside production sprint code.
+        "tests/test_protected_base_publication_poc.py::test_protected_base_parallel_merge_pr_poc",
+        # 2.65s serial. Ten coordinator runs plus ten audit writes, 2.73s of
+        # 2.97s, flat — the runs are what the promotion floor requires.
+        "tests/test_coord_adaptive_assignment_runtime.py::test_assignment_history_learning_end_to_end",
+        # 1.95s serial. A two-story sprint whose artifacts must be tracked
+        # project memory for the condition under test to exist at all, which is
+        # what drives 81 of its 113 spawns through memory publication.
+        "tests/test_sprint_run_artifact_publish_timing.py::test_a_non_landing_workflow_is_unaffected",
+        # 1.06s serial. Three stories at --parallel 2 through the real scheduler.
+        "tests/test_sprint_run_artifact_publish_timing.py::test_a_story_run_artifact_does_not_refuse_the_next_story",
+        # 1.23s and 1.05s serial. The two halves of the publication-seam
+        # counterfactual, each driving one merge sprint over a protected base.
+        "tests/test_protected_base_publication_poc.py::test_a_reachable_refusal_is_prevented_by_the_publication_seam",
+        "tests/test_protected_base_publication_poc.py::test_the_refusal_is_reachable_when_the_transport_is_forced_to_direct_commit",
+    }
+)
+
+#: Nodeids seen carrying the marker in this collection. Populated by the
+#: collection hook so the enumeration can be checked against reality without
+#: paying for a second collection.
+collected_orchestration_nodeids: set[str] = set()
 
 #: Set on any item whose timeout mark was rejected at collection time.
 _VIOLATION_KEY: pytest.StashKey[str] = pytest.StashKey()
@@ -85,12 +157,32 @@ def _as_float(value: object) -> float | None:
         return None
 
 
-def validate_timeout_mark(mark: pytest.Mark, limit: float) -> str | None:
+def raised_bound_allowed(item: pytest.Item) -> bool:
+    """True if *item* may declare a bound above the shared one.
+
+    Both conditions are required, and that is the point: the marker says what
+    kind of test this is, and the enumeration says which tests the repository
+    has actually agreed to. Either alone would let a raised bound arrive as a
+    side effect of making a test pass — add a marker, or edit a list — so
+    neither alone is enough.
+    """
+    return (
+        item.get_closest_marker(ORCHESTRATION_MARKER) is not None
+        and item.nodeid in ORCHESTRATION_BOUND_TESTS
+    )
+
+
+def validate_timeout_mark(
+    mark: pytest.Mark, limit: float, *, ceiling: float | None = None
+) -> str | None:
     """Return a rejection reason for *mark*, or None if it is allowed.
 
-    A ``timeout`` mark may only shorten the shared bound. Anything that raises
-    it, disables it, or changes the enforcement mechanism is rejected.
+    A ``timeout`` mark may only shorten the shared bound, except for a test in
+    the orchestration category, for which *ceiling* is raised. Anything that
+    disables the bound or changes the enforcement mechanism is rejected either
+    way.
     """
+    ceiling = limit if ceiling is None else ceiling
     args = tuple(mark.args)
     kwargs = dict(mark.kwargs)
 
@@ -114,19 +206,29 @@ def validate_timeout_mark(mark: pytest.Mark, limit: float) -> str | None:
         return f"timeout mark value {raw!r} is not a number"
     if value <= 0:
         return f"timeout mark value {value:g} disables the per-test bound"
-    if value > limit:
+    if value > ceiling > limit:
         return (
-            f"timeout mark value {value:g}s exceeds the shared {limit:g}s bound; "
-            "a mark may only shorten it. Validation that needs longer belongs "
-            "outside the default gate."
+            f"timeout mark value {value:g}s exceeds the {ceiling:g}s ceiling for the "
+            f"{ORCHESTRATION_MARKER!r} category. The category raises the bound; it "
+            "does not remove one."
+        )
+    if value > ceiling:
+        return (
+            f"timeout mark value {value:g}s exceeds the shared {limit:g}s bound; a mark "
+            f"may only shorten it. A test that orchestrates real processes, real "
+            f"repositories or a full sprint workflow may declare a larger bound by "
+            f"carrying @pytest.mark.{ORCHESTRATION_MARKER} *and* being listed in "
+            f"{__name__}.ORCHESTRATION_BOUND_TESTS, with the measurement that shows "
+            "the cost is the production machinery rather than the test's own design."
         )
     return None
 
 
 def validate_item_timeout_marks(item: pytest.Item, limit: float) -> str | None:
     """Return the first rejection reason among *item*'s timeout marks."""
+    ceiling = ORCHESTRATION_MAX_SECONDS if raised_bound_allowed(item) else limit
     for mark in item.iter_markers("timeout"):
-        reason = validate_timeout_mark(mark, limit)
+        reason = validate_timeout_mark(mark, limit, ceiling=ceiling)
         if reason is not None:
             return reason
     return None
@@ -290,6 +392,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     here so it surfaces as an ordinary named failure — under xdist, collection
     happens in the workers, where raising would crash the worker instead.
     """
+    # Recorded during collection so the enumeration can be checked against the
+    # marked set for free. Spawning a `--collect-only` to find out costs seconds
+    # on a 10,000-test suite — the very thing this module exists to catch.
+    collected_orchestration_nodeids.clear()
+    collected_orchestration_nodeids.update(
+        item.nodeid for item in items if item.get_closest_marker(ORCHESTRATION_MARKER)
+    )
     limit = configured_timeout(config)
     if limit is None:
         return

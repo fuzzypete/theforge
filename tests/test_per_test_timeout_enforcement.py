@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import timeout_enforcement as te
 from timeout_enforcement import (
     collect_dumps,
     configured_timeout,
@@ -333,3 +334,73 @@ def test_the_dump_hook_is_installed_and_costs_no_extra_thread():
     assert "faulthandler.dump_traceback_later(" not in source
     # No per-test hook at all: nothing runs around a test that does not time out.
     assert "def pytest_runtest_protocol" not in source
+
+
+# ---------------------------------------------------------------------------
+# The one category allowed a larger bound, and only by enumeration
+# ---------------------------------------------------------------------------
+
+
+class _FakeItem:
+    """Enough of an item for the raised-bound decision: nodeid and markers."""
+
+    def __init__(self, nodeid: str, *, marked: bool) -> None:
+        self.nodeid = nodeid
+        self._marked = marked
+
+    def get_closest_marker(self, name):
+        return object() if (self._marked and name == te.ORCHESTRATION_MARKER) else None
+
+
+def test_the_category_needs_both_the_marker_and_the_enumeration():
+    """Either alone would let a raised bound arrive as a side effect."""
+    listed = sorted(te.ORCHESTRATION_BOUND_TESTS)[0]
+    assert te.raised_bound_allowed(_FakeItem(listed, marked=True))
+    assert not te.raised_bound_allowed(_FakeItem(listed, marked=False))
+    assert not te.raised_bound_allowed(_FakeItem("tests/test_other.py::test_x", marked=True))
+
+
+def test_an_ordinary_test_still_cannot_raise_the_bound():
+    reason = validate_timeout_mark(_mark(20), SHARED_BOUND)
+    assert reason is not None
+    assert "exceeds the shared" in reason
+    # The message has to say how a raised bound is legitimately obtained,
+    # or the next person reaches for the nearest workaround instead.
+    assert te.ORCHESTRATION_MARKER in reason
+    assert "ORCHESTRATION_BOUND_TESTS" in reason
+
+
+def test_the_category_raises_the_bound_but_does_not_remove_it():
+    ceiling = te.ORCHESTRATION_MAX_SECONDS
+    assert validate_timeout_mark(_mark(20), SHARED_BOUND, ceiling=ceiling) is None
+    over = validate_timeout_mark(_mark(ceiling + 1), SHARED_BOUND, ceiling=ceiling)
+    assert over is not None
+    assert "ceiling" in over
+    # Disabling is still rejected inside the category.
+    assert "disables" in (validate_timeout_mark(_mark(0), SHARED_BOUND, ceiling=ceiling) or "")
+
+
+def test_the_enumeration_cannot_rot_or_grow_unnoticed():
+    """The list must keep describing the set it claims to enumerate.
+
+    Two ways it could stop: an entry naming a test that no longer exists after a
+    rename, and a test acquiring the marker without being listed. The second is
+    the one that matters — it is the side-effect path the criterion forbids —
+    and it is checked against the marked set this very collection produced, so
+    the check costs nothing. Both directions hold under a partial collection,
+    which is what lets this run when only one file is selected.
+    """
+    for nodeid in te.ORCHESTRATION_BOUND_TESTS:
+        path, _, name = nodeid.partition("::")
+        source = REPO_ROOT / path
+        assert source.is_file(), f"enumerated test names a missing file: {nodeid}"
+        assert f"def {name}(" in source.read_text(), (
+            f"enumerated test no longer exists (renamed?): {nodeid}"
+        )
+
+    marked = te.collected_orchestration_nodeids
+    assert marked <= te.ORCHESTRATION_BOUND_TESTS, (
+        "a test carries the orchestration marker without being enumerated, which is "
+        "exactly how a raised bound would arrive as a side effect: "
+        f"{sorted(marked - te.ORCHESTRATION_BOUND_TESTS)}"
+    )
