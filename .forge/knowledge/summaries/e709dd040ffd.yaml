@@ -1,0 +1,112 @@
+schema_version: 2
+run_id: e709dd040ffd
+authoritative_run_record: .forge/audits/runs/e709dd040ffd.json
+generated_at: '2026-08-30T23:38:47.710842+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00990625
+story:
+  slug: issue-2825
+  name: The gate verdict on an unchanged release line changes between runs, and a
+    re-run can turn it green
+  github_issue: 2825
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- testing
+- ci
+domains_provenance: *id001
+changed_files: &id002
+- CONVENTIONS.md
+- pyproject.toml
+- tests/orchestration_scope.py
+- tests/test_coord_adaptive_assignment_runtime.py
+- tests/test_dev_verification_broker.py
+- tests/test_network_guard.py
+- tests/test_per_test_timeout_enforcement.py
+- tests/test_protected_base_publication_poc.py
+- tests/test_sprint_run_artifact_publish_timing.py
+- tests/timeout_enforcement.py
+what_changed:
+  description: "The run replaced the reactive per-test timeout membership list with\
+    \ a rule-based orchestration classification for timeout eligibility, and aligned\
+    \ the repository\u2019s stated timeout contract with that enforcement. It also\
+    \ updated affected tests to match the new classification boundary."
+  approach: The change introduced shared logic for identifying machinery-driving tests
+    from durable properties at collection time, then normalized enforcement and documentation
+    around that rule rather than extending a failure-discovered allowlist.
+  files_modified: *id002
+what_was_learned:
+- claim: When timeout relief is meant for tests that exercise orchestration machinery,
+    future work should derive eligibility from durable test properties at collection
+    time instead of maintaining a list of tests discovered through prior timeout failures.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The first implementation step explicitly reframed timeout behavior
+      around durable orchestration properties rather than static membership, showing
+      that the instability came from the classification method itself and that future
+      fixes in this area should start from property-based eligibility.
+  - type: file
+    path: tests/orchestration_scope.py
+    description: This new shared scope logic is the mechanism that turns durable characteristics
+      of a test into eligibility decisions, demonstrating that the stable control
+      point for this class of issue is collection-time classification rather than
+      per-nodeid exceptions.
+  - type: file
+    path: tests/timeout_enforcement.py
+    description: The enforcement layer was rewritten around the orchestration-scope
+      decision, showing that timeout assignment now depends on computed test properties
+      and that future changes should preserve that separation between classification
+      and enforcement.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved the shift away from a hand-maintained allowlist to
+      machinery-driven eligibility, confirming that this was the central corrective
+      pattern rather than a one-off fix for the reported test.
+- claim: When a suite-level policy and repository documentation describe timeout behavior,
+    future runs should treat agreement between docs and enforced rules as part of
+    the bug surface, not as a separate cleanup.
+  evidence:
+  - type: plan_step
+    step_id: '4'
+    description: A dedicated plan step was reserved for aligning the documented contract
+      with enforcement, showing that contradictory docs were part of the resolved
+      problem and should be addressed whenever timeout semantics change.
+  - type: file
+    path: pyproject.toml
+    description: The suite policy source was adjusted alongside enforcement, demonstrating
+      that the operative timeout contract lives partly in configuration and must be
+      kept in sync with implementation.
+  - type: file
+    path: CONVENTIONS.md
+    description: The human-facing contract was updated in tandem with the policy source,
+      showing that future work in this area needs synchronized changes across both
+      machine-enforced and documented definitions.
+learned_patterns:
+- property-based-timeout-eligibility
+- contract-and-enforcement-sync
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review consistently validated the move from timeout-failure allowlisting to collection-time
+    orchestration classification as the core fix.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 1
+  plan_regenerations: true
+  cost_usd: null
+  dominant_difficulty: Replacing an unstable, failure-discovered timeout exception
+    list with a suite-wide rule that classifies orchestration-heavy tests consistently.
