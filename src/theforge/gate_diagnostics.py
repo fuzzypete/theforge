@@ -52,17 +52,6 @@ _PYTEST_ARGUMENT_ERROR_RE = re.compile(
     r"^\S+:\s*error:\s+unrecognized arguments:",
     re.IGNORECASE | re.MULTILINE,
 )
-_COMMAND_NOT_FOUND_RE = re.compile(
-    r"^(?:\S+:\s+)+(?:command not found|not found)\b",
-    re.IGNORECASE | re.MULTILINE,
-)
-_NO_SUCH_FILE_RE = re.compile(
-    (
-        r"^(?:(?:\S+:\s+)+.*\bno such file or directory\b|"
-        r"(?:ERROR:\s*)?(?:\[\s*errno\s*2\s*\]\s*)?no such file or directory\b)"
-    ),
-    re.IGNORECASE | re.MULTILINE,
-)
 
 
 def extract_hanging_test(output: str) -> str | None:
@@ -94,9 +83,10 @@ def diagnostic_workload_executed(
 ) -> bool | None:
     """Return whether the diagnostic observed test execution strongly enough to support inference.
 
-    Returns ``True`` when execution is clearly observed, ``False`` when output
-    clearly shows no test workload ran, and ``None`` when the invocation
-    finished but the output is too runner-specific to classify honestly.
+    Returns ``True`` when execution is clearly observed from a parseable test
+    result, ``False`` when output clearly shows no test workload ran, and
+    ``None`` when the invocation finished but the output is too runner-specific
+    to classify honestly.
 
     This is intentionally conservative. A launched command is not enough: the
     timeout RCA consumer must be able to distinguish "the diagnostic ran and
@@ -106,18 +96,12 @@ def diagnostic_workload_executed(
     """
     if timed_out or hanging_test is not None:
         return True
+    if _PYTEST_RESULT_SUMMARY_RE.search(output) or _PYTEST_NODE_RESULT_RE.search(output):
+        return True
     if _PYTEST_NO_TESTS_RAN_RE.search(output):
         return False
     if _PYTEST_ARGUMENT_ERROR_RE.search(output):
         return False
-    if _COMMAND_NOT_FOUND_RE.search(output):
-        return False
-    if _NO_SUCH_FILE_RE.search(output):
-        return False
-    if _PYTEST_RESULT_SUMMARY_RE.search(output) or _PYTEST_NODE_RESULT_RE.search(output):
-        return True
-    if exit_code == 0 and bool(output.strip()):
-        return True
     return None
 
 
