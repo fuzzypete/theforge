@@ -1,0 +1,59 @@
+schema_version: 2
+run_id: b88ff4ba8272
+authoritative_run_record: .forge/audits/runs/b88ff4ba8272.json
+generated_at: '2026-08-29T21:34:24.151287+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.005223749999999999
+story:
+  slug: issue-2803
+  name: A diagnose run that lands a confirmed cause, one that reaches no cause, and
+    one whose work was discarded are all recorded as the same phase
+  github_issue: 2803
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- tests/test_diagnose_flow.py
+what_changed:
+  description: The run separated diagnose outcomes that had previously all been recorded
+    as UNCLASSIFIED_PARTIAL, distinguishing confirmed-cause, no-cause, and discarded
+    results in the diagnose runtime and audit classification paths. It also updated
+    the verification path to exercise those distinct end states.
+  approach: The change split outcome classification at the shared diagnose result
+    types and the coordinator decision points, then verified the behavior with focused
+    flow-level cases for landed and declined outcomes.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- outcome-taxonomy-split
+- flow-and-type-alignment
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review converged in one cycle that the important check was end-to-end separation
+    of cause-found, no-cause, and declined-landing outcomes across both runtime state
+    and audit serialization.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 8.8594324
+  dominant_difficulty: The main difficulty was preserving a meaningful outcome taxonomy
+    across multiple diagnose end states that had been collapsed into the same recorded
+    phase.

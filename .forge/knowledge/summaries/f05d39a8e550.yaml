@@ -1,0 +1,84 @@
+schema_version: 2
+run_id: f05d39a8e550
+authoritative_run_record: .forge/audits/runs/f05d39a8e550.json
+generated_at: '2026-08-28T17:00:48.190355+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.006026499999999999
+story:
+  slug: issue-2674
+  name: A diagnosis that reaches a confirmed cause is banner-labelled as having failed
+    to reach one when its scope coverage contradicts the inferred scope
+  github_issue: 2674
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The run corrected diagnose landing and rendering so scope-coverage-only
+    partials are presented as missing scope coverage rather than falsely claiming
+    no confirmed cause was reached. It also threaded the needed state through the
+    landing path so the landed Markdown can distinguish this case.
+  approach: The implementation separated the scope-requirement failure path from confirmed-cause
+    absence at the artifact-rendering boundary, then propagated the scope requirement
+    context into the landing flow and pinned the behavior with focused flow and renderer
+    tests.
+  files_modified: *id002
+what_was_learned:
+- claim: When adapting to optional callback signatures, do not probe support by trial-calling
+    and catching TypeError; inspect the callable signature first, or internal TypeError
+    exceptions can be misclassified as arity mismatch and trigger duplicate side effects.
+  evidence:
+  - type: review_finding
+    finding_id: 4df4916b2f6583ce
+    description: The review finding identified that the first implementation determined
+      keyword support by invoking the confirmer and catching TypeError, which caused
+      confirmers that raise TypeError internally to be called twice; this demonstrates
+      that future runs should prefer signature inspection over exception-based probing
+      for callback compatibility.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 records that the iteration replaced the trial-call TypeError
+      sniffing with inspect.signature dispatch, showing the review loop validated
+      signature inspection as the correct mechanism to avoid duplicate invocation
+      side effects.
+  - type: diff
+    ref: 5b258c0c168ddfcf1b409c1fea6bbf9b350f7120
+    description: This follow-up diff is the iteration cited in review cycle 2 that
+      swaps exception-driven probing for signature-based dispatch, evidencing the
+      mechanism change that resolves the double-call hazard.
+learned_patterns:
+- signature-based-callback-dispatch
+- scope-only-partial-bannering
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop kept surfacing callback-compatibility hazards in the landing-confirmation
+    seam, not in the banner logic itself.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 3.48361215
+  dominant_difficulty: Distinguishing a scope-obligation failure from an absent confirmed
+    cause across the landing/rendering seam without introducing compatibility regressions
+    in the confirmation hook.
