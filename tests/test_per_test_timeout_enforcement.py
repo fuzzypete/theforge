@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 import timeout_enforcement as te
-from orchestration_scope import orchestrating_functions
+from orchestration_scope import machinery_driving_functions
 from timeout_enforcement import (
     collect_dumps,
     configured_timeout,
@@ -346,16 +346,24 @@ def test_the_dump_hook_is_installed_and_costs_no_extra_thread():
 # The category allowed a larger bound, decided from the test's own source
 # ---------------------------------------------------------------------------
 
-#: A module shaped like the sprint-driving test files in this suite: the
-#: entrypoint called directly, through an import alias, through a module-local
-#: wrapper, and through a fixture that runs one — plus the two shapes that must
-#: *not* qualify, a mention that is not a call and a test that drives nothing.
+#: A module shaped like the machinery-driving test files in this suite: the
+#: sprint entrypoint called directly, through an import alias, through a
+#: module-local wrapper, and through a fixture that runs one; a real subprocess;
+#: a walk of the repository's own source — plus the shapes that must *not*
+#: qualify: a mention that is not a call, an ordinary object's ``.run()``, a
+#: walk of a scratch directory, and a test that drives nothing at all.
 _DRIVER_MODULE = '''\
 """A module docstring that names run_sprint_ctx without calling it."""
+
+import subprocess
+from pathlib import Path
 
 import pytest
 from sprint_test_helpers import run_sprint_ctx
 from sprint_test_helpers import run_sprint_ctx as drive
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCES = REPO_ROOT / "src"
 
 
 def _wrapper(root):
@@ -384,10 +392,26 @@ def test_through_a_fixture(sprinted):
     assert sprinted
 
 
+def test_a_real_process(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True)
+
+
+def test_a_source_tree_walk():
+    assert [path for path in SOURCES.rglob("*.py")]
+
+
+def test_a_scratch_directory_walk_is_not_one(tmp_path):
+    assert not [path for path in tmp_path.rglob("*.py")]
+
+
 def test_only_mentions_it(tmp_path):
     """Names run_sprint_ctx in a docstring."""
     # ...and in a comment: run_sprint_ctx(config, manifest)
     assert "run_sprint_ctx" != str(tmp_path)
+
+
+def test_a_mocked_runners_own_run_is_not_a_process(fake_runner):
+    fake_runner.run("nothing real happens here")
 
 
 def test_drives_nothing():
@@ -456,13 +480,13 @@ def _collect(*items: _FakeItem) -> None:
     """
     recorded = (
         set(te.collected_orchestration_nodeids),
-        set(te.collected_sprint_driving_nodeids),
+        set(te.collected_machinery_driven_nodeids),
     )
     try:
         te.pytest_collection_modifyitems(_FakeConfig(), list(items))
     finally:
         for live, saved in zip(
-            (te.collected_orchestration_nodeids, te.collected_sprint_driving_nodeids),
+            (te.collected_orchestration_nodeids, te.collected_machinery_driven_nodeids),
             recorded,
         ):
             live.clear()
@@ -473,16 +497,22 @@ def _collect(*items: _FakeItem) -> None:
 
 
 def test_source_structure_decides_the_category_not_a_list_of_nodeids(driver_module):
-    """Every shape that reaches a sprint qualifies; a mention of one does not."""
-    classified = orchestrating_functions(str(driver_module))
+    """Every shape that reaches real machinery qualifies; naming one does not."""
+    classified = machinery_driving_functions(str(driver_module))
     assert {name for name in classified if name.startswith("test")} == {
         "test_direct",
         "test_through_an_alias",
         "test_through_a_local_wrapper",
         "test_through_a_fixture",
+        "test_a_real_process",
+        "test_a_source_tree_walk",
     }
     # Only executable call nodes count: prose about a sprint is not a sprint.
     assert "test_only_mentions_it" not in classified
+    # And the receiver matters: an ordinary object's .run() is not a subprocess,
+    # and a walk of three files under tmp_path is not a walk of the repository.
+    assert "test_a_mocked_runners_own_run_is_not_a_process" not in classified
+    assert "test_a_scratch_directory_walk_is_not_one" not in classified
     assert "test_drives_nothing" not in classified
 
 
@@ -604,7 +634,7 @@ def test_every_module_that_drives_sprints_has_a_classified_test():
         source = path.read_text()
         if "run_sprint_ctx" not in source:
             continue
-        if not any(name.startswith("test") for name in orchestrating_functions(str(path))):
+        if not any(name.startswith("test") for name in machinery_driving_functions(str(path))):
             unclassified.append(path.relative_to(REPO_ROOT))
     assert not unclassified, f"modules driving sprints with nothing classified: {unclassified}"
 
@@ -612,7 +642,7 @@ def test_every_module_that_drives_sprints_has_a_classified_test():
 def test_the_reported_file_is_covered_in_full():
     """The regression itself: every test in it drives a sprint, so all qualify."""
     path = REPO_ROOT / "tests" / "test_sprint_run_artifact_publish_timing.py"
-    classified = orchestrating_functions(str(path))
+    classified = machinery_driving_functions(str(path))
     source = path.read_text()
     declared = {
         line.split("(")[0].removeprefix("def ")
@@ -623,13 +653,42 @@ def test_the_reported_file_is_covered_in_full():
     assert declared <= classified, f"still on the shared bound: {sorted(declared - classified)}"
 
 
+@pytest.mark.parametrize(
+    ("module", "test_name"),
+    [
+        pytest.param(
+            "test_memory_publication.py",
+            "test_a_second_sprint_accumulates_onto_the_same_memory_branch",
+            id="real-repository",
+        ),
+        pytest.param(
+            "test_gate_seam_ownership_guard.py",
+            "test_no_inline_gate_dispatch_outside_sanctioned_seam",
+            id="source-tree-walk",
+        ),
+    ],
+)
+def test_the_other_two_arms_are_the_ones_a_loaded_gate_found(module, test_name):
+    """Sprint-driving was not the whole category, and load said so.
+
+    Both of these measure 1.0-1.2s serially and both were observed exceeding
+    the shared 5s bound on a machine under gate-scale load — the same 4-5x
+    inflation the ceiling exists for. One drives real git through real
+    subprocesses; the other parses every module under ``tests/``. Neither runs
+    a sprint, so a sprint-only rule would have left them to be discovered the
+    way the allowlist's members were: by a red release gate.
+    """
+    classified = machinery_driving_functions(str(REPO_ROOT / "tests" / module))
+    assert test_name in classified
+
+
 def test_the_marker_stays_the_exception_it_is_documented_to_be():
     """A marker on a test the source already classifies rebuilds the old list.
 
     Checked against the marked and classified sets this collection produced, so
     it costs nothing, and it holds under a partial collection too.
     """
-    redundant = te.collected_orchestration_nodeids & te.collected_sprint_driving_nodeids
+    redundant = te.collected_orchestration_nodeids & te.collected_machinery_driven_nodeids
     assert not redundant, (
         "these tests are already classified from their own source; the marker adds "
         f"nothing but a hand-maintained membership list: {sorted(redundant)}"

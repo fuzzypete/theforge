@@ -787,15 +787,26 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     (`method=`, `func_only=True`); `tests/timeout_enforcement.py` rejects those
     at collection and fails the offending test by name.
   - **One category is bound higher, and it is not something a test asks for.**
-    A test that drives a real sprint pays for production machinery, and under
-    the gate's own parallelism that cost inflates several-fold (a 1.06s test
-    was measured reaching 5s, 4.7x). Those tests are bound at **30s**, and
+    A test whose cost is real machinery rather than its own logic inflates
+    several-fold under the gate's own parallelism (a 1.06s test was measured
+    reaching 5s, 4.7x; 1.1s source-scanning guards were measured failing the
+    bound on a machine at load 12). Those tests are bound at **30s**, and
     `tests/timeout_enforcement.py` attaches that bound at collection. Which
     tests they are is decided by `tests/orchestration_scope.py`, which parses
-    the test module and looks for an executable call to the sprint entrypoint
-    — directly, through an import alias, through a module-local helper, or
-    through a module-local fixture. A mention in a comment or docstring is
-    not a call and classifies nothing.
+    the test module and looks for an executable call that drives:
+    - a **sprint** — `run_sprint` / `run_sprint_ctx`;
+    - a **real process or repository** — `subprocess.run`/`Popen`/
+      `check_output`/`check_call`/`call`, `os.system` (qualified on the
+      receiver, so an ordinary object's `.run()` in a fully-mocked test is
+      not swept in);
+    - a **walk of a source tree** — `rglob`/`glob`/`os.walk`, which in this
+      suite means the mechanical guards that parse every module under
+      `tests/` or `src/`.
+
+    The relation is transitive within the module: directly, through an import
+    alias, through a module-local helper, or through a module-local fixture.
+    A mention in a comment or docstring is not a call and classifies nothing.
+    About 9% of the suite qualifies; the other 91% stays on the shared 5s.
   - There is **no list of the tests that get the raised bound**, and adding
     one back is a regression. A list can only be complete up to the last red
     gate: the tests it is missing announce themselves by failing a release cut
@@ -803,7 +814,7 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     turns that cut green — which is the gate lying (#2825).
   - `@pytest.mark.orchestration` remains, as the opt-in of last resort for
     equivalent machinery the test's own source cannot show — a cross-module
-    fixture, or a driver that is not the sprint entrypoint. Do **not** put it
+    fixture, or a driver that is none of the calls above. Do **not** put it
     on a test that already calls one; a marker that duplicates the
     classification is the old hand-maintained list under another name, and a
     test in `tests/test_per_test_timeout_enforcement.py` fails on it.

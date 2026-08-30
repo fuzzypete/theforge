@@ -25,11 +25,13 @@ two things that configuration alone cannot:
 
 2. **The bound each test gets.** One rule decides it, at collection:
 
-   * A test that drives a real sprint — established from its own source by
-     ``tests/orchestration_scope.py``, or declared with
-     ``@pytest.mark.orchestration`` for the machinery that module cannot see —
-     is bound at ``ORCHESTRATION_MAX_SECONDS``. The mark is attached here, so
-     eligibility is never something a test has to be granted by hand.
+   * A test whose cost is real machinery rather than its own logic — a sprint,
+     a real process or repository, a walk over the repository's own source —
+     is bound at ``ORCHESTRATION_MAX_SECONDS``. Which tests those are is
+     established from their own source by ``tests/orchestration_scope.py``, or
+     declared with ``@pytest.mark.orchestration`` for machinery that module
+     cannot see. The mark is attached here, so eligibility is never something a
+     test has to be granted by hand.
    * Every other test is bound at the shared five seconds.
 
    A ``timeout`` mark of the test's own may only *shorten* whichever of those
@@ -41,8 +43,8 @@ two things that configuration alone cannot:
    previous design kept one, and a list can only be complete up to the last
    red gate: every test it was missing was discovered by failing a release cut
    under contention it should have been allowed to absorb. Membership now
-   follows from what the test does, so a new sprint-driving test is covered the
-   moment it is written.
+   follows from what the test does, so a new machinery-driving test is covered
+   the moment it is written.
 
    The category raises the bound; it does not remove one. An orchestration test
    stays in the default gate and still fails with its name and a stack trace
@@ -64,7 +66,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from orchestration_scope import drives_a_sprint
+from orchestration_scope import drives_real_machinery
 
 #: Environment variable the controller uses to publish the dump directory to
 #: xdist workers, which inherit the environment when execnet spawns them.
@@ -82,11 +84,11 @@ _SECTION_TITLE = "per-test timeout stack dumps"
 #:
 #: The marker is an *opt-in of last resort*. Membership in the category is
 #: normally derived from the test's source (``orchestration_scope``), and a test
-#: whose sprint call that module can already see must not also carry the marker
+#: whose driving call that module can already see must not also carry the marker
 #: — otherwise the marker set slowly becomes the hand-maintained list this
 #: design exists to remove. It is for equivalent machinery reached somewhere the
 #: source of the test module does not show: a cross-module fixture, or a driver
-#: that is not the sprint entrypoint.
+#: that is none of the calls the rule knows.
 ORCHESTRATION_MARKER = "orchestration"
 
 #: The ceiling the category itself may not exceed. Generous against the
@@ -108,7 +110,7 @@ ORCHESTRATION_BOUND_SECONDS = ORCHESTRATION_MAX_SECONDS
 #: from their source. Populated by the collection hook so the marker set can be
 #: checked against reality without paying for a second collection.
 collected_orchestration_nodeids: set[str] = set()
-collected_sprint_driving_nodeids: set[str] = set()
+collected_machinery_driven_nodeids: set[str] = set()
 
 #: Set on any item whose timeout mark was rejected at collection time.
 _VIOLATION_KEY: pytest.StashKey[str] = pytest.StashKey()
@@ -144,12 +146,12 @@ def _as_float(value: object) -> float | None:
 def raised_bound_allowed(item: pytest.Item) -> bool:
     """True if *item* belongs to the orchestration category.
 
-    Either the item's own source shows it driving a real sprint, or it carries
+    Either the item's own source shows it driving real machinery, or it carries
     the marker for equivalent machinery that source cannot show. Nothing else
     grants it, and in particular nothing about the item's *name* does: there is
     no list of nodeids to be on.
     """
-    return item.get_closest_marker(ORCHESTRATION_MARKER) is not None or drives_a_sprint(item)
+    return item.get_closest_marker(ORCHESTRATION_MARKER) is not None or drives_real_machinery(item)
 
 
 def validate_timeout_mark(
@@ -195,11 +197,12 @@ def validate_timeout_mark(
     if value > ceiling:
         return (
             f"timeout mark value {value:g}s exceeds the shared {limit:g}s bound; a mark "
-            f"may only shorten it. A test that drives a real sprint is given the "
+            f"may only shorten it. A test that drives real machinery — a sprint, a real "
+            f"process or repository, a walk of the source tree — is given the "
             f"{ORCHESTRATION_BOUND_SECONDS:g}s orchestration bound automatically, from its "
-            f"own source — it does not ask for one. If this test drives equivalent real "
-            f"processes, repositories or sprint machinery through something that source "
-            f"cannot show, declare it with @pytest.mark.{ORCHESTRATION_MARKER} instead."
+            f"own source; it does not ask for one. If this test drives equivalent machinery "
+            f"through something that source cannot show, declare it with "
+            f"@pytest.mark.{ORCHESTRATION_MARKER} instead."
         )
     return None
 
@@ -380,12 +383,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     # classified set for free. Spawning a `--collect-only` to find out costs
     # seconds on a 10,000-test suite — the very thing this module exists to catch.
     collected_orchestration_nodeids.clear()
-    collected_sprint_driving_nodeids.clear()
+    collected_machinery_driven_nodeids.clear()
     for item in items:
         if item.get_closest_marker(ORCHESTRATION_MARKER) is not None:
             collected_orchestration_nodeids.add(item.nodeid)
-        if drives_a_sprint(item):
-            collected_sprint_driving_nodeids.add(item.nodeid)
+        if drives_real_machinery(item):
+            collected_machinery_driven_nodeids.add(item.nodeid)
 
     limit = configured_timeout(config)
     if limit is None:
