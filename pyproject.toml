@@ -18,7 +18,7 @@ all = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
 # packaging guard in tests/test_model_catalog.py builds a real wheel and looks
 # inside it. Nothing importable can stand in for that — the source tree always
 # has the catalog whether or not the build would ship it.
-dev = ["pytest", "pytest-xdist", "ruff", "hatchling"]
+dev = ["pytest", "pytest-xdist", "pytest-timeout", "ruff", "hatchling"]
 
 [project.scripts]
 forge = "theforge.cli:main"
@@ -39,6 +39,18 @@ testpaths = ["tests"]
 norecursedirs = [".forge"]
 pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
+# CONVENTIONS.md's five-second-per-test rule, enforced (not advisory): pytest-timeout
+# kills any test that runs past this bound and reports its name plus a stack trace of
+# where it was stuck. A test may only shorten this via @pytest.mark.timeout(n); the
+# default suite may not raise it — tests/timeout_enforcement.py rejects overrides that
+# widen the bound or change how it is enforced.
+#
+# The method must be "thread". Measured against the `-n auto --dist worksteal` addopts
+# above, the signal method parks every xdist worker at 0% CPU and the run never
+# finishes (92s green on base vs. still running past 600s). Thread-method dumps from a
+# dying worker are recovered by tests/timeout_enforcement.py.
+timeout = 5
+timeout_method = "thread"
 markers = [
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
     "cli_contract: marks tests that invoke real provider CLIs to validate argv contracts (requires THEFORGE_RUN_CLI_CONTRACT=1)",

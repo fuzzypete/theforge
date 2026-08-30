@@ -758,6 +758,30 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
   no `time.sleep()` longer than 1 second, no blocking I/O without a timeout, no
   `threading.Event.wait()` without a timeout. Every test must complete in under 5
   seconds. A hanging test kills the entire gate run for every story in the sprint.
+  This bound is **enforced, not advisory**: `pyproject.toml` declares
+  `timeout = 5` and `timeout_method = "thread"` under
+  `[tool.pytest.ini_options]`, so every invocation of the suite — the gate,
+  `make dev-check`, a bare `pytest` in a terminal — inherits it without a flag.
+  A test that runs past the bound is failed by name with a stack trace of where
+  it was stuck, so the run stays attributable instead of dying anonymously.
+  - The method must stay `thread`. Measured against the `-n auto --dist
+    worksteal` addopts, the `signal` method parks every xdist worker at 0% CPU
+    and the run never finishes — the same lock-inheritance hazard as the
+    `fcntl.flock` rule above.
+  - The thread method ends a timed-out test with `os._exit(1)`, which in an
+    xdist worker kills the process before pytest-timeout's stack dump reaches
+    the controller. `tests/timeout_enforcement.py` recovers it: each worker
+    arms `faulthandler.dump_traceback_later` just under the running test's
+    bound, and the controller re-emits any surviving dump under a
+    "per-test timeout stack dumps" heading. Keep that module loaded — a child
+    pytest project with its own rootdir needs `-p timeout_enforcement`.
+  - A test may **shorten** its own bound with `@pytest.mark.timeout(n)`.
+    Nothing in the default suite may raise it above 5 seconds, disable it
+    (`0` or negative), or change how it is enforced (`method=`,
+    `func_only=True`); `tests/timeout_enforcement.py` rejects those at
+    collection and fails the offending test by name. Validation that
+    legitimately needs longer belongs behind a marker and its own make target,
+    outside the default gate.
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ### Flake discipline
