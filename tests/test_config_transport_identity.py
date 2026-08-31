@@ -475,6 +475,11 @@ class TestTransportFallback:
         assert fallback_profile.transport.runner == "openai"
         assert fallback_profile.provider_family == "openai"
 
+    # load_config verifies provider identity, which imports the real SDK
+    # transitively; the cost is machinery this module's own source does not
+    # show, which is what the marker is for.
+    @pytest.mark.orchestration
+    @pytest.mark.timeout(20)
     def test_renamed_yaml_key_wires_the_fallback(self, tmp_path):
         path = _write(
             tmp_path,
