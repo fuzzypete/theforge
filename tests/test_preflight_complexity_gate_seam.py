@@ -106,7 +106,15 @@ def _config_with(tmp_path: Path, **retry_fields: object) -> object:
     config = _make_config(tmp_path)
     from dataclasses import replace  # noqa: PLC0415
 
-    return replace(config, retry=replace(config.retry, **retry_fields))
+    threshold = RetryPolicy().preflight_complexity_gate_threshold
+    merged_retry_fields = {"preflight_complexity_gate_threshold": threshold, **retry_fields}
+    return replace(
+        config,
+        retry=replace(
+            config.retry,
+            **merged_retry_fields,
+        ),
+    )
 
 
 def _answer_with(action: str):
@@ -137,7 +145,7 @@ class TestGateOpensAtTheBoundary:
     def test_score_at_default_threshold_stops_before_plan_and_dev(
         self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, _poll, tmp_path
     ):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / "test-task").mkdir()
 
@@ -169,7 +177,7 @@ class TestGateOpensAtTheBoundary:
     def test_score_below_threshold_never_pauses(
         self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
     ):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / "test-task").mkdir()
 
@@ -198,7 +206,7 @@ class TestGateOpensAtTheBoundary:
         them to rule on nothing, and a gate that fails closed on silence would
         then return the story on no evidence at all.
         """
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         state = _gated_state(score=10, founded=False, degraded=True)
         state.preflight_degraded_reason = "timeout_no_verdict"
 
@@ -211,7 +219,7 @@ class TestGateOpensAtTheBoundary:
         an empty ``criteria_checked``. ``resume_persistence`` already weighs the
         same two signals in the same order.
         """
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
 
         assert should_gate(_gated_state(score=9, founded=False), config, "PROCEED") is False
 
@@ -224,7 +232,7 @@ class TestGateOpensAtTheBoundary:
         self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
     ):
         """End to end: no pause, no pending file, and the reason is on the record."""
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / "test-task").mkdir()
 
@@ -256,7 +264,7 @@ class TestGateOpensAtTheBoundary:
         assert should_gate(_gated_state(score=10), config, "PROCEED") is False
 
     def test_shipped_configuration_gates_at_nine(self, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
 
         assert RetryPolicy().preflight_complexity_gate_threshold == 9
         assert should_gate(_gated_state(score=9), config, "PROCEED") is True
@@ -264,7 +272,7 @@ class TestGateOpensAtTheBoundary:
 
     @pytest.mark.parametrize("verdict", ["ALREADY_DONE", "BLOCKED", "NO_JUDGMENT"])
     def test_non_proceed_verdicts_never_gate(self, verdict: str, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         state = _gated_state(score=10)
         state.preflight_verdict = verdict
 
@@ -273,7 +281,7 @@ class TestGateOpensAtTheBoundary:
     @patch("theforge.pending.write_pending")
     def test_a_blocked_verdict_dispatches_without_writing_a_gate(self, mock_write, tmp_path: Path):
         """Anchored at the handoff, but only a PROCEED can reach the pause."""
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = _gated_state(score=10)
         state.preflight_verdict = "BLOCKED"
@@ -301,7 +309,7 @@ class TestGateOpensAtTheBoundary:
     def test_approve_continues_exactly_as_it_would_have(
         self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
     ):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / "test-task").mkdir()
 
@@ -331,7 +339,7 @@ class TestOperatorSurface:
     def test_pending_record_is_keyed_by_the_story_run_id_and_carries_both_axes(
         self, tmp_path: Path
     ):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = _gated_state()
         captured: dict = {}
@@ -464,7 +472,7 @@ class TestReturnedIsNotFailed:
         assert stories.counts()["failed"] == 0
 
     def test_the_audit_says_returned_rather_than_only_not_successful(self, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = _gated_state()
         state.started_at = "2026-01-01T00:00:00+00:00"
@@ -494,7 +502,7 @@ class TestReturnedIsNotFailed:
         assert record["outcome"]["returned_for_decomposition"] is True
 
     def test_an_ungated_run_records_the_gate_as_unopened(self, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = CoordinatorState()
         state.started_at = "2026-01-01T00:00:00+00:00"
@@ -535,7 +543,7 @@ class TestDecisionSurvivesResume:
 
     @patch("theforge.pending.write_pending")
     def test_a_recorded_approval_is_not_asked_again(self, mock_write, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = _gated_state()
         state.preflight_complexity_gate_decision = "approve"
@@ -546,7 +554,7 @@ class TestDecisionSurvivesResume:
 
     @patch("theforge.pending.write_pending")
     def test_a_recorded_decomposition_still_stops_the_run(self, mock_write, tmp_path: Path):
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         state = _gated_state()
         state.preflight_complexity_gate_decision = "decompose"
@@ -570,7 +578,7 @@ class TestSiblingStoriesAreNotBlocked:
         second story reaches its own gate decision while the first is still
         waiting. A shared lock anywhere on this path would deadlock the test.
         """
-        config = _make_config(tmp_path)
+        config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         held = threading.Event()
         release = threading.Event()

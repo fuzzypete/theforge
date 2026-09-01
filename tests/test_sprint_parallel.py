@@ -49,7 +49,11 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            preflight_complexity_gate_threshold=11,
+        ),
     )
 
 
@@ -68,7 +72,11 @@ def _make_config_with_sprint(tmp_path: Path, sprint_max_parallel: int = 1) -> Fo
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            preflight_complexity_gate_threshold=11,
+        ),
         sprint=SprintConfig(max_parallel=sprint_max_parallel),
     )
 

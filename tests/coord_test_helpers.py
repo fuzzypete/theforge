@@ -24,6 +24,8 @@ from theforge.config import (
 from theforge.runners import AgentResult, LogLevel  # noqa: F401
 from theforge.task import TaskStory
 
+_TEST_DISABLED_PREFLIGHT_GATE_THRESHOLD = 11
+
 
 def _make_config(tmp_path: Path) -> ForgeConfig:
     """Create a test config pointing at tmp_path (single reviewer, no synthesis)."""
@@ -41,7 +43,11 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         preflight_fallback_profile=None,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            preflight_complexity_gate_threshold=_TEST_DISABLED_PREFLIGHT_GATE_THRESHOLD,
+        ),
         log=LogConfig(enabled=False),
     )
 
@@ -64,7 +70,11 @@ def _make_pool_config(
         preflight_fallback_profile=None,
         review_pool=profiles,
         synthesis_profile=synthesis,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            preflight_complexity_gate_threshold=_TEST_DISABLED_PREFLIGHT_GATE_THRESHOLD,
+        ),
         log=LogConfig(enabled=False),
     )
 
@@ -600,6 +610,10 @@ def _make_plan_config(tmp_path: Path) -> ForgeConfig:
         preflight_fallback_profile=None,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            preflight_complexity_gate_threshold=_TEST_DISABLED_PREFLIGHT_GATE_THRESHOLD,
+        ),
         plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
     )
