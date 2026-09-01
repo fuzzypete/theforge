@@ -236,6 +236,29 @@ class TestLoadConfig:
         assert config.workspace.create_command == "my-custom-cmd {slug}"
         assert config.workspace.path_pattern == "workspaces/{slug}"
 
+    def test_workspace_setup_timeout_default_is_legacy_120(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.workspace.setup_timeout == 120
+
+    def test_workspace_setup_timeout_valid_int_loads(self, tmp_path):
+        config_path = _write_config({"workspace": {"setup_timeout": 480}}, tmp_path)
+        config = load_config(config_path)
+        assert config.workspace.setup_timeout == 480
+
+    def test_workspace_setup_timeout_non_numeric_raises(self, tmp_path):
+        config_path = _write_config({"workspace": {"setup_timeout": "slow"}}, tmp_path)
+        with pytest.raises(
+            ValueError,
+            match="workspace.setup_timeout must be an integer number of seconds",
+        ):
+            load_config(config_path)
+
+    def test_workspace_setup_timeout_non_positive_raises(self, tmp_path):
+        config_path = _write_config({"workspace": {"setup_timeout": 0}}, tmp_path)
+        with pytest.raises(ValueError, match="workspace.setup_timeout must be positive"):
+            load_config(config_path)
+
     def test_custom_retry(self, tmp_path):
         config_path = _write_config(
             {

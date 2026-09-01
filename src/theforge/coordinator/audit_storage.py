@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 39
+CURRENT_RECORD_SCHEMA_VERSION = 40
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2144,6 +2144,34 @@ def _migrate_v38_to_v39(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v39_to_v40(record: dict) -> dict:
+    """Advance v39 records across ``workspace.setup_timeout`` config provenance.
+
+    v40 records the setup-command timeout inside
+    ``configuration.recorded_values.entries`` so operators can see the bound the
+    run executed under. v39 predates that config field, but its runtime default
+    was the long-standing 120-second ceiling. Migration backfills the defaulted
+    recorded-value entry only when the configuration-provenance structure is
+    present and the workspace block exists; records without that structure stay
+    untouched rather than inventing provenance they never carried.
+    """
+    migrated = copy.deepcopy(record)
+    configuration = migrated.get("configuration")
+    if not isinstance(configuration, dict):
+        return migrated
+    recorded_values = configuration.get("recorded_values")
+    if not isinstance(recorded_values, dict):
+        return migrated
+    entries = recorded_values.get("entries")
+    if not isinstance(entries, dict):
+        return migrated
+    workspace = entries.get("workspace")
+    if not isinstance(workspace, dict) or "setup_timeout" in workspace:
+        return migrated
+    workspace["setup_timeout"] = {"value": 120, "source": "default"}
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2191,6 +2219,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     36: _migrate_v36_to_v37,
     37: _migrate_v37_to_v38,
     38: _migrate_v38_to_v39,
+    39: _migrate_v39_to_v40,
 }
 
 

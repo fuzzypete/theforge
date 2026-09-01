@@ -413,6 +413,34 @@ def test_baseline_gate_reports_setup_command_failure(tmp_path: Path) -> None:
     assert "workspace setup command failed" in str(baseline["message"]).lower()
 
 
+def test_baseline_gate_passes_configured_setup_timeout_to_workspace_setup(
+    tmp_path: Path, capsys
+) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        workspace=replace(
+            config.workspace,
+            setup_command="echo READY > baseline.txt",
+            setup_timeout=480,
+        ),
+    )
+
+    with patch(
+        "theforge.sprint.runner.coordinator_workspace._run_setup_split",
+        return_value=(True, "ok"),
+    ) as mock_setup:
+        baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["merge_base"] == base_commit
+    mock_setup.assert_called_once()
+    assert mock_setup.call_args.kwargs["timeout"] == 480
+    assert "Running baseline workspace setup (timeout 480s): echo READY > baseline.txt" in (
+        capsys.readouterr().err
+    )
+
+
 def test_baseline_gate_accepts_symlinked_project_root(tmp_path: Path) -> None:
     real_root = tmp_path / "real-root"
     real_root.mkdir()
