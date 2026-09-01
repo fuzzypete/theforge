@@ -1,0 +1,98 @@
+schema_version: 2
+run_id: a774e4487c57
+authoritative_run_record: .forge/audits/runs/a774e4487c57.json
+generated_at: '2026-09-01T16:56:35.633695+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00876875
+story:
+  slug: issue-2828
+  name: 'bug: workspace setup is killed at an unconfigurable 120-second limit'
+  github_issue: 2828
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- config
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/inputs-reference.md
+- src/theforge/config/_loaders.py
+- src/theforge/config/defaults.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/workspace.py
+- src/theforge/sprint/runner.py
+- tests/fixtures/audit_record_schema_v40.json
+- tests/test_audit_substrate.py
+- tests/test_config_load.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_coord_workspace_venv.py
+- tests/test_process_teardown_lifecycle.py
+- tests/test_sprint_baseline_gate.py
+- tests/test_sprint_gate_timeout_scaling.py
+what_changed:
+  description: This run made workspace setup timeouts configurable, propagated the
+    resolved timeout through baseline, batch preflight, and dispatch workspace creation,
+    and recorded the resolved policy in audit/provenance output. It also aligned sprint
+    startup handling so host-load scaling that already affected gate timing also fed
+    the setup-timeout resolution used for workspace setup.
+  approach: The change was threaded through configuration loading, coordinator workspace
+    execution, sprint-time timeout resolution, and audit schema/provenance surfaces,
+    with a second review-driven iteration to separate guarded workspace rebinding
+    from gate-timeout rebinding when the workspace config object is not a dataclass.
+  files_modified: *id002
+what_was_learned:
+- claim: When timeout policy is recomputed at sprint start, any later config-context
+    rebinding has to guard each replacement independently; a single upfront 'can replace'
+    check is not enough if gate and workspace config objects can differ in type.
+  evidence:
+  - type: review_finding
+    finding_id: f56ab5928a2dff28
+    description: The review found that sprint startup correctly guarded setup-timeout
+      resolution for a non-dataclass workspace config but still unconditionally called
+      dataclasses.replace() in the later context-rebind path when gate timeout changed,
+      demonstrating that rebinding safety must be enforced at each individual replacement
+      site rather than assumed from an earlier check.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that the fix 'split the rebind so the workspace replace()
+      is guarded by the dataclass check,' confirming that the durable lesson from
+      the first review issue was about per-instance guarding of rebinding logic, not
+      the timeout feature itself.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The sprint runner was the locus of both timeout resolution and context
+      rebinding, and the review issue referenced this file specifically, showing that
+      startup policy scaling and later config replacement interact in one control
+      path and must be checked together.
+learned_patterns:
+- per-rebind-type-guard
+- shared-timeout-policy-provenance
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop repeatedly focused on the seam between timeout resolution and
+    config rebinding in sprint startup, especially mixed dataclass/non-dataclass handling.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 10.67896285
+  dominant_difficulty: Threading one timeout policy consistently across configuration,
+    sprint scaling, workspace creation paths, and audit provenance without breaking
+    existing config-object assumptions.
