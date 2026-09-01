@@ -197,6 +197,34 @@ def test_sprint_propagates_scaled_gate_timeout_to_run_task(tmp_path: Path) -> No
     assert captured["mode"] == "adaptive"
 
 
+def test_sprint_propagates_scaled_workspace_setup_timeout_to_run_task(
+    tmp_path: Path, capsys
+) -> None:
+    _make_spec_file(tmp_path, "story-a")
+    manifest_path = _make_manifest(tmp_path, ["story-a"], max_parallel=3)
+    config = _make_config(tmp_path, gate_timeout=45, gate_cpu_cores=7)
+    config = replace(
+        config,
+        workspace=replace(config.workspace, setup_command="pip install -e ."),
+    )
+
+    captured: dict = {}
+
+    def fake_run_task(cfg, task, **kwargs):  # type: ignore[no-untyped-def]
+        captured["setup_timeout"] = cfg.workspace.setup_timeout
+        return _ok_result()
+
+    with (
+        patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+        patch("os.cpu_count", return_value=10),
+    ):
+        run_sprint_ctx(config, manifest_path)
+
+    err = capsys.readouterr().err
+    assert captured["setup_timeout"] == 252
+    assert "workspace.setup_timeout: baseline=120s mode=adaptive parallel=3" in err
+
+
 def test_sprint_fixed_mode_keeps_baseline(tmp_path: Path) -> None:
     """gate_timeout_scale=fixed pins the timeout regardless of --parallel."""
     _make_spec_file(tmp_path, "story-a")

@@ -1137,6 +1137,7 @@ def test_migrate_v38_to_v39_leaves_text_only_success_without_alias() -> None:
     diagnostic = migrated["iterations"]["gate_diagnostic"][0]
     assert diagnostic["ran"] is True
     assert "workload_executed" not in diagnostic
+    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
 
 
 def test_migrate_v38_to_v39_backfills_gate_diagnostic_true_when_hanging_test_was_recorded() -> (
@@ -1194,7 +1195,29 @@ def test_migrate_v38_to_v39_leaves_argument_rejection_without_alias() -> None:
     diagnostic = migrated["iterations"]["gate_diagnostic"][0]
     assert diagnostic["ran"] is True
     assert "workload_executed" not in diagnostic
-    assert "workload_executed" not in record["iterations"]["gate_diagnostic"][0]
+
+
+def test_migrate_v39_to_v40_backfills_workspace_setup_timeout_entry() -> None:
+    record = {
+        "schema_version": 39,
+        "configuration": {
+            "recorded_values": {
+                "entries": {
+                    "workspace": {
+                        "setup_command": {"value": "pip install -e .", "source": "forge.yaml"}
+                    }
+                }
+            }
+        },
+    }
+
+    migrated = sub._migrate_v39_to_v40(record)
+
+    workspace = migrated["configuration"]["recorded_values"]["entries"]["workspace"]
+    assert workspace["setup_timeout"] == {"value": 120, "source": "default"}
+    assert (
+        "setup_timeout" not in (record["configuration"]["recorded_values"]["entries"]["workspace"])
+    )
 
 
 def test_migrate_record_chains_up_to_v14() -> None:

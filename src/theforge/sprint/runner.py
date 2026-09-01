@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import logging
 import os
@@ -1198,11 +1199,16 @@ def _run_baseline_gate(
         # this temporary worktree, and a leak from either belongs in the one
         # record the sprint keeps for this baseline (#2309).
         if config.workspace.setup_command:
-            _log(f"Running baseline workspace setup: {config.workspace.setup_command}")
+            _log(
+                "Running baseline workspace setup "
+                f"(timeout {config.workspace.setup_timeout}s): "
+                f"{config.workspace.setup_command}"
+            )
             setup_ok, setup_out = coordinator_workspace._run_setup_split(
                 config.workspace.setup_command,
                 baseline_worktree,
                 config.workspace.python_interpreter,
+                timeout=config.workspace.setup_timeout,
                 teardown_out=gate_teardowns,
             )
             if not setup_ok:
@@ -4989,6 +4995,36 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             file=sys.stderr,
             flush=True,
         )
+    _setup_timeout_resolution = None
+    _workspace_setup_command_raw = getattr(_ctx.config.workspace, "setup_command", None)
+    _workspace_setup_command = (
+        _workspace_setup_command_raw
+        if isinstance(_workspace_setup_command_raw, str) and _workspace_setup_command_raw
+        else None
+    )
+    _workspace_setup_timeout_raw = getattr(_ctx.config.workspace, "setup_timeout", 120)
+    try:
+        _workspace_setup_timeout = int(_workspace_setup_timeout_raw)
+    except (TypeError, ValueError):
+        _workspace_setup_timeout = 120
+    _can_rebind_workspace = dataclasses.is_dataclass(_ctx.config.workspace)
+    if _workspace_setup_command:
+        _setup_timeout_resolution = resolve_effective_gate_timeout(
+            baseline=_workspace_setup_timeout,
+            max_parallel=max_parallel,
+            host_cores=_host_cores,
+            gate_cpu_cores=_gate_cpu_cores,
+            mode=_mode,
+            running_stories=len(_live_story_slugs),
+            observed_host_load=_observed_host_load,
+        )
+        print(
+            f"[sprint] workspace.setup_timeout: {_setup_timeout_resolution.reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if not _can_rebind_workspace:
+            _setup_timeout_resolution = None
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _observed = _gate_timeout_resolution.observed_host_load
         _warning_load = _gate_timeout_resolution.warning_host_load
@@ -5019,6 +5055,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     if (
         _gate_timeout_resolution is not None
         and _gate_timeout_resolution.effective_timeout != _baseline_gate_timeout
+    ) or (
+        _setup_timeout_resolution is not None
+        and _setup_timeout_resolution.effective_timeout != _workspace_setup_timeout
     ):
         # Rebind the context, not a frame local: the scaled timeout has to be the
         # one every consulted-config read below sees, and there is only one place
@@ -5027,6 +5066,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _ctx,
             config=replace(
                 _ctx.config,
+                workspace=replace(
+                    _ctx.config.workspace,
+                    setup_timeout=(
+                        _setup_timeout_resolution.effective_timeout
+                        if _setup_timeout_resolution is not None
+                        else _workspace_setup_timeout
+                    ),
+                ),
                 validation=replace(
                     _ctx.config.validation,
                     gate_timeout=_gate_timeout_resolution.effective_timeout,

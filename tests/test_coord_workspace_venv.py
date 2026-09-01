@@ -41,6 +41,26 @@ class TestRunSetupSplitVenvBehavior:
         assert calls[0] == "test -d .venv || python -m venv .venv"
         assert calls[1] == "pip install -e '.[all]'"
 
+    def test_setup_timeout_is_forwarded_to_each_shell_call(self, tmp_path):
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e '.[all]')"
+        timeouts = []
+
+        def fake_shell(cmd_arg, cwd, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(
+                cmd,
+                tmp_path,
+                "/opt/project-pythons/3.12/bin/python3.12",
+                timeout=321,
+            )
+
+        assert ok is True
+        assert out == "ok"
+        assert timeouts == [321, 321]
+
 
 class TestRunSetupSplitCommandTracking:
     @patch("theforge.coordinator.workspace._cu._log")
@@ -108,7 +128,10 @@ class TestCreateWorkspaceReuseRunsSetup:
         assert err is None
         assert workspace_path == workspace
         mock_setup.assert_called_once_with(
-            config.workspace.setup_command, workspace, config.workspace.python_interpreter
+            config.workspace.setup_command,
+            workspace,
+            config.workspace.python_interpreter,
+            timeout=config.workspace.setup_timeout,
         )
         mock_deindex.assert_called_once_with(workspace, purge=True)
 

@@ -33,6 +33,20 @@ _LEGACY_PAR_SCALAR_FIELDS: frozenset[str] = frozenset({"model", "cli", "provider
 _REMOVED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"profiles", "smart_config_models", "agents"})
 
 
+def _validated_workspace_setup_timeout(raw: Any) -> int:
+    """Validate ``workspace.setup_timeout``."""
+    if raw is None:
+        return DEFAULT_WORKSPACE.setup_timeout
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            f"forge.yaml workspace.setup_timeout must be an integer number of "
+            f"seconds, got {raw!r} ({type(raw).__name__})."
+        )
+    if raw <= 0:
+        raise ValueError(f"forge.yaml workspace.setup_timeout must be positive, got {raw!r}.")
+    return raw
+
+
 def _validate_v0_8_schema(raw: dict[str, Any]) -> None:
     """Reject mixed legacy/v0.8 shapes that are no longer supported."""
     if "models" not in raw:
@@ -102,6 +116,7 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
         ),
         auto_push=auto_push,
         setup_command=setup_command,
+        setup_timeout=_validated_workspace_setup_timeout(ws_data.get("setup_timeout")),
         python_interpreter=python_interpreter,
         on_approve=on_approve,
         merge_strategy=merge_strategy,

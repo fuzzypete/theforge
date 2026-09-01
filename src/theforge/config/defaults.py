@@ -179,6 +179,9 @@ workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} {base_branch}"
   # Optional: run once in the new workspace after creation (e.g. install deps).
   # setup_command: "pip install -e ."
+  # Maximum runtime for setup_command before Forge kills it. Sprint start scales
+  # the effective bound under host contention using validation.gate_timeout_scale.
+  # setup_timeout: 120
   # Required when setup_command uses {forge_python}: the interpreter this project
   # develops against. TheForge never substitutes its own interpreter here.
   # python_interpreter: "python3.12"
