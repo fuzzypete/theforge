@@ -1566,9 +1566,12 @@ def test_a_reused_worktree_setup_leak_reaches_the_run_record(tmp_path: Path) -> 
             return (True, f"worktree {existing}\nbranch refs/heads/forge/test-task\n")
         return (True, "")
 
-    def _setup(_cmd, _path, _interp=None, *, teardown_out=None):  # type: ignore[no-untyped-def]
+    def _setup(  # type: ignore[no-untyped-def]
+        _cmd, _path, _interp=None, *, timeout=120, teardown_out=None
+    ):
         # The real thing appends to whatever collector it was handed; if the
         # caller never passed one, this is where the record is lost.
+        assert timeout == config.workspace.setup_timeout
         assert teardown_out is not None, (
             "the reuse branch ran a setup command without a teardown collector"
         )

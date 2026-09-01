@@ -483,6 +483,7 @@ class WorkspaceConfig:
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
     auto_push: bool = False  # push base_branch to origin after successful auto-merge
     setup_command: str | None = None  # optional command run once after workspace creation
+    setup_timeout: int = 120  # seconds; sprint start may scale this under host contention
     # Interpreter the patient project develops against, e.g. "python3.12" or an
     # absolute path. Substituted for {forge_python} in setup_command and used to
     # validate worktree virtualenvs. Deliberately has no default: falling back to

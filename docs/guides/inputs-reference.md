@@ -716,6 +716,8 @@ overrides:
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
   setup_command: "pip install -e ."    # optional: run once after worktree creation
+  setup_timeout: 120                   # seconds; default baseline before sprint
+                                      # host-load scaling widens it
                                       # {forge_python} expands to python_interpreter
   python_interpreter: "python3.12"    # interpreter this project develops against;
                                       # required when setup_command uses {forge_python}.
