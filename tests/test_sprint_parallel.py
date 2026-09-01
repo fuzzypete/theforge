@@ -2944,7 +2944,7 @@ class TestCollisionGatePreservedWork:
         These tests wait through several ticks each. None of them asserts how
         long a tick is — only what the gate does when it fires — and at the 2s
         production default that put them among the slowest in the suite, one of
-        them past the enforced five-second per-test bound.
+        them past the five-second per-test convention.
         """
         monkeypatch.setattr(_runner, "PLAN_GATE_TICK_SECONDS", 0.2)
 
@@ -3042,7 +3042,7 @@ class TestCollisionGateQueuedParent:
         These tests wait through several ticks each. None of them asserts how
         long a tick is — only what the gate does when it fires — and at the 2s
         production default that put them among the slowest in the suite, one of
-        them past the enforced five-second per-test bound.
+        them past the five-second per-test convention.
         """
         monkeypatch.setattr(_runner, "PLAN_GATE_TICK_SECONDS", 0.2)
 

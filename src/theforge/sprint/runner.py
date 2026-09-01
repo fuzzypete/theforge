@@ -1722,7 +1722,7 @@ CLAIM_PRESERVED = "preserved for operator decision"
 #: in flight. A named constant rather than a literal in the wait() call so it is
 #: one knob: the gate-service tests drive several ticks each, and at 2.0s that
 #: made them the slowest tests in the suite — one of them 6.3s, past the
-#: enforced five-second per-test bound — for a duration none of them assert.
+#: five-second per-test convention — for a duration none of them assert.
 PLAN_GATE_TICK_SECONDS = 2.0
 
 #: How often a queued PR whose claim is holding a sibling's plan gate is probed
