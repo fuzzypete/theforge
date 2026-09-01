@@ -1,0 +1,79 @@
+schema_version: 2
+run_id: 51948d82285b
+authoritative_run_record: .forge/audits/runs/51948d82285b.json
+generated_at: '2026-09-01T17:17:17.806115+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0058512500000000005
+story:
+  slug: issue-2833
+  name: The concurrent gate applies a per-test bound that contention alone can reach,
+    so load is reported as a test failure
+  github_issue: 2833
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- testing
+- ci
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- CONVENTIONS.md
+- pyproject.toml
+- src/theforge/cli/shared.py
+- src/theforge/sprint/runner.py
+- tests/orchestration_scope.py
+- tests/test_config_transport_identity.py
+- tests/test_coord_adaptive_assignment_runtime.py
+- tests/test_issue_body_producer_conformance.py
+- tests/test_model_identity_verification.py
+- tests/test_network_guard.py
+- tests/test_no_test_double_detection_guard.py
+- tests/test_per_test_timeout_enforcement.py
+- tests/test_process_group.py
+- tests/test_protected_base_publication_poc.py
+- tests/test_sandbox_group_kill.py
+- tests/test_sprint_parallel.py
+- tests/test_sprint_terminal_lifecycle.py
+- tests/timeout_enforcement.py
+what_changed:
+  description: The run changed the concurrent gate's timeout contract from a tight
+    five-second verdict to a shared sixty-second per-test bound, removed the separate
+    orchestration timeout path, and aligned tests and documentation with that single-bound
+    model while preserving named timeout attribution and the serial diagnostic pass.
+  approach: The change was made by updating the shared timeout settings in the runtime/configuration
+    path, deleting the source-derived orchestration classification mechanism and marker-based
+    exceptions, then rewriting timeout-focused tests and contract documentation around
+    one concurrent bound plus the unchanged serial diagnostic role.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- single-shared-timeout-contract
+- remove-exception-paths
+- docs-and-tests-align-with-gate-contract
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review concluded the timeout-contract story was satisfied in one pass once
+    the shared bound, exception removal, attribution behavior, and serial diagnostics
+    all matched the same contract.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 10.4957574
+  dominant_difficulty: Reworking a flaky concurrency timeout policy required coordinated
+    changes across runtime behavior, test collection rules, focused enforcement tests,
+    and contract documentation so the gate semantics stayed internally consistent.
