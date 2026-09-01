@@ -188,6 +188,7 @@ def _run_setup_split(
     workspace_path: Path,
     python_interpreter: str | None = None,
     *,
+    timeout: int = 120,
     teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[bool, str]:
     """Run workspace setup, splitting venv creation from install.
@@ -224,6 +225,7 @@ def _run_setup_split(
         ok, out = _cu._run_shell(
             f"test -d .venv || {python_exe} -m venv .venv",
             workspace_path,
+            timeout=timeout,
             expected_python=python_interpreter,
             teardown_out=teardown_out,
         )
@@ -232,6 +234,7 @@ def _run_setup_split(
         ok, out = _cu._run_shell(
             install_cmd,
             workspace_path,
+            timeout=timeout,
             expected_python=python_interpreter,
             teardown_out=teardown_out,
         )
@@ -245,6 +248,7 @@ def _run_setup_split(
         ok, out = _cu._run_shell(
             cmd,
             workspace_path,
+            timeout=timeout,
             expected_python=python_interpreter,
             teardown_out=teardown_out,
         )
@@ -256,6 +260,7 @@ def _run_setup_split(
     ok, out = _cu._run_shell(
         f"test -d .venv || {python_exe} -m venv .venv",
         workspace_path,
+        timeout=timeout,
         expected_python=python_interpreter,
         teardown_out=teardown_out,
     )
@@ -264,6 +269,7 @@ def _run_setup_split(
     ok, out = _cu._run_shell(
         install_cmd,
         workspace_path,
+        timeout=timeout,
         expected_python=python_interpreter,
         teardown_out=teardown_out,
     )
@@ -1274,11 +1280,16 @@ def _create_workspace(
                 return None, None, rebase_err
             _sync_run_forge_yaml(config, workspace_path)
             if config.workspace.setup_command:
-                _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                _cu._log(
+                    "Running workspace setup "
+                    f"(timeout {config.workspace.setup_timeout}s): "
+                    f"{config.workspace.setup_command}"
+                )
                 ok_s, out_s = _run_setup_split(
                     config.workspace.setup_command,
                     workspace_path,
                     config.workspace.python_interpreter,
+                    timeout=config.workspace.setup_timeout,
                     **_setup_teardown_kwargs(teardown_out),
                 )
                 if not ok_s:
@@ -1319,11 +1330,16 @@ def _create_workspace(
                     return None, None, rebase_err
                 _sync_run_forge_yaml(config, existing_wt)
                 if config.workspace.setup_command:
-                    _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                    _cu._log(
+                        "Running workspace setup "
+                        f"(timeout {config.workspace.setup_timeout}s): "
+                        f"{config.workspace.setup_command}"
+                    )
                     ok_s, out_s = _run_setup_split(
                         config.workspace.setup_command,
                         existing_wt,
                         config.workspace.python_interpreter,
+                        timeout=config.workspace.setup_timeout,
                         **_setup_teardown_kwargs(teardown_out),
                     )
                     if not ok_s:
@@ -1360,11 +1376,16 @@ def _create_workspace(
                 return None, None, rebase_err
             _sync_run_forge_yaml(config, workspace_path)
             if config.workspace.setup_command:
-                _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                _cu._log(
+                    "Running workspace setup "
+                    f"(timeout {config.workspace.setup_timeout}s): "
+                    f"{config.workspace.setup_command}"
+                )
                 ok_s, out_s = _run_setup_split(
                     config.workspace.setup_command,
                     workspace_path,
                     config.workspace.python_interpreter,
+                    timeout=config.workspace.setup_timeout,
                     **_setup_teardown_kwargs(teardown_out),
                 )
                 if not ok_s:
@@ -1394,11 +1415,16 @@ def _create_workspace(
 
     _sync_run_forge_yaml(config, workspace_path)
     if config.workspace.setup_command:
-        _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+        _cu._log(
+            "Running workspace setup "
+            f"(timeout {config.workspace.setup_timeout}s): "
+            f"{config.workspace.setup_command}"
+        )
         ok, output = _run_setup_split(
             config.workspace.setup_command,
             workspace_path,
             config.workspace.python_interpreter,
+            timeout=config.workspace.setup_timeout,
             **_setup_teardown_kwargs(teardown_out),
         )
         if not ok:
