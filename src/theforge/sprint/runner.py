@@ -4996,6 +4996,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             flush=True,
         )
     _setup_timeout_resolution = None
+    _setup_timeout_reason: str | None = None
     _workspace_setup_command_raw = getattr(_ctx.config.workspace, "setup_command", None)
     _workspace_setup_command = (
         _workspace_setup_command_raw
@@ -5009,7 +5010,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         _workspace_setup_timeout = 120
     _can_rebind_workspace = dataclasses.is_dataclass(_ctx.config.workspace)
     if _workspace_setup_command:
-        _setup_timeout_resolution = resolve_effective_gate_timeout(
+        _resolved_setup_timeout = resolve_effective_gate_timeout(
             baseline=_workspace_setup_timeout,
             max_parallel=max_parallel,
             host_cores=_host_cores,
@@ -5018,13 +5019,26 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             running_stories=len(_live_story_slugs),
             observed_host_load=_observed_host_load,
         )
+        if _can_rebind_workspace:
+            _setup_timeout_resolution = _resolved_setup_timeout
+            _setup_timeout_reason = _resolved_setup_timeout.reason
+        else:
+            _setup_timeout_reason = (
+                "baseline="
+                f"{_workspace_setup_timeout}s mode={_resolved_setup_timeout.mode} "
+                f"parallel={_resolved_setup_timeout.max_parallel} "
+                f"gate_cpu_cores={_resolved_setup_timeout.gate_cpu_cores} "
+                f"host_cores={_resolved_setup_timeout.host_cores} "
+                f"factor={_resolved_setup_timeout.factor:.2f} "
+                f"candidate_effective={_resolved_setup_timeout.effective_timeout}s "
+                f"effective={_workspace_setup_timeout}s "
+                "workspace_rebind=skipped(non-dataclass)"
+            )
         print(
-            f"[sprint] workspace.setup_timeout: {_setup_timeout_resolution.reason}",
+            f"[sprint] workspace.setup_timeout: {_setup_timeout_reason}",
             file=sys.stderr,
             flush=True,
         )
-        if not _can_rebind_workspace:
-            _setup_timeout_resolution = None
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _observed = _gate_timeout_resolution.observed_host_load
         _warning_load = _gate_timeout_resolution.warning_host_load
@@ -5052,33 +5066,40 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             file=sys.stderr,
             flush=True,
         )
+    _rebound_config = _ctx.config
+    _did_rebind_config = False
     if (
         _gate_timeout_resolution is not None
         and _gate_timeout_resolution.effective_timeout != _baseline_gate_timeout
-    ) or (
-        _setup_timeout_resolution is not None
+    ):
+        _rebound_config = replace(
+            _rebound_config,
+            validation=replace(
+                _rebound_config.validation,
+                gate_timeout=_gate_timeout_resolution.effective_timeout,
+            ),
+        )
+        _did_rebind_config = True
+    if (
+        _can_rebind_workspace
+        and _setup_timeout_resolution is not None
         and _setup_timeout_resolution.effective_timeout != _workspace_setup_timeout
     ):
+        _rebound_config = replace(
+            _rebound_config,
+            workspace=replace(
+                _rebound_config.workspace,
+                setup_timeout=_setup_timeout_resolution.effective_timeout,
+            ),
+        )
+        _did_rebind_config = True
+    if _did_rebind_config:
         # Rebind the context, not a frame local: the scaled timeout has to be the
         # one every consulted-config read below sees, and there is only one place
         # a sprint reads its config from.
         _ctx = replace(
             _ctx,
-            config=replace(
-                _ctx.config,
-                workspace=replace(
-                    _ctx.config.workspace,
-                    setup_timeout=(
-                        _setup_timeout_resolution.effective_timeout
-                        if _setup_timeout_resolution is not None
-                        else _workspace_setup_timeout
-                    ),
-                ),
-                validation=replace(
-                    _ctx.config.validation,
-                    gate_timeout=_gate_timeout_resolution.effective_timeout,
-                ),
-            ),
+            config=_rebound_config,
         )
 
     for warning in _agent_cost_tracking_warnings(_ctx.config):
