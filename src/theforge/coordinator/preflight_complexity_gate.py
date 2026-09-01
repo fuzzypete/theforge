@@ -40,7 +40,9 @@ axis at its ceiling because it makes a claim about *divisibility*. A
 validation-heavy story can be expensive without being splittable, which is
 exactly the story an operator should get to approve rather than have refused.
 Both axes are written into the pending record and the audit so the operator sees
-which one carried the story over the line.
+which one carried the story over the line. When the score came from a degraded
+or nothing-examined preflight, that provenance is surfaced as context for the
+decision rather than suppressing the question.
 
 Control flow lives here rather than in ``preflight_flow`` (convention 3): the
 verdict handoff asks one question — "does this story need a scope decision?" —
@@ -114,11 +116,9 @@ def gate_is_disabled(threshold: int) -> bool:
 def should_gate(state: "_cs.CoordinatorState", config: "ForgeConfig", verdict: str) -> bool:
     """Whether this story's preflight result warrants a scope decision.
 
-    The score must be one preflight actually founded — see
-    :func:`theforge.coordinator.preflight.complexity_is_founded`. A degraded or
-    nothing-examined attempt derives a conservative *high* number precisely
-    because it could not tell, and that is the opposite of evidence that the
-    story is over-broad.
+    Every PROCEED verdict whose projected preflight complexity reaches the
+    configured threshold must pause here. Foundedness still matters for the
+    operator-facing context and the audit, but not for the trigger.
     """
     if verdict != "PROCEED":
         return False
@@ -128,9 +128,19 @@ def should_gate(state: "_cs.CoordinatorState", config: "ForgeConfig", verdict: s
     threshold = gate_threshold(config)
     if gate_is_disabled(threshold):
         return False
-    if score < threshold:
-        return False
-    return complexity_is_founded(state)
+    return score >= threshold
+
+
+def _score_provenance_note(state: "_cs.CoordinatorState") -> str | None:
+    """Explain when a gating score came from a conservative preflight path."""
+    if complexity_is_founded(state):
+        return None
+    if getattr(state, "preflight_degraded", False):
+        reason = str(getattr(state, "preflight_degraded_reason", "") or "").strip()
+        if reason:
+            return f"degraded preflight ({reason})"
+        return "degraded preflight"
+    return "preflight examined no criteria"
 
 
 def _resolve_no_decision(config: "ForgeConfig") -> tuple[str, str | None]:
@@ -170,14 +180,22 @@ def _render_reason(
         f" — {task.slug} needs a scope decision before anything further is spent.",
         "",
         f"Threshold {threshold}. Nothing has been spent beyond preflight for this story.",
-        "",
-        f"  forge decide {run_id} {PREFLIGHT_GATE_APPROVE}      plan and implement it as scoped",
-        f"  forge decide {run_id} {PREFLIGHT_GATE_DECOMPOSE}    return it to be split",
-        "",
-        f"No decision within {_cu._fmt_duration(timeout_seconds)}: {no_decision_action}"
-        f"{' (default)' if no_decision_fallback is None else ''}."
-        " Other stories continue meanwhile.",
     ]
+    note = _score_provenance_note(state)
+    if note is not None:
+        lines.extend(["", f"Score provenance: {note}."])
+    lines.extend(
+        [
+            "",
+            f"  forge decide {run_id} {PREFLIGHT_GATE_APPROVE}"
+            "      plan and implement it as scoped",
+            f"  forge decide {run_id} {PREFLIGHT_GATE_DECOMPOSE}    return it to be split",
+            "",
+            f"No decision within {_cu._fmt_duration(timeout_seconds)}: {no_decision_action}"
+            f"{' (default)' if no_decision_fallback is None else ''}."
+            " Other stories continue meanwhile.",
+        ]
+    )
     if no_decision_fallback is not None:
         lines.append(
             f"  (retry.preflight_complexity_gate_no_decision {no_decision_fallback}; "
@@ -208,6 +226,8 @@ def _gate_payload(
         "implementation_complexity_score": state.preflight_implementation_complexity_score,
         "validation_complexity_score": state.preflight_validation_complexity_score,
         "threshold": threshold,
+        "score_founded": complexity_is_founded(state),
+        "score_provenance_note": _score_provenance_note(state),
         "scope_exceeded": bool(state.preflight_scope_exceeded),
         "no_decision_action": no_decision_action,
         "no_decision_fallback": no_decision_fallback,
@@ -241,6 +261,7 @@ def _record(
         round(waited_seconds, 2) if waited_seconds is not None else None
     )
     state.preflight_complexity_gate_decided_at = decided_at or _now_iso()
+    state.preflight_complexity_gate_withheld_reason = None
 
 
 def _decompose_result(
@@ -290,7 +311,6 @@ def evaluate_preflight_complexity_gate(
     returned for decomposition.
     """
     if not should_gate(state, config, verdict):
-        _note_withheld_on_unfounded_score(state, config, verdict, logger=logger)
         return None
 
     threshold = gate_threshold(config)
@@ -358,54 +378,6 @@ def evaluate_preflight_complexity_gate(
         "— nothing spent past PREFLIGHT"
     )
     return _decompose_result(state, task, source=source)
-
-
-def _note_withheld_on_unfounded_score(
-    state: "_cs.CoordinatorState",
-    config: "ForgeConfig",
-    verdict: str,
-    *,
-    logger: "StructuredLogger | None",
-) -> None:
-    """Record a gate that the score reached but its provenance did not earn.
-
-    Only the unfounded case is worth reporting. The other ways ``should_gate``
-    declines — a non-PROCEED verdict, a score under the threshold, a threshold
-    above the ceiling — are the gate working as configured and say nothing an
-    operator needs told. This one is different: the story *would* have been held
-    on the number alone, and the reason it was not is a fact about how much
-    preflight saw, which the run should not have to be reconstructed to learn.
-    """
-    if verdict != "PROCEED":
-        return
-    score = state.preflight_complexity_score
-    if not isinstance(score, int):
-        return
-    threshold = gate_threshold(config)
-    if gate_is_disabled(threshold) or score < threshold or complexity_is_founded(state):
-        return
-
-    reason = (
-        "degraded preflight"
-        if getattr(state, "preflight_degraded", False)
-        else "preflight examined no criteria"
-    )
-    state.preflight_complexity_gate_opened = False
-    state.preflight_complexity_gate_score = score
-    state.preflight_complexity_gate_threshold = threshold
-    state.preflight_complexity_gate_withheld_reason = reason
-    _cu._log(
-        f"  ○ PREFLIGHT gate  not opened at complexity {score} ≥ {threshold}: "
-        f"{reason}, so the score is not a founded judgement of scope"
-    )
-    if logger:
-        logger._safe_emit(
-            "preflight_complexity_gate_withheld",
-            phase=PREFLIGHT_GATE_PHASE,
-            complexity_score=score,
-            threshold=threshold,
-            reason=reason,
-        )
 
 
 def _open_gate(

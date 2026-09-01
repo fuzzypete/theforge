@@ -719,6 +719,9 @@ def _preflight_gate_lines(entry: dict, run_id: str) -> list[str]:
         fallback = payload.get("no_decision_fallback")
         suffix = f" ({fallback}; falling back)" if fallback else ""
         lines.append(f"    on timeout: {no_decision}{suffix}")
+    note = payload.get("score_provenance_note")
+    if note:
+        lines.append(f"    score provenance: {note}")
     return lines
 
 

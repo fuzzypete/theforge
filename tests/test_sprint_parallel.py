@@ -437,6 +437,58 @@ class TestParallelIndependentStories:
         for call in mock_run.call_args_list:
             assert call.kwargs["auto_merge"] is False
 
+    def test_waiting_preflight_gate_does_not_block_an_unrelated_ready_story(
+        self, tmp_path: Path
+    ) -> None:
+        """A story paused in coordinator PREFLIGHT must not strand a sibling.
+
+        This exercises the sprint boundary, not just the gate helper: story-a
+        occupies one worker while waiting on its preflight complexity decision,
+        and story-b still has to start and finish on the other worker.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        gate_entered = threading.Event()
+        story_b_started = threading.Event()
+        events: list[str] = []
+
+        def _returned_for_decomposition() -> CoordinatorResult:
+            result = _make_coordinator_result(success=False, cost=1.0, phase=Phase.PREFLIGHT)
+            result.state.preflight_complexity_gate_decision = "decompose"
+            result.message = "returned for decomposition"
+            return result
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            events.append(f"run:{task.slug}")
+            if task.slug == "story-a":
+                gate_entered.set()
+                assert story_b_started.wait(timeout=30), (
+                    "story-b never started while story-a waited"
+                )
+                events.append("finish:story-a")
+                return _returned_for_decomposition()
+
+            assert gate_entered.wait(timeout=30), "story-a never reached its preflight gate"
+            story_b_started.set()
+            events.append("finish:story-b")
+            return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        with patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task):
+            sprint = run_sprint_ctx(config, manifest_path)
+
+        assert "run:story-b" in events
+        assert events.index("run:story-b") < events.index("finish:story-a")
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+
 
 class TestParallelDependencyGating:
     def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:

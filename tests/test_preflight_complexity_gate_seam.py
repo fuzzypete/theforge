@@ -47,10 +47,9 @@ from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 def _preflight_output(score: int, verdict: str = "PROCEED", criteria: bool = True) -> str:
     """A preflight result at *score*.
 
-    ``criteria_checked`` is populated by default because the gate only opens on a
-    score preflight actually founded: an attempt that examined nothing derives a
-    conservative high number precisely because it could not tell. Pass
-    ``criteria=False`` for the unfounded case.
+    ``criteria_checked`` is populated by default, but tests may pass
+    ``criteria=False`` to cover the conservative no-evidence path that still
+    opens the gate and must therefore remain visible to the operator.
     """
     checked = (
         """
@@ -94,8 +93,8 @@ def _gated_state(
     state.preflight_implementation_complexity_score = implementation
     state.preflight_validation_complexity_score = validation
     state.preflight_degraded = degraded
-    # The gate reads foundedness, not just the number — a score no preflight
-    # observation founded is not evidence the story is over-broad.
+    # Foundedness still matters for operator context and audit visibility even
+    # though it no longer narrows the trigger.
     state.preflight_criteria_checked = (
         [{"criterion": "Sized against the codebase", "satisfied": False}] if founded else []
     )
@@ -197,41 +196,27 @@ class TestGateOpensAtTheBoundary:
         assert result.state.preflight_complexity_gate_decision is None
         mock_dev.assert_called()
 
-    def test_a_degraded_preflight_does_not_open_the_gate(self, tmp_path: Path):
-        """A failed preflight derives a *high* score while observing nothing.
-
-        Routing and timeouts are right to consume that number — they need one and
-        conservative is safe. A scope question is not: asking an operator whether
-        a story is too broad, on a figure that means "we could not tell", asks
-        them to rule on nothing, and a gate that fails closed on silence would
-        then return the story on no evidence at all.
-        """
+    def test_a_degraded_preflight_still_opens_the_gate(self, tmp_path: Path):
         config = _config_with(tmp_path)
         state = _gated_state(score=10, founded=False, degraded=True)
         state.preflight_degraded_reason = "timeout_no_verdict"
 
-        assert should_gate(state, config, "PROCEED") is False
+        assert should_gate(state, config, "PROCEED") is True
 
-    def test_a_preflight_that_examined_nothing_does_not_open_the_gate(self, tmp_path: Path):
-        """Not degraded, but it checked no criteria — the score is still unfounded.
-
-        This is the band-derived / coordinator-override score: a real exit code,
-        an empty ``criteria_checked``. ``resume_persistence`` already weighs the
-        same two signals in the same order.
-        """
+    def test_a_preflight_that_examined_nothing_still_opens_the_gate(self, tmp_path: Path):
         config = _config_with(tmp_path)
 
-        assert should_gate(_gated_state(score=9, founded=False), config, "PROCEED") is False
+        assert should_gate(_gated_state(score=9, founded=False), config, "PROCEED") is True
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_unfounded_high_score_runs_on_and_says_why_it_was_not_asked(
+    def test_unfounded_high_score_still_pauses_and_records_its_provenance(
         self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
     ):
-        """End to end: no pause, no pending file, and the reason is on the record."""
+        """End to end: the gate still opens, and the operator sees why."""
         config = _config_with(tmp_path)
         task = _make_task(tmp_path)
         (tmp_path / "test-task").mkdir()
@@ -240,22 +225,15 @@ class TestGateOpensAtTheBoundary:
         mock_preflight.return_value = _make_agent_result(
             success=True, output=_preflight_output(9, criteria=False), cost_usd=0.37
         )
-        mock_plan.return_value = _make_agent_result(success=True, output="Plan.")
-        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_pool.return_value = []
-
-        with patch("theforge.pending.write_pending") as mock_write:
+        with patch("theforge.pending.poll_pending", side_effect=_never_answered):
             result = run_task(config, task)
 
-        mock_write.assert_not_called()
-        assert result.state.preflight_complexity_gate_opened is False
-        assert result.state.preflight_complexity_gate_decision is None
-        assert (
-            result.state.preflight_complexity_gate_withheld_reason
-            == "preflight examined no criteria"
-        )
-        # It ran on rather than being held or returned.
-        mock_dev.assert_called()
+        assert result.state.preflight_complexity_gate_opened is True
+        assert result.state.preflight_complexity_gate_decision == "decompose"
+        assert result.state.preflight_complexity_gate_withheld_reason is None
+        mock_plan.assert_not_called()
+        mock_dev.assert_not_called()
+        mock_pool.assert_not_called()
 
     def test_gate_is_disabled_by_a_threshold_above_the_highest_score(self, tmp_path: Path):
         """No enable switch exists: raising the threshold past 10 is how it turns off."""
@@ -367,8 +345,34 @@ class TestOperatorSurface:
         assert payload["implementation_complexity_score"] == 9
         assert payload["validation_complexity_score"] == 3
         assert payload["threshold"] == 9
+        assert payload["score_founded"] is True
         assert f"forge decide {state.run_id} approve" in captured["reason"]
         assert f"forge decide {state.run_id} decompose" in captured["reason"]
+
+    def test_pending_record_carries_unfounded_score_provenance(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _gated_state(founded=False, degraded=True)
+        state.preflight_degraded_reason = "timeout_no_verdict"
+        captured: dict = {}
+
+        real_write = pending.write_pending
+
+        def _capture(**kwargs):
+            path = real_write(**kwargs)
+            captured.update(kwargs)
+            return path
+
+        with (
+            patch("theforge.pending.write_pending", side_effect=_capture),
+            patch("theforge.pending.poll_pending", side_effect=_never_answered),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        payload = captured["extra"][PREFLIGHT_GATE_EXTRA_KEY]
+        assert payload["score_founded"] is False
+        assert payload["score_provenance_note"] == "degraded preflight (timeout_no_verdict)"
+        assert "Score provenance: degraded preflight (timeout_no_verdict)." in captured["reason"]
 
     def test_status_renders_the_scores_the_decision_turns_on(self):
         entry = {
@@ -381,6 +385,7 @@ class TestOperatorSurface:
                 "threshold": 9,
                 "no_decision_action": "decompose",
                 "no_decision_fallback": None,
+                "score_provenance_note": "preflight examined no criteria",
             },
         }
 
@@ -391,6 +396,7 @@ class TestOperatorSurface:
         assert "forge decide 7c1e04b9d3af approve" in rendered
         assert "forge decide 7c1e04b9d3af decompose" in rendered
         assert "on timeout: decompose" in rendered
+        assert "score provenance: preflight examined no criteria" in rendered
 
     def test_a_non_gate_pending_record_renders_nothing_extra(self):
         assert _preflight_gate_lines({"run_id": "abc", "options": []}, "abc") == []
