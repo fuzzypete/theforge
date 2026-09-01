@@ -335,7 +335,7 @@ def _write_audit(
     # Rendered once per content state rather than once per copy. The same
     # document goes to up to three paths, and a real run's audit is large enough
     # that re-serialising it each time dominated this path — 1.37s of a single
-    # test's 3.4s, which put it over the enforced five-second per-test bound.
+    # test's 3.4s, which put it over the five-second per-test convention.
     # `audit` changes exactly once below, at the knowledge summary, so the one
     # re-render after it covers every remaining copy.
     audit_text = yaml.dump(audit, default_flow_style=False, sort_keys=False)

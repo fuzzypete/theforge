@@ -724,7 +724,6 @@ def _legacy_yaml(tmp_path: Path) -> Path:
     return tmp_path / ".forge" / "assignment_history.yaml"
 
 
-@pytest.mark.orchestration
 def test_assignment_history_learning_end_to_end(tmp_path):
     """End-to-end proof of escalation-history learning through the substrate.
 

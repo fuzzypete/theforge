@@ -60,7 +60,7 @@ def _python_seams(tree: ast.AST) -> list[tuple[int, str]]:
     per candidate list. The straightforward nesting is O(functions x tree) and
     made this scan the slowest thing in the suite — 2.7M ``ast.walk`` steps,
     which pushed the parametrized cases below past the five-second per-test
-    bound once every xdist worker had to re-pay it.
+    convention once every xdist worker had to re-pay it.
     """
     seams: list[tuple[int, str]] = []
     functions = [
