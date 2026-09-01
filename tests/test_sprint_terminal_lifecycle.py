@@ -570,7 +570,7 @@ def test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies(
     monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
     # The kill is refused on purpose here, so every teardown pass waits out the
     # full observation window. That window is not what this test verifies, and
-    # at the 2s default it put the test over the enforced five-second bound.
+    # at the 2s default it put the test over the five-second per-test convention.
     monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
     cmd = (
@@ -635,7 +635,7 @@ def test_gate_teardown_records_survivors_so_a_leaderless_tree_can_be_reaped(
     monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
     # The kill is refused on purpose here, so every teardown pass waits out the
     # full observation window. That window is not what this test verifies, and
-    # at the 2s default it put the test over the enforced five-second bound.
+    # at the 2s default it put the test over the five-second per-test convention.
     monkeypatch.setattr(process_group, "KILL_GRACE_SECONDS", 0.3)
 
     cmd = (

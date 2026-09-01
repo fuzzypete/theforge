@@ -39,23 +39,26 @@ testpaths = ["tests"]
 norecursedirs = [".forge"]
 pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
-# CONVENTIONS.md's five-second-per-test rule, enforced (not advisory): pytest-timeout
-# kills any test that runs past this bound and reports its name plus a stack trace of
-# where it was stuck. A test may only shorten it via @pytest.mark.timeout(n) —
-# tests/timeout_enforcement.py rejects overrides that widen the bound or change how it
-# is enforced. The one category bound higher is a test whose cost is real machinery —
-# a sprint, a real process or repository, a walk of the source tree — and it is
-# identified from its own source rather than requested: see
-# tests/orchestration_scope.py and the "orchestration" marker below.
+# The concurrent gate's per-test bound, enforced (not advisory): pytest-timeout kills
+# any test that runs past it and reports its name plus a stack trace of where it was
+# stuck. One shared bound applies to every test and there is no category or marker that
+# raises it. Sixty seconds is deliberately far above anything this suite's own
+# `-n auto --dist worksteal` contention produces — measured inflation reaches ~9x on
+# tests of a few seconds — because under that parallelism a tight wall-clock threshold
+# measures the machine, not the test (#2833). The tight per-test judgement is made by
+# the post-stall serial diagnostic pass, where load is controlled. CONVENTIONS.md's
+# five-second rule remains the convention for an isolated test.
+#
+# A test may only shorten this via @pytest.mark.timeout(n) — tests/timeout_enforcement.py
+# rejects overrides that widen the bound or change how it is enforced.
 #
 # The method must be "thread". Measured against the `-n auto --dist worksteal` addopts
 # above, the signal method parks every xdist worker at 0% CPU and the run never
 # finishes (92s green on base vs. still running past 600s). Thread-method dumps from a
 # dying worker are recovered by tests/timeout_enforcement.py.
-timeout = 5
+timeout = 60
 timeout_method = "thread"
 markers = [
-    "orchestration: marks a test that drives real processes, real repositories, or a full sprint workflow through machinery tests/orchestration_scope.py cannot see in the test's own source, and so is given the raised bound (30s) that a machinery-driving test gets automatically. Do not add it to a test whose driving call that module already classifies — a duplicate marker is the hand-maintained list under another name.",
     "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
     "cli_contract: marks tests that invoke real provider CLIs to validate argv contracts (requires THEFORGE_RUN_CLI_CONTRACT=1)",
 ]

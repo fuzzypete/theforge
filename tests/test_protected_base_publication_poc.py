@@ -615,8 +615,8 @@ def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
         # corpus off this machine." This asserts a position in the schedule and a
         # clean checkout at admission — both the drain's doing — so the remote
         # half is stubbed rather than exercised. It costs ~80 real git
-        # subprocesses per run, which is what put this test past the enforced
-        # five-second bound, and leaving it out makes the claim stricter: the
+        # subprocesses per run, which is what put this test past the
+        # five-second per-test convention, and leaving it out makes the claim stricter: the
         # drain alone now has to clear the checkout, with no publish able to
         # clear it instead.
         patch(
@@ -663,8 +663,8 @@ def _preconditions_seen_by_each_story(
 
     Split out so each half of the counterfactual is its own test running a
     single sprint. Asserting both halves in one test meant running two sprints
-    over real git back to back, which put it past the enforced five-second
-    per-test bound. The halves are independent claims, and neither needs the
+    over real git back to back, which put it past the five-second per-test
+    convention. The halves are independent claims, and neither needs the
     other to have run first — each starts from its own fresh ``protected_project``
     checkout, which is also why the reset between the two runs is gone.
     """
