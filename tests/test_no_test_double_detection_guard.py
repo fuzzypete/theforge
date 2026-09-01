@@ -43,7 +43,7 @@ def _could_violate(text: str) -> bool:
     check always spells both ``isinstance`` and one of the mock type names.
 
     Worth the four lines because parsing all of ``src/`` twice per call cost
-    0.88s, and under the enforced five-second per-test bound this guard was
+    0.88s, and under the five-second per-test convention this guard was
     crossing it once every xdist worker had to re-pay the scan.
     """
     if "unittest" in text:

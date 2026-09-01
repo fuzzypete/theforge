@@ -413,10 +413,8 @@ class TestReasoningModeReachesTheProvider:
 
     # Binds against the installed SDK: importing it builds the provider
     # client's pydantic models, which is real machinery this test cannot mock
-    # away without deleting what it checks. The cost is import-time, so
-    # orchestration_scope cannot see it from a call site.
-    @pytest.mark.orchestration
-    @pytest.mark.timeout(20)
+    # away without deleting what it checks. That import cost is paid under the
+    # suite's shared per-test bound like any other.
     def test_the_control_is_shaped_as_a_kwarg_the_real_sdk_accepts(self):
         """Bound against the installed SDK's actual signature, not a mock's.
 

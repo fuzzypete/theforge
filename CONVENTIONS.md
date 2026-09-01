@@ -756,14 +756,34 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
   indefinitely — deadlock, memory balloon, and eventual OOM. Mock the lock instead.
 - **Never write tests that can hang.** No `while True`, no unbounded retry loops,
   no `time.sleep()` longer than 1 second, no blocking I/O without a timeout, no
-  `threading.Event.wait()` without a timeout. Every test must complete in under 5
-  seconds. A hanging test kills the entire gate run for every story in the sprint.
-  This bound is **enforced, not advisory**: `pyproject.toml` declares
-  `timeout = 5` and `timeout_method = "thread"` under
-  `[tool.pytest.ini_options]`, so every invocation of the suite — the gate,
-  `make dev-check`, a bare `pytest` in a terminal — inherits it without a flag.
-  A test that runs past the bound is failed by name with a stack trace of where
-  it was stuck, so the run stays attributable instead of dying anonymously.
+  `threading.Event.wait()` without a timeout. **Every test must complete in under
+  5 seconds run on its own** — that is the convention you write to, and it is a
+  property of the test. A hanging test kills the entire gate run for every story
+  in the sprint.
+  - **The gate enforces a wider bound than the convention, and deliberately so.**
+    `pyproject.toml` declares `timeout = 60` and `timeout_method = "thread"`
+    under `[tool.pytest.ini_options]`, so every invocation of the suite — the
+    gate, `make dev-check`, a bare `pytest` in a terminal — inherits a single
+    shared 60s per-test bound without a flag. A test that runs past it is failed
+    by name with a stack trace of where it was stuck, so the run stays
+    attributable instead of dying anonymously.
+  - **Sixty, not five, because of what the concurrent gate actually measures.**
+    Under `-n auto --dist worksteal` a per-test wall clock measures the test
+    *plus* scheduling delay, CPU contention, cold imports, and subprocess
+    pressure. Measured inflation on this suite reached roughly 9x: a 3.44s test
+    crossed a 30s bound. A tight threshold there is not a correctness verdict,
+    it is a load reading reported as a test failure — in two days it produced an
+    unstable verdict on unchanged code (#2825) and a baseline that refused every
+    sprint until cleared by hand (#2831). The shared bound is now set above
+    anything this suite's own contention produces, so a timeout means the test
+    is stuck (#2833). Do not tighten it back without evidence that inflation
+    cannot reach the smaller value.
+  - **The tight per-test judgement is made in the post-stall serial
+    diagnostic.** When the ordinary gate exceeds its outer budget, that pass
+    re-runs serially under its own tight bound (shipped default 10s per test,
+    60s for the whole pass) to name the culprit. That is where load is
+    controlled, so a wall-clock threshold measures the test rather than the
+    machine. Its bound and its role are unchanged by any of the above.
   - The method must stay `thread`. Measured against the `-n auto --dist
     worksteal` addopts, the `signal` method parks every xdist worker at 0% CPU
     and the run never finishes — the same lock-inheritance hazard as the
@@ -783,45 +803,20 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
     leave in place, which is how a dump survives a serial run whose timeout
     kills the controller itself.
   - A test may **shorten** its own bound with `@pytest.mark.timeout(n)`.
-    Nothing may disable it (`0` or negative) or change how it is enforced
-    (`method=`, `func_only=True`); `tests/timeout_enforcement.py` rejects those
-    at collection and fails the offending test by name.
-  - **One category is bound higher, and it is not something a test asks for.**
-    A test whose cost is real machinery rather than its own logic inflates
-    several-fold under the gate's own parallelism (a 1.06s test was measured
-    reaching 5s, 4.7x; 1.1s source-scanning guards were measured failing the
-    bound on a machine at load 12). Those tests are bound at **30s**, and
-    `tests/timeout_enforcement.py` attaches that bound at collection. Which
-    tests they are is decided by `tests/orchestration_scope.py`, which parses
-    the test module and looks for an executable call that drives:
-    - a **sprint** — `run_sprint` / `run_sprint_ctx`;
-    - a **real process or repository** — `subprocess.run`/`Popen`/
-      `check_output`/`check_call`/`call`, `os.system` (qualified on the
-      receiver, so an ordinary object's `.run()` in a fully-mocked test is
-      not swept in);
-    - a **walk of a source tree** — `rglob`/`glob`/`os.walk`, which in this
-      suite means the mechanical guards that parse every module under
-      `tests/` or `src/`.
-
-    The relation is transitive within the module: directly, through an import
-    alias, through a module-local helper, or through a module-local fixture.
-    A mention in a comment or docstring is not a call and classifies nothing.
-    About 9% of the suite qualifies; the other 91% stays on the shared 5s.
-  - There is **no list of the tests that get the raised bound**, and adding
-    one back is a regression. A list can only be complete up to the last red
-    gate: the tests it is missing announce themselves by failing a release cut
-    under contention they should have been allowed to absorb, and a re-run
-    turns that cut green — which is the gate lying (#2825).
-  - `@pytest.mark.orchestration` remains, as the opt-in of last resort for
-    equivalent machinery the test's own source cannot show — a cross-module
-    fixture, or a driver that is none of the calls above. Do **not** put it
-    on a test that already calls one; a marker that duplicates the
-    classification is the old hand-maintained list under another name, and a
-    test in `tests/test_per_test_timeout_enforcement.py` fails on it.
-  - The category raises the bound; it does not remove one. An orchestration
-    test stays in the default gate, and exceeding 30s still fails with the
-    test named and a stack trace. An explicit `@pytest.mark.timeout(n)` above
-    that ceiling is rejected for every test, marked or not.
+    Nothing may widen it, disable it (`0` or negative), or change how it is
+    enforced (`method=`, `func_only=True`); `tests/timeout_enforcement.py`
+    rejects those at collection and fails the offending test by name.
+  - **One bound, no exemptions, no category.** No test in the default suite
+    carries a bound above the shared one and there is no mechanism to grant
+    one. The `orchestration` marker, the 30s category, and
+    `tests/orchestration_scope.py` — which derived category membership by
+    parsing test source — were removed rather than widened (#2833). Nothing
+    needs exempting once the shared bound is above what contention produces,
+    and every attempt to classify *which* tests deserve headroom re-litigated
+    a question whose real variable was load. Do not reintroduce a marker, a
+    category, or a list of nodeids: a list can only ever be complete up to the
+    last red gate, and the tests it is missing announce themselves by failing
+    a release cut that a re-run turns green — which is the gate lying (#2825).
 - **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ### Flake discipline
