@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from theforge.agent_types import COST_PROVIDER_REPORTED, COST_UNKNOWN
+from theforge.config.auth import inference_only_secrets as assessment_secrets
 from theforge.config.defaults import PREFLIGHT_READ_ONLY_TOOLS
 from theforge.config.model_identity import PHASE_ADVISOR
 from theforge.decomposition_assessment import (
@@ -51,21 +52,19 @@ from theforge.decomposition_assessment import (
 from theforge.task.decomposition_assessment_prompts import (
     build_decomposition_assessment_prompt,
 )
+from theforge.task.story import extract_acceptance_criteria
 
 from . import util as _cu
 
-# Reused, not re-derived: pulling the acceptance criteria out of a story body is
-# the same operation here as in the advisory packet, and two copies would drift
-# into disagreeing about what counts as a criterion.
-from .escalation_advisor_flow import (
-    _classify_advisor_launch_failure,
-    _extract_acceptance_criteria,
-)
-
-# Reused for the same reason: "which credentials may an advisory stage hold" is
-# one question with one answer (an allow-list of inference keys), and this stage
-# has exactly the triage proposer's need for it.
-from .triage_proposal_flow import proposer_secrets as assessment_secrets
+# Every shared helper below is imported from the module that owns the *concept*,
+# not from whichever flow happened to write it first. An advisory step reaching
+# into a phase module (or into a sibling flow) for a helper is what turned three
+# of these into import cycles; the concepts themselves — a clean baseline
+# checkout, "did this agent reach the model?", "which credentials may an
+# advisory stage hold?", "what are this story's acceptance criteria?" — belong
+# to nobody's phase in particular.
+from .agent_failure import classify_launch_failure
+from .baseline_checkout import prepare_baseline_checkout
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
@@ -204,7 +203,7 @@ def build_assessment_packet(
         story_name=task.name,
         issue_ref=_issue_ref(task),
         story_body=story_body,
-        acceptance_criteria=_extract_acceptance_criteria(story_body),
+        acceptance_criteria=extract_acceptance_criteria(story_body),
         complexity_score=state.preflight_complexity_score,
         implementation_complexity_score=state.preflight_implementation_complexity_score,
         validation_complexity_score=state.preflight_validation_complexity_score,
@@ -263,12 +262,10 @@ def generate_decomposition_assessment(
         f"{len(packet.acceptance_criteria)} acceptance criteria"
     )
 
-    from .preflight_flow import _prepare_preflight_working_dir  # noqa: PLC0415
-
     baseline_dir: "Path | None" = None
     cleanup = None
     try:
-        baseline_dir, cleanup = _prepare_preflight_working_dir(
+        baseline_dir, cleanup = prepare_baseline_checkout(
             config.project_root, config.workspace.base_branch
         )
     except Exception as exc:  # noqa: BLE001 - a checkout failure is not an assessment
@@ -319,7 +316,7 @@ def generate_decomposition_assessment(
         )
 
     if not getattr(agent_result, "success", False):
-        launch_reason = _classify_advisor_launch_failure(agent_result)
+        launch_reason = classify_launch_failure(agent_result)
         if launch_reason is not None:
             _log(f"  ⚠ decomposition assessment never launched: {launch_reason}")
             return _attempt(no_assessment(f"{NONE_LAUNCH_FAILURE}: {launch_reason}"))

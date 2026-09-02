@@ -182,3 +182,37 @@ def frontmatter_allows_forge_yaml_mutation(frontmatter: dict) -> bool:
 
 # Backward-compat alias
 parse_spec_frontmatter = parse_story_frontmatter
+
+
+def extract_acceptance_criteria(story_body: str) -> list[str]:
+    """Extract acceptance-criteria bullet lines from a story body.
+
+    Looks for an ``## Acceptance criteria`` (or ``### ...``) heading and collects
+    the bullet items beneath it until the next heading. Best-effort: returns an
+    empty list when no such section is present, so a caller that also carries the
+    full body is never left with nothing.
+
+    Lives here because it is story parsing, and because more than one advisory
+    step now needs it — the escalation advisor's evidence packet and the
+    preflight decomposition assessment. Two copies would drift into disagreeing
+    about what counts as a criterion, and the assessment's whole coverage check
+    rests on this list matching the one an operator would count by hand.
+    """
+    criteria: list[str] = []
+    in_section = False
+    for raw in (story_body or "").splitlines():
+        line = raw.strip()
+        lowered = line.lower()
+        if lowered.startswith("#"):
+            heading = lowered.lstrip("#").strip()
+            if in_section:
+                # A new heading ends the AC section.
+                if heading.startswith("acceptance"):
+                    continue
+                break
+            if heading.startswith("acceptance"):
+                in_section = True
+            continue
+        if in_section and (line.startswith("- ") or line.startswith("* ")):
+            criteria.append(line[2:].strip())
+    return criteria

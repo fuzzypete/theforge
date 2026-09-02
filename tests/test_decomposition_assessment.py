@@ -300,3 +300,66 @@ class TestPromptCarriesTheEvidenceWithoutTheAdvisorVocabulary:
         )
 
         assert "No acceptance criteria were extracted" in prompt
+
+
+class TestTheAssessmentAddsNoImportCycle:
+    """The assessment's helpers come from concept-owning modules, not from phases.
+
+    The first cut of this feature imported its shared helpers from wherever they
+    happened to live — the clean-checkout helper from ``preflight_flow``, the
+    launch classifier and AC extractor from ``escalation_advisor_flow``, the
+    credential allow-list from ``triage_proposal_flow`` — and closed three import
+    cycles doing it, because ``preflight_flow`` imports the gate that imports
+    this module. Each helper now lives in the module that owns the *concept*
+    (``baseline_checkout``, ``agent_failure``, ``task.story``, ``config.auth``),
+    which is both acyclic and where a fourth caller would look first.
+    """
+
+    #: Modules this story added or rewired. A cycle through any of them is the
+    #: regression; the repo's other, older cycles are not this test's subject.
+    TOUCHED = (
+        "theforge.coordinator.preflight_decomposition_flow",
+        "theforge.coordinator.preflight_complexity_gate",
+        "theforge.coordinator.escalation_advisor_flow",
+        "theforge.coordinator.preflight_flow",
+        "theforge.coordinator.baseline_checkout",
+    )
+
+    def _cycles(self) -> list[str]:
+        from pathlib import Path  # noqa: PLC0415
+
+        from theforge.conventions import _check_circular_imports  # noqa: PLC0415
+
+        repo_root = Path(__file__).resolve().parent.parent
+        return [v.detail for v in _check_circular_imports(repo_root, ("src/theforge",))]
+
+    def test_no_cycle_runs_through_the_assessment_or_the_gate(self):
+        offending = [
+            detail for detail in self._cycles() if any(module in detail for module in self.TOUCHED)
+        ]
+
+        assert offending == [], "import cycle through the decomposition assessment: " + "; ".join(
+            offending
+        )
+
+    def test_the_flow_imports_its_helpers_from_the_concept_owners(self):
+        """Pinned by name: an alias re-export would satisfy the cycle check alone."""
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+
+        from theforge.coordinator import preflight_decomposition_flow as flow  # noqa: PLC0415
+
+        tree = ast.parse(inspect.getsource(flow))
+        sources = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        # Relative imports parse with module="agent_failure" etc.
+        assert "agent_failure" in sources
+        assert "baseline_checkout" in sources
+        assert "theforge.task.story" in sources
+        assert "theforge.config.auth" in sources
+        # And specifically NOT from the phase/flow modules it would cycle with.
+        for forbidden in ("preflight_flow", "escalation_advisor_flow", "triage_proposal_flow"):
+            assert forbidden not in sources
