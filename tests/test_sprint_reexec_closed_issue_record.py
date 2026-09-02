@@ -34,6 +34,7 @@ from theforge.sprint.prior_landing import (
 )
 from theforge.sprint.query import build_resolved_sprint
 from theforge.sprint.sources import IssueClosedError
+from theforge.sprint.story_state import SprintStoryState
 
 LANDED_PRIOR = {
     "outcome": "DONE",
@@ -304,6 +305,72 @@ class TestAuditWithholdsATotalItCannotExplain:
         assert audit["sprint"]["cost_complete"] is True
         assert audit["sprint"]["total_cost_usd"] == 0.1
         assert audit["sprint"]["cost_accounting_discrepancy"] is None
+
+
+class TestAuditAccountsForStoriesOnlyCanonicalStateHolds:
+    """A story the re-exec's issue query no longer returns is still the sprint's.
+
+    Its ref is absent from ``canonical_refs``, so nothing in this process's
+    results produces a row for it — but its spend is inside the sprint total.
+    The audit must name it in ``specs:`` rather than report a complete total
+    assembled from a set of stories that omits one of its own contributors
+    (#2847).
+    """
+
+    def _state(self) -> "SprintStoryState":
+        state = SprintStoryState()
+        state.register(
+            "issue-2686",
+            "Issue #2686",
+            outcome="DONE",
+            cost_usd=29.2,
+            canonical_ref="issue:2686",
+        )
+        return state
+
+    def _write(self, tmp_path: Path, **kwargs: object) -> dict:
+        now = datetime.datetime(2026, 9, 2, 6, 33, tzinfo=datetime.timezone.utc)
+        _write_sprint_audit(
+            manifest=ResolvedSprint(name="issues-2686,2796", budget_usd=50.0, stories=[]),
+            result=_sprint_result(29.2),
+            canonical_refs=[],
+            started_at=now,
+            finished_at=now,
+            duration=1.0,
+            project_root=tmp_path,
+            sprint_id="sprint-1",
+            **kwargs,
+        )
+        return yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+
+    def test_carried_story_is_named_in_the_audit_rows(self, tmp_path: Path) -> None:
+        audit = self._write(tmp_path, story_state=self._state())
+
+        rows = audit["specs"]
+        assert [r["slug"] for r in rows] == ["issue-2686"]
+        assert rows[0]["outcome"] == "DONE"
+        assert rows[0]["cost_usd"] == 29.2
+        assert rows[0]["outcome_source"] == "carried_from_accumulated_state"
+
+    def test_the_total_the_rows_now_explain_stays_complete(self, tmp_path: Path) -> None:
+        audit = self._write(tmp_path, story_state=self._state())
+
+        assert audit["sprint"]["total_cost_usd"] == 29.2
+        assert audit["sprint"]["cost_complete"] is True
+        assert audit["sprint"]["cost_accounting_discrepancy"] is None
+
+    def test_spend_no_row_accounts_for_is_still_reported(self, tmp_path: Path) -> None:
+        """The projection is not a way to make every total look explained."""
+        state = SprintStoryState()
+        state.register("issue-2686", "Issue #2686", outcome="DONE", cost_usd=1.0)
+
+        audit = self._write(tmp_path, story_state=state)
+
+        assert audit["sprint"]["total_cost_usd"] is None
+        assert audit["sprint"]["cost_complete"] is False
+        assert audit["sprint"]["cost_accounting_discrepancy"]["unexplained_usd"] == 28.2
 
 
 class TestCarriedStoryRowsBecomeAddressableRecords:

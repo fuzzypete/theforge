@@ -1042,6 +1042,11 @@ def _write_sprint_audit(
 
     # Build per-spec entries
     spec_entries = []
+    # The slug behind each emitted row, positionally aligned with
+    # ``spec_entries``. The rows themselves carry a display path rather than a
+    # slug, and the cost-accounting cross-check below has to name the stories it
+    # is accounting for (#2847).
+    spec_slugs: list[str | None] = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
     for canonical_ref in canonical_refs:
@@ -1229,6 +1234,40 @@ def _write_sprint_audit(
             if drop_reason:
                 entry["drop_reason"] = drop_reason
         spec_entries.append(entry)
+        spec_slugs.append(slug)
+
+    # A story the sprint holds in its canonical state but whose ref this
+    # process no longer resolves — the story that landed just before a re-exec
+    # and left the re-exec's issue query — still has its spend inside the
+    # sprint total. It is written into ``specs:`` here so the total is never a
+    # figure assembled from a set of stories that omits one of its own
+    # contributors (#2847). This mirrors the projection the sprint summary
+    # already performs; the two files must account for the same stories.
+    if story_state is not None and hasattr(story_state, "stories"):
+        _emitted = {s for s in spec_slugs if s}
+        for canonical_entry in story_state.stories():
+            if canonical_entry.slug in _emitted:
+                continue
+            spec_entries.append(
+                {
+                    "path": canonical_entry.path,
+                    "slug": canonical_entry.slug,
+                    "outcome": canonical_entry.outcome.name,
+                    "outcome_source": "carried_from_accumulated_state",
+                    "cost_usd": canonical_entry.cost_usd,
+                    "preflight": None,
+                    "error": canonical_entry.reason,
+                    "error_type": None,
+                    "outcome_code": canonical_entry.outcome.name.lower(),
+                    "merge": False,
+                    "reviews": [],
+                    "depends_on": list(canonical_entry.depends_on),
+                    "started_at": None,
+                    "finished_at": None,
+                    "batch": 0,
+                }
+            )
+            spec_slugs.append(canonical_entry.slug)
 
     usage_distribution = []
     for spec_str, res in result.results:
@@ -1250,15 +1289,26 @@ def _write_sprint_audit(
     _cost_complete = bool(getattr(result, "cost_complete", True))
     _cost_discrepancy: dict | None = None
     if _cost_complete:
+        # Only the rows this file actually publishes count as explanation. A
+        # story accounted for in canonical state but absent from ``specs:``
+        # explains nothing to a reader of this audit — which is why the
+        # projection above puts it in the rows first, and why the check reads
+        # the rows rather than the state (#2847).
+        #
+        # Canonical cost wins where the state holds one: those are the
+        # post-attribution figures (they include cross-phase spend such as
+        # intake remediation) and the sprint total is built from the same
+        # figures, so comparing against them is the comparison that does not
+        # fire on ordinary sprints.
+        _canonical_cost_by_slug: dict[str, float | None] = {}
         if story_state is not None and hasattr(story_state, "stories"):
-            _explained_costs = [
-                (getattr(e, "slug", None), getattr(e, "cost_usd", 0.0))
-                for e in story_state.stories()
-            ]
-        else:
-            # No canonical state (legacy callers): the rows are all there is,
-            # and they carry no slug of their own in this writer's shape.
-            _explained_costs = [(None, e.get("cost_usd")) for e in spec_entries]
+            _canonical_cost_by_slug = {
+                e.slug: getattr(e, "cost_usd", None) for e in story_state.stories() if e.slug
+            }
+        _explained_costs = [
+            (slug, _canonical_cost_by_slug.get(slug, entry.get("cost_usd")))
+            for slug, entry in zip(spec_slugs, spec_entries)
+        ]
         _cost_discrepancy = build_cost_accounting_discrepancy(
             getattr(result, "total_cost_usd", 0.0) or 0.0,
             _explained_costs,

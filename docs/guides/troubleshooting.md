@@ -579,6 +579,12 @@ lower bound is still reported under `total_cost_measured_usd`. Then check whethe
 a story is missing from `specs:` / `stories:` entirely: that, not a bad sum, is
 the usual cause, and it is worth filing.
 
+A story the sprint still holds in its own state — one whose issue this
+generation's query no longer returns — is written into `specs:` / `stories:`
+before that check runs, marked `outcome_source: carried_from_accumulated_state`.
+So the discrepancy block reports spend that *no* row explains, not merely spend
+whose row this process did not produce.
+
 Related: a story whose GitHub issue closed because *this sprint landed it* stays
 a story of the sprint across a re-exec. It keeps its `specs:` row, and
 `forge audits show --slug issue-<n>` finds it. Only an issue this sprint never
