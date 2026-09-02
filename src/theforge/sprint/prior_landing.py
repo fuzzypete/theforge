@@ -90,3 +90,70 @@ def reconcilable_prior_success(record: object) -> bool:
     if normalized["outcome"] not in PRIOR_SUCCEEDED_OUTCOMES:
         return False
     return landing_settled(record if isinstance(record, Mapping) else None)
+
+
+# Recorded outcomes that only a generation of THIS sprint can have produced by
+# dispatching the story: each names a terminal the coordinator reached after the
+# story ran. ``ALREADY_DONE`` is deliberately absent — it is the record of a
+# story this sprint declined to run because the work pre-existed, which is
+# evidence of the opposite (the runner's ``_recorded_prior_done`` rejects it for
+# the same reason). ``SKIPPED`` / ``DROPPED`` / ``PRESERVED`` are absent for the
+# same reason: they record that the story did not run here.
+PRIOR_EXECUTED_OUTCOMES = frozenset(
+    {
+        "DONE",
+        "FAILED",
+        "MERGE_FAILED",
+        "MERGE_ARMING_FAILED",
+        "ESCALATED",
+        "DECOMPOSED",
+    }
+)
+
+
+def _measured_cost(record: object) -> float | None:
+    """The record's measured spend, or ``None`` when it recorded none."""
+    if not isinstance(record, Mapping):
+        return None
+    cost = record.get("cost_usd")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return None
+    return float(cost)
+
+
+def prior_execution_recorded(record: object) -> bool:
+    """True when the record shows this sprint itself ran (and paid for) the story.
+
+    Two independent things can establish it, and either one is enough:
+
+    * the recorded outcome is one only a dispatched story reaches
+      (:data:`PRIOR_EXECUTED_OUTCOMES`), or
+    * the record carries measured spend, whatever outcome it names. Spend is
+      admitted into the sprint total, so a record that names spend must keep an
+      addressable row however the story ended (#2847).
+
+    The second clause is what separates a genuinely external closed issue from
+    one this sprint touched: an issue already closed before the sprint's first
+    generation looked at it leaves no accumulated entry at all, and a
+    ``$0.00`` ``ALREADY_DONE`` entry names work this sprint neither did nor paid
+    for. Neither is preserved as a story of this sprint.
+    """
+    normalized = as_prior_record(record)
+    if normalized["outcome"] in PRIOR_EXECUTED_OUTCOMES:
+        return True
+    cost = _measured_cost(record)
+    return cost is not None and cost > 0.0
+
+
+def prior_execution_landed(record: object) -> bool:
+    """True when the record shows this sprint ran the story to a settled ``DONE``.
+
+    Narrower than :func:`prior_execution_recorded` on purpose: this is the
+    predicate for "the work is finished and integrated", so it answers for the
+    dependency graph (a landed story satisfies its dependents) while the broader
+    predicate answers only for the record (the story keeps its row).
+    """
+    normalized = as_prior_record(record)
+    if normalized["outcome"] != "DONE":
+        return False
+    return landing_settled(record if isinstance(record, Mapping) else None)

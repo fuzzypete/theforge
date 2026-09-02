@@ -202,6 +202,12 @@ class SprintCostLedger:
         # total: a sprint that tracked in-flight cost anywhere else would have
         # two writers for one question again (#2547).
         self._in_flight: dict[str, SprintCostObservation] = {}
+        # slug -> measured spend advanced by a pass that is not the story's own
+        # coordinator run (intake remediation). Kept here because the ledger is
+        # the only thing that knows the total is composed of more than stories,
+        # and the audit's cost cross-check has to be able to say which part of
+        # the total no story row was ever going to carry (#2847).
+        self._non_story: dict[str, float] = {}
 
     # -- reads ----------------------------------------------------------
     @property
@@ -260,6 +266,33 @@ class SprintCostLedger:
         with self._lock:
             self._accumulated += amount
             return self._accumulated
+
+    def note_non_story(self, slug: str, amount: float) -> None:
+        """Record measured spend advanced for ``slug`` outside its own story run.
+
+        Does not advance the total — :meth:`add` does that. This only remembers
+        *what* the advance was for, so the audit can distinguish spend a story
+        row will carry from spend that belongs to no story of this sprint.
+        """
+        if amount <= 0.0:
+            return
+        with self._lock:
+            self._non_story[slug] = self._non_story.get(slug, 0.0) + float(amount)
+
+    def non_story_spend(self, story_slugs: "set[str] | frozenset[str]") -> float:
+        """Of the non-story spend recorded, the part no story row will carry.
+
+        A slug in ``story_slugs`` has a row of its own, and the runner attributes
+        the same amount to it through ``story_cost_adjustments`` — so that part
+        of the total *is* explained and must not be double-counted. What is left
+        is spend on issues this sprint never scheduled: real, measured, and
+        accountable only at the sprint level.
+        """
+        with self._lock:
+            return round(
+                sum(amount for slug, amount in self._non_story.items() if slug not in story_slugs),
+                4,
+            )
 
     def set_prior(self, amount: float) -> None:
         """Record spend inherited from an earlier generation (resume triage)."""

@@ -156,7 +156,7 @@ from .manifest import (
     resolve_from_manifest,
 )
 from .preserved_resume import preserved_escalated_message
-from .prior_landing import landing_settled
+from .prior_landing import landing_settled, prior_execution_landed
 from .query import (
     NormalizedDependencyPlan,
     normalize_dependency_plan,
@@ -4818,6 +4818,8 @@ def _fold_entry_intake_cost(
     )
     if entry_intake_cost > 0.0:
         state.cost.add(entry_intake_cost)
+        for issue_num, outcome in context.entry_intake_outcomes.items():
+            state.cost.note_non_story(f"issue-{issue_num}", _intake_outcome_cost(outcome))
         log(f"Entry-intake remediation cost: ${entry_intake_cost:.4f} (rolled into sprint total)")
 
 
@@ -5426,6 +5428,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 # operator sees it here or nowhere (#2434).
                 total_cost_usd=_sprint_state.cost.spent,
                 budget_usd=_ctx.resolved.budget_usd,
+                # No story has run, so none of the folded intake spend has a
+                # row to sit on — it is declared at the sprint level (#2847).
+                non_story_spend_usd=_sprint_state.cost.non_story_spend(frozenset()),
                 results=[],
                 stopped_reason="broken_baseline",
             ),
@@ -5742,6 +5747,22 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 pre_satisfied.add(triage.slug)
                 skip_slugs.add(triage.slug)
 
+    # Stories the resolver kept because this sprint's own earlier generation ran
+    # them and their issue has since closed (#2847). The restore decision is
+    # carried here explicitly rather than re-derived from the worktree or the
+    # branch: a story that landed, had its PR auto-merged and its tree cleaned
+    # before the re-exec satisfies neither the launch guard's reconcile drop nor
+    # the skip_merged triage, so nothing else would neutralise it — and its issue
+    # body was never fetched, so dispatching it would re-spend on already-landed
+    # work with no story text. They are records, not runnable work.
+    restored_prior_slugs: set[str] = {
+        slug
+        for slug in (getattr(_ctx.resolved, "reconciled_prior_slugs", None) or set())
+        if slug in _ctx.slug_to_context
+    }
+    pre_satisfied |= restored_prior_slugs
+    skip_slugs |= restored_prior_slugs
+
     # Build DAG
     all_tasks = [ctx[0] for ctx in _ctx.slug_to_context.values()]
     satisfied_slugs = resolve_satisfied_dependencies(
@@ -5964,6 +5985,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         _sprint_state.story_cost_adjustments[_slug] = _sprint_state.story_cost_adjustments.get(
             _slug, 0.0
         ) + _intake_outcome_cost(_outcome)
+        _sprint_state.cost.note_non_story(_slug, _intake_outcome_cost(_outcome))
     for _issue_num, _outcome in (_ctx.entry_intake_outcomes or {}).items():
         _issue_slug = f"issue-{_issue_num}"
         _sprint_state.story_cost_adjustments[_issue_slug] = (
@@ -6222,6 +6244,49 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _sprint_state, slug, StoryOutcome.SKIPPED, reason=triage.reason
                         )
                     _record_current_story_entry(slug, "SKIPPED", error=triage.reason)
+
+    # Stories restored at resolution time (#2847): pre-mark them in the DAG and
+    # publish the record this sprint already wrote for them. The prior entry is
+    # carried verbatim — the outcome this sprint recorded is the authoritative
+    # account of what happened, so a story that ran to DONE keeps DONE and one
+    # that failed keeps its failure; neither is relabelled by the fact that the
+    # issue is now closed. A landed success satisfies its dependents exactly as a
+    # skip_merged does; anything else only stops blocking them.
+    for _restored_slug in sorted(restored_prior_slugs):
+        _restored_ctx = _ctx.slug_to_context.get(_restored_slug)
+        if _restored_ctx is None:
+            continue
+        _restored_ref = _restored_ctx[2]
+        _restored_prior = _sprint_state.recovered_prior_entries_by_ref.get(_restored_ref)
+        _restored_outcome_name = (
+            str((_restored_prior or {}).get("outcome") or "").upper() or "unknown"
+        )
+        _log(
+            f"RESTORED {_restored_slug} (issue closed; recorded execution "
+            f"{_restored_outcome_name} preserved as a story of this sprint)"
+        )
+        if isinstance(_restored_prior, dict):
+            _sprint_state.current_story_entries_by_ref[_restored_ref] = {
+                k: v for k, v in _restored_prior.items() if k != "canonical_ref"
+            }
+            _persist_accumulated_story_entries(_sprint_state)
+        _restored_existing = _sprint_state.stories.get(_restored_slug)
+        if _restored_existing is None:
+            # Nothing seeded a canonical row for it (an outcome this runner
+            # cannot map, or a pruned entry). Record the story rather than let
+            # the DAG treat it as runnable work whose body we do not have.
+            _set_outcome(
+                _sprint_state,
+                _restored_slug,
+                StoryOutcome.SKIPPED,
+                reason="issue closed; prior execution record preserved",
+            )
+            _sprint_state.dag.mark_skipped(_restored_slug)
+        elif prior_execution_landed(_restored_prior):
+            _sprint_state.merged_slugs.add(_restored_slug)
+            _sprint_state.dag.mark_complete(_restored_slug)
+        else:
+            _sprint_state.dag.mark_skipped(_restored_slug)
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - _sprint_state.merged_slugs
     if (
@@ -8363,6 +8428,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         unresolved_unmeasured_spend_sources=_budget_verification.unresolved_sources,
         accepted_unmeasured_spend=tuple(r.as_dict() for r in _budget_verification.accepted),
         budget_verification_spend_usd=_budget_verification.verification_spend_usd,
+        # Intake spend on issues this sprint never scheduled: real money in the
+        # total that no per-story row was ever going to carry. Declared so the
+        # audit's cost cross-check does not read it as unaccounted-for (#2847).
+        # Spend on issues that DID get a row is excluded — the runner attributes
+        # that to the row itself through ``story_cost_adjustments``.
+        non_story_spend_usd=_sprint_state.cost.non_story_spend(
+            frozenset(e.slug for e in _sprint_state.stories.stories())
+        ),
         results=_sprint_state.results,
         stopped_reason=_sprint_state.stop.reason,
     )

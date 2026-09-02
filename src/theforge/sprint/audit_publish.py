@@ -605,6 +605,7 @@ def write_terminal_sprint_audits(
         triage_actions_by_ref=triage_actions_by_ref,
         run_id=ctx.run_id,
         live_telemetry_snapshots=state.live_telemetry_snapshots,
+        story_state=state.stories,
     )
 
     if sprint_log_dir is None:

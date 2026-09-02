@@ -36,6 +36,12 @@ class ResolvedSprint:
     max_parallel: int | None = None
     worker_timeout_seconds: int | None = None
     closed_dependency_slugs: set[str] = field(default_factory=set)
+    # Slugs whose GitHub issue was already closed at fetch time but which this
+    # sprint's own earlier generation ran and paid for, so they were kept as
+    # stories rather than reclassified as external closed dependencies (#2847).
+    # The runner reads this to keep them out of every dispatch/spend path: their
+    # bodies could not be fetched, so they are records, never runnable work.
+    reconciled_prior_slugs: set[str] = field(default_factory=set)
     baseline_gate: dict[str, Any] | None = None
 
 
@@ -79,6 +85,12 @@ class SprintResult:
     # Measured spend plus every accepted ceiling: the figure the cap was
     # verified against. Not a total — part of it stands in for unmeasured spend.
     budget_verification_spend_usd: float = 0.0
+    # Measured spend this sprint recorded that no per-story row carries, because
+    # it belongs to no story of this sprint — entry-level and mid-sprint intake
+    # remediation on issues the sprint never scheduled. Declared here so the
+    # sprint-total-versus-story-rows cross-check (#2847) treats it as accounted
+    # for rather than as spend nothing explains.
+    non_story_spend_usd: float = 0.0
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
     stopped_reason: str | None = None  # why sprint stopped early, if it did
 
