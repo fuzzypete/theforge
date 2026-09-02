@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from landing_evidence_test_helpers import publish_landed
 from sprint_test_helpers import run_sprint_ctx, stub_resolved
 
 from theforge.config import (
@@ -849,6 +850,9 @@ def test_reexec_landed_story_with_open_issue_is_not_redispatched(
             }
         ],
     )
+    # ...and the landing assertion published when the merge was observed, which
+    # is what the landed query reads since #2849.
+    publish_landed(tmp_path, "run-prev", slug="issue-2054")
 
     def _mock_git(cmd, **kwargs):
         m = MagicMock()

@@ -330,6 +330,13 @@ class TestQueryHelpers:
         assert tail[1]["run_id"] == "r2"
 
     def test_has_review_approve_landing_filter(self, tmp_path: Path) -> None:
+        """``require_landed`` filters on projected landing evidence (#2849).
+
+        Previously this filtered on ``audit_records.landing_status``. It now
+        filters on the assertion published for the run, which is why ``r1``
+        gets a ``.landed.json`` artifact here — the flattened column it also
+        carries is no longer what the query reads.
+        """
         landed = _make_record(
             run_id="r1",
             reviews=[{"cycle": 1, "verdict": "APPROVE"}],
@@ -339,6 +346,28 @@ class TestQueryHelpers:
             run_id="r2",
             slug="demo",
             reviews=[{"cycle": 1, "verdict": "APPROVE"}],
+        )
+        landing = tmp_path / ".forge" / "audits" / "landing"
+        landing.mkdir(parents=True)
+        (landing / "r1.landed.json").write_text(
+            json.dumps(
+                {
+                    "kind": "landing_assertion",
+                    "schema_version": 1,
+                    "run_id": "r1",
+                    "slug": "demo",
+                    "landing_mode": "merge-pr",
+                    "target_branch": "main",
+                    "reviewed_commit": "aaa",
+                    "gated_commit": "bbb",
+                    "carrier_kind": "pull_request",
+                    "carrier_ref": "#1",
+                    "landed_commit": "ccc",
+                    "observer": "sprint.queued-pr",
+                    "observed_at": "2026-03-01T12:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
         )
         conn = sub.create_or_open(tmp_path)
         try:

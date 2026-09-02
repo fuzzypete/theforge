@@ -18,6 +18,7 @@ from coord_test_helpers import (
     _shell_with_gate,
     patch_gate_shell,
 )
+from landing_evidence_test_helpers import publish_landed
 
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit import generate_audit_log, has_review_approve
@@ -343,14 +344,39 @@ class TestHasReviewApprove:
         assert has_review_approve(tmp_path, "my-spec", require_landed=True) is False
 
     def test_require_landed_accepts_landed_approve(self, tmp_path: Path) -> None:
-        """Landed-only mode keeps working for APPROVE records that actually landed."""
+        """Landed-only mode keeps working for APPROVE records that actually landed.
+
+        "Actually landed" now means a published landing assertion (#2849), which
+        is why the record carries no ``landing_status`` here: the flattened
+        column is written at completion, before a queued PR resolves, and is no
+        longer what this query reads.
+        """
         record = {
+            "run_id": "landed-run",
+            "task": {"slug": "my-spec"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        _seed_substrate(tmp_path, [record])
+        publish_landed(tmp_path, "landed-run", slug="my-spec")
+        assert has_review_approve(tmp_path, "my-spec", require_landed=True) is True
+
+    def test_require_landed_rejects_flattened_landed_without_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        """A completion-time snapshot is not an observation (#2849).
+
+        ``landing_status='landed'`` with no assertion means nobody has observed
+        the landing — unresolved, not landed — so the landed query must not
+        answer yes on the strength of the column alone.
+        """
+        record = {
+            "run_id": "snapshot-run",
             "task": {"slug": "my-spec"},
             "landing_status": "landed",
             "reviews": [{"verdict": "APPROVE"}],
         }
         _seed_substrate(tmp_path, [record])
-        assert has_review_approve(tmp_path, "my-spec", require_landed=True) is True
+        assert has_review_approve(tmp_path, "my-spec", require_landed=True) is False
 
     def test_no_approve_record_with_base_branch(self, tmp_path: Path) -> None:
         """Returns False when no APPROVE record exists (baseline for new signature)."""
