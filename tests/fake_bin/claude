@@ -218,6 +218,18 @@ def main() -> None:
     if MODE == "grandchild_stream":
         _spawn_grandchild_and_hang(stream_first=True)
 
+    if MODE == "silent_stdout_close":
+        # The #2832 shape: produce nothing at all, close stdout so the runner's
+        # stream loop reaches EOF straight away, then stay alive past the
+        # runner's post-stream exit grace. The runner sees zero lines, then its
+        # bounded wait expires, then it SIGKILLs its own group — which is what
+        # writes exit=-9 / $0.000 / 0 chars into the record.
+        os.close(sys.stdout.fileno())
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+        sys.exit(0)
+
     if MODE == "hang":
         # Consume initial prompt but never produce output; sleep until killed.
         # Uses a short-sleep loop capped at 3s so the test stays under the 5s
