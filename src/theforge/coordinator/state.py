@@ -762,6 +762,30 @@ class CoordinatorState:
     # but cohesive story is not over scope. Routing is unaffected: 9 and 10
     # resolve to the same tier, reviewer count, and reasoning effort.
     preflight_scope_exceeded: bool = False
+    # ── Preflight complexity gate (#2681) ─────────────────────────────────
+    # Whether the end-of-preflight scope decision was put to an operator, what
+    # was decided, and under what policy. All JSON-safe: they are persisted to
+    # the resume record and the run audit so a cached or resumed run can still
+    # say the story was approved at this size — or returned to be split.
+    preflight_complexity_gate_opened: bool = False
+    preflight_complexity_gate_score: int | None = None
+    preflight_complexity_gate_implementation_score: int | None = None
+    preflight_complexity_gate_validation_score: int | None = None
+    preflight_complexity_gate_threshold: int | None = None
+    # "approve" | "decompose" — the action actually applied.
+    preflight_complexity_gate_decision: str | None = None
+    # "operator" | "no_decision" — whether a human answered at all.
+    preflight_complexity_gate_decision_source: str | None = None
+    # Why the configured no-decision action was not usable, when it was not.
+    preflight_complexity_gate_no_decision_fallback: str | None = None
+    preflight_complexity_gate_waited_seconds: float | None = None
+    preflight_complexity_gate_decided_at: str | None = None
+    # Set when the gating score did not come from a founded preflight
+    # ("degraded preflight" | "preflight examined no criteria"). Foundedness does
+    # not suppress the gate — the operator is asked either way — so this is the
+    # context they were shown when ruling, kept for the audit. None when the
+    # score was founded.
+    preflight_complexity_gate_score_provenance: str | None = None
     # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
     # that fired on each axis. Empty until preflight sizing runs.
     preflight_complexity_evidence: list[dict] = field(default_factory=list)

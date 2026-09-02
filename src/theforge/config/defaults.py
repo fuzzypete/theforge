@@ -230,6 +230,16 @@ retry:
   # Specification-gap pauses a run may open before a dev agent must proceed
   # under its own recorded assumption instead of asking again. 0 disables.
   max_spec_gap_pauses: 1
+  # Preflight complexity gate: a PROCEED story scoring at or above this pauses
+  # at the end of PREFLIGHT and asks whether to plan it as scoped or return it
+  # to be split — before any later phase is charged. 9 is one below the ceiling
+  # (10) that preflight's own scope_exceeded signal flags, so the two do not
+  # cover the same stories. Active by default; a threshold above 10 disables it.
+  preflight_complexity_gate_threshold: 9
+  # What an EXPIRED gate does. Only "approve" or "decompose"; anything else
+  # (absent, empty, misspelled) is treated as "decompose", so a typo can never
+  # spend on a story nobody approved.
+  preflight_complexity_gate_no_decision: decompose  # "approve" | "decompose"
   escalate_policy: prompt  # "prompt" | "auto_approve" | "reject"
   # What an escalate gate that EXPIRES without an operator selection does.
   # "preserve" (default) waits for an operator; "apply_advice" applies the

@@ -790,7 +790,14 @@ def _make_smart_config(tmp_path: Path) -> ForgeConfig:
         preflight_profile=preflight,
         review_pool=[opus_reviewer, gpt_reviewer],
         synthesis_profile=synthesis,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            # `complexity: large` fixtures here assert routing/state, not the
+            # preflight complexity gate. Threshold above COMPLEXITY_SCORE_MAX
+            # disables the gate so those assertions stay the subject.
+            preflight_complexity_gate_threshold=11,
+        ),
         models=["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
         plan_model_is_default=True,
         dev_profile_is_default=True,

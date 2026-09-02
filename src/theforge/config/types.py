@@ -772,6 +772,51 @@ ESCALATE_TIMEOUT_POLICIES: tuple[str, ...] = (
 )
 
 
+#: The two actions the preflight complexity gate offers, and the only two an
+#: operator may select or a project may configure as the no-decision action
+#: (#2681). ``approve`` plans and implements the story as scoped; ``decompose``
+#: returns it to be split before anything past preflight is spent on it.
+PREFLIGHT_GATE_APPROVE = "approve"
+PREFLIGHT_GATE_DECOMPOSE = "decompose"
+PREFLIGHT_GATE_ACTIONS: tuple[str, ...] = (
+    PREFLIGHT_GATE_APPROVE,
+    PREFLIGHT_GATE_DECOMPOSE,
+)
+
+#: Shipped threshold for the preflight complexity gate. One below the ceiling
+#: (``COMPLEXITY_SCORE_MAX`` = 10) that #2680's ``scope_exceeded`` signal already
+#: flags, so the two signals do not collapse onto the same set of stories: 10
+#: says "preflight judged this over scope", 9 says "preflight judged this at the
+#: top of what one story should hold, so ask before spending on it".
+DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD = 9
+
+
+def normalize_preflight_gate_no_decision(raw: object) -> tuple[str, str | None]:
+    """Resolve ``retry.preflight_complexity_gate_no_decision`` fail-closed.
+
+    Returns ``(action, fallback_reason)``. ``fallback_reason`` is None when the
+    configured value was one of :data:`PREFLIGHT_GATE_ACTIONS`; otherwise it says
+    why the value was not usable and the action is ``decompose``.
+
+    Absent, empty, and unrecognised values all resolve to ``decompose`` rather
+    than raising at config load. The gate exists to stop unapproved spend, so a
+    typo must not be able to turn it into an auto-approval — and refusing to load
+    the project's config at all would be a worse failure than taking the safe
+    action and recording that a fallback was applied.
+    """
+    if raw is None:
+        return PREFLIGHT_GATE_DECOMPOSE, "no value configured"
+    text = str(raw).strip().lower()
+    if not text:
+        return PREFLIGHT_GATE_DECOMPOSE, "configured value was empty"
+    if text not in PREFLIGHT_GATE_ACTIONS:
+        return (
+            PREFLIGHT_GATE_DECOMPOSE,
+            f"configured value {text!r} is not one of {', '.join(PREFLIGHT_GATE_ACTIONS)}",
+        )
+    return text, None
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """Retry limits before escalating to human."""
@@ -790,6 +835,18 @@ class RetryPolicy:
     # underspecified criterion into an operator interrupt. 0 disables the
     # channel entirely.
     max_spec_gap_pauses: int = 1
+    # Preflight complexity gate (#2681). A PROCEED verdict whose complexity score
+    # reaches this threshold pauses at the end of PREFLIGHT and asks the operator
+    # to approve the story as scoped or return it for decomposition — before any
+    # cost-bearing phase that follows preflight. Active by default; raising the
+    # threshold above the highest score preflight can assign (10) disables it,
+    # which is why there is no separate enable switch.
+    preflight_complexity_gate_threshold: int = DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD
+    # What an *expired* gate does, as configured. Recorded raw (not normalised)
+    # so the audit can name what the project actually wrote; resolve it through
+    # ``normalize_preflight_gate_no_decision``, which fails closed to
+    # ``decompose`` for anything absent, empty, or unrecognised.
+    preflight_complexity_gate_no_decision: str = PREFLIGHT_GATE_DECOMPOSE
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
     max_diagnose_parse_retries: int = (

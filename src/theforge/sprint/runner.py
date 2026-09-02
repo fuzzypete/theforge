@@ -23,7 +23,7 @@ import yaml
 
 from .. import worker_budget
 from ..advisory_conventions import AdvisoryArtifactError
-from ..config import ForgeConfig, ModelProfile
+from ..config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
 from ..config.model_identity import PHASE_PREFLIGHT
 from ..coordinator import config_snapshot as config_snapshot_mod
@@ -3309,6 +3309,23 @@ def _mark_story_budget_cancelled(result: CoordinatorResult, *, reason: str) -> N
         _log(f"WARN: could not re-attribute budget-cancelled story: {exc}")
 
 
+#: Operator-facing text for a story the preflight complexity gate returned.
+DECOMPOSED_STORY_REASON = "returned for decomposition"
+
+
+def _returned_for_decomposition(result: CoordinatorResult) -> bool:
+    """True when the preflight complexity gate returned this story to be split.
+
+    Read off the coordinator's recorded decision rather than off ``success`` or
+    the phase: the gate is the only thing that writes it, and every other
+    non-success path this runner sees means something went wrong (#2681).
+    """
+    return (
+        getattr(result.state, "preflight_complexity_gate_decision", None)
+        == PREFLIGHT_GATE_DECOMPOSE
+    )
+
+
 def _classify_and_record(
     task: TaskStory,
     result: CoordinatorResult,
@@ -3330,7 +3347,16 @@ def _classify_and_record(
     # (e.g. a bogus FAILED from a redispatch after a process restart).
     is_landed = landing_status == "landed"
 
-    if preflight_verdict == "ALREADY_DONE" and result.success:
+    if _returned_for_decomposition(result):
+        # Asked and answered at the preflight complexity gate (#2681): the
+        # story was returned to be split before any cost-bearing phase past
+        # preflight. Classified ahead of every result.success branch below
+        # because it is neither — nothing failed, and nothing was delivered.
+        # mark_skipped, not mark_complete: the work is not on the base branch,
+        # so a dependent must not be released as though it were.
+        outcome = StoryOutcome.DECOMPOSED
+        dag.mark_skipped(task.slug)
+    elif preflight_verdict == "ALREADY_DONE" and result.success:
         outcome = StoryOutcome.ALREADY_DONE
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
@@ -7852,7 +7878,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sprint_state.results.append((spec_str, result))
 
                 spec_cost = result.state.total_cost_measured
-                icon = "✓" if result.success else "✗"
+                # A story returned for decomposition is not a failure and gets
+                # neither mark: ✗ next to it would report a story that could not
+                # be made to work (#2681).
+                if _returned_for_decomposition(result):
+                    icon = "⤺"
+                else:
+                    icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
                 _log(
                     f"{icon} {slug}   {_fmt_cost_total(spec_cost, result.state.total_cost)}  {dur}"
@@ -8002,6 +8034,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     "phase": result.phase.name,
                     "cost_usd": _story_reported_cost(result.state),
                 }
+                if _classify_outcome == StoryOutcome.DECOMPOSED:
+                    # Say what happened on the row itself. Without a reason the
+                    # story reads as an unexplained non-completion, which is the
+                    # misreport this outcome exists to prevent (#2681).
+                    _outcome_fields["reason"] = DECOMPOSED_STORY_REASON
+                    _log(f"⤺ {slug} {DECOMPOSED_STORY_REASON} ({result.message})")
                 if _terminal_model is not None:
                     _outcome_fields["current_model"] = _terminal_model
                 # Tag preflight-verdict ALREADY_DONE outcomes so renderers can

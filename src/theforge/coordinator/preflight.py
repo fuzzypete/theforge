@@ -55,6 +55,30 @@ def complexity_source(state: "CoordinatorState") -> str:
     )
 
 
+def complexity_is_founded(state: "CoordinatorState") -> bool:
+    """Whether this story's complexity figure rests on something preflight saw.
+
+    The two signals are the ones :mod:`.resume_persistence` already weighs when
+    it decides which attempt a resume proceeds from, in the same order:
+
+    1. *degraded* — a marked-degraded attempt derived its score from a failure
+       rather than an observation, and derives a deliberately **higher** one to
+       buy accommodation while observing nothing.
+    2. *examined* — ``criteria_checked``. An attempt that checked nothing cannot
+       found a claim about the story, whatever band it named.
+
+    Routing, timeouts, and allocation are right to consume an unfounded score:
+    they need *a* number and a conservative one is the safe guess. A question
+    put to an operator is not: "is this story too broad?" answered from a figure
+    that means "we could not tell" asks them to rule on nothing, and any gate
+    that fails closed on silence would then return the story on no evidence at
+    all. So this predicate guards the gate, not the routing.
+    """
+    if getattr(state, "preflight_degraded", False):
+        return False
+    return bool(getattr(state, "preflight_criteria_checked", None))
+
+
 def stamp_complexity_provenance(state: "CoordinatorState") -> None:
     """Record on the routing audit what founded the complexity it routed on.
 
