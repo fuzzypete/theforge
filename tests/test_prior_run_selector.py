@@ -6,10 +6,14 @@ import pytest
 import yaml
 
 from theforge.task.prior_run_selector import (
+    _RENDERED_SIZE_KIND,
+    _RENDERED_SIZE_METHOD,
+    _RENDERED_SIZE_UNIT,
     INDEX_STATE_MISSING,
     INDEX_STATE_READY,
     INDEX_STATE_STALE_SCHEMA,
     INDEX_STATE_UNREADABLE,
+    _measure_rendered_summary,
     select_prior_runs,
 )
 
@@ -148,7 +152,32 @@ def test_relevant_summary_is_selected_with_deterministic_reasons(tmp_path: Path)
     assert candidate.score > 0
     assert "Related changed files: src/theforge/sprint/runner.py" in candidate.content
     assert "Evidence-backed implementation patterns:" in candidate.content
+    assert candidate.rendered_size.value == _measure_rendered_summary(candidate.content).value
+    assert candidate.rendered_size.method == _RENDERED_SIZE_METHOD
+    assert candidate.rendered_size.unit == _RENDERED_SIZE_UNIT
+    assert candidate.rendered_size.kind == _RENDERED_SIZE_KIND
     assert not selection.excluded
+
+
+def test_rendered_size_is_recorded_as_unavailable_when_measurement_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    def _broken(*_args, **_kwargs) -> list[str]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("theforge.task.prior_run_selector._estimated_token_count", _broken)
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    rendered_size = selection.candidates[0].rendered_size
+    assert rendered_size.value is None
+    assert rendered_size.method == _RENDERED_SIZE_METHOD
+    assert rendered_size.unit == _RENDERED_SIZE_UNIT
+    assert rendered_size.kind == _RENDERED_SIZE_KIND
+    assert rendered_size.unavailable_reason == "measurement_failed"
 
 
 def test_irrelevant_summary_is_excluded_as_not_relevant(tmp_path: Path) -> None:
