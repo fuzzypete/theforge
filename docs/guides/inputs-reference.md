@@ -801,6 +801,21 @@ retry:
                              # allowance — or when the pause expires — the run
                              # proceeds under the assumption the agent recorded,
                              # and the audit says which happened. 0 disables.
+  preflight_complexity_gate_threshold: 9  # a PROCEED story whose preflight
+                             # complexity score reaches this pauses at the end of
+                             # PREFLIGHT and asks whether to plan it as scoped
+                             # (`forge decide <story-run-id> approve`) or return
+                             # it to be split (`… decompose`) — before any later
+                             # phase is charged. Active by default. There is no
+                             # enable switch: a threshold above 10, the highest
+                             # score preflight can assign, disables the gate.
+  preflight_complexity_gate_no_decision: decompose  # what an EXPIRED gate does.
+                             # Only the two actions an operator may pick are
+                             # accepted. Anything else — absent, empty,
+                             # misspelled — returns the story rather than
+                             # proceeding, and the run records that a fallback
+                             # was applied, so no misconfiguration can spend on a
+                             # story nobody approved.
   adaptive_iterations: true  # scale per-story iteration limits from preflight
                              # complexity; the max_* fields above act as the floor
   max_dev_iterations_cap: 0  # hard ceiling for adaptive growth; 0 = same as

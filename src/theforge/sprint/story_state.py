@@ -50,7 +50,7 @@ class StoryOutcome(str, Enum):
 
     Non-terminal: WAITING, RUNNING, BLOCKED.
     Terminal: DONE, ALREADY_DONE, FAILED, MERGE_FAILED, MERGE_ARMING_FAILED,
-    ESCALATED, SKIPPED, PRESERVED, DROPPED.
+    ESCALATED, SKIPPED, PRESERVED, DROPPED, DECOMPOSED.
 
     MERGE_FAILED is the post-approval merge-step failure (dev + review succeeded
     but the integration step crashed/refused). It is distinct from FAILED (a
@@ -84,6 +84,12 @@ class StoryOutcome(str, Enum):
     # from FAILED-bucket outcomes — operator paid $0 and the system correctly
     # identified the issue as not its work.
     OPERATOR_ACTION = "operator_action"
+    # returned-for-decomposition: the preflight complexity gate asked whether
+    # the story should be planned as scoped, and the answer (an operator's, or
+    # the configured no-decision action) was to split it (#2681). Terminal, and
+    # deliberately outside the failed bucket: nothing about the story failed —
+    # the system stopped before spending on a scope nobody had approved.
+    DECOMPOSED = "decomposed"
 
     @property
     def is_terminal(self) -> bool:
@@ -118,6 +124,9 @@ class StoryOutcome(str, Enum):
             StoryOutcome.SKIPPED,
             StoryOutcome.PRESERVED,
             StoryOutcome.OPERATOR_ACTION,
+            # Counted with the not-run stories, not the failed ones: the sprint
+            # deliberately did not spend on it (#2681).
+            StoryOutcome.DECOMPOSED,
         }
 
 
@@ -134,6 +143,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.DROPPED_SHAPE,
     StoryOutcome.DROPPED_AFTER_FIX,
     StoryOutcome.OPERATOR_ACTION,
+    StoryOutcome.DECOMPOSED,
 }
 
 
@@ -163,6 +173,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.DROPPED_AFTER_FIX: "failed",
     StoryOutcome.REMEDIATED: "waiting",
     StoryOutcome.OPERATOR_ACTION: "operator-action",
+    StoryOutcome.DECOMPOSED: "decomposed",
 }
 
 
@@ -187,6 +198,7 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "dropped_after_fix": StoryOutcome.DROPPED_AFTER_FIX,
     "operator_action": StoryOutcome.OPERATOR_ACTION,
     "operator-action": StoryOutcome.OPERATOR_ACTION,
+    "decomposed": StoryOutcome.DECOMPOSED,
 }
 
 

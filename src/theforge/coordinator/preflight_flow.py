@@ -81,6 +81,7 @@ from .preflight import (
     score_to_band,
 )
 from .preflight_cache import capture_preflight_cache_snapshot
+from .preflight_complexity_gate import evaluate_preflight_complexity_gate
 from .preflight_evidence import build_partial_evidence
 from .resume_persistence import save_resume_record
 from .state import CoordinatorResult, CoordinatorState, Phase
@@ -1337,6 +1338,17 @@ def _handle_preflight_verdict(
     - ``result is None, already_done_loop is False`` — PROCEED; caller
       continues to ``_run_plan_phase``.
     """
+    # ── Preflight complexity gate (#2681) ─────────────────────────────
+    # Anchored here, at the one handoff every preflight path passes through
+    # (fresh, cached, resumed), rather than at the head of PLAN: a story
+    # preflight classified implementation_ready skips planning altogether and
+    # must still stop before the first cost-bearing phase that follows. Only a
+    # PROCEED verdict reaches the gate — ALREADY_DONE, BLOCKED, and NO_JUDGMENT
+    # are terminal below and spend nothing further either way.
+    _gate_result = evaluate_preflight_complexity_gate(state, config, task, verdict, logger=logger)
+    if _gate_result is not None:
+        return config, _gate_result, False
+
     # ── NO_JUDGMENT (infrastructure abort, #1951) ─────────────────────
     # The preflight invocation produced no model output, so there is no verdict
     # to dispatch on. End the run as an infrastructure failure: the terminal

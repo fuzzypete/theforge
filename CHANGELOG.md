@@ -58,6 +58,27 @@ make v0.10.0 safe to build v0.11.0 on.
 
 ### Added
 
+- **Preflight complexity gate (#2681):** a story whose preflight verdict is
+  PROCEED and whose complexity score reaches
+  `retry.preflight_complexity_gate_threshold` (shipped: 9, active by default)
+  now pauses at the end of PREFLIGHT and asks the operator to approve it as
+  scoped (`forge decide <story-run-id> approve`) or return it for decomposition
+  (`… decompose`) — before planning, dev, or review is charged. Approving
+  continues exactly as before and records the approval at that score; returning
+  it ends the run having spent only preflight and reports the story as
+  *returned for decomposition* (`outcome: decomposed`), not as a failure. Other
+  stories in the sprint keep running while one waits. An expired gate takes
+  `retry.preflight_complexity_gate_no_decision`, which accepts only the same two
+  actions — anything absent, empty, or unrecognised returns the story, so no
+  misconfiguration can spend on an unapproved one. Raising the threshold above
+  10 disables the gate; there is no separate enable switch. Every PROCEED score
+  at or above the threshold opens it, including one derived by a degraded
+  preflight or by one that examined no criteria. Such a score is conservatively
+  *high* precisely because the story could not be sized, which is a reason to
+  ask rather than to skip asking — so the provenance is shown to the operator
+  with the score and recorded as
+  `preflight_complexity_gate.score_provenance_note` on the audit, as context for
+  the decision rather than a suppression of it.
 - **`forge diagnose` flow:** a separate flow for root-cause discovery on symptom
   bugs, distinct from fix work. Operators can run diagnosis as its own bounded
   step before deciding whether to sprint a fix. (#1154)

@@ -85,7 +85,7 @@ SKIP_REASON_UNRECORDED_CLASS = "skip_reason_unrecorded"
 # rather than failed. Keep in sync with ``StoryOutcome.is_skipped`` in
 # ``sprint.story_state`` — this module is a pure function over on-disk artifacts
 # and deliberately imports no coordinator/sprint runtime modules.
-SKIPPED_OUTCOMES = frozenset({"SKIPPED", "PRESERVED", "OPERATOR_ACTION"})
+SKIPPED_OUTCOMES = frozenset({"SKIPPED", "PRESERVED", "OPERATOR_ACTION", "DECOMPOSED"})
 
 # Per-story accounting status the coordinator records when a story's spend could
 # not be measured. Keep in sync with ``coordinator.story_budget.STATUS_UNKNOWN``.

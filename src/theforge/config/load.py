@@ -59,8 +59,10 @@ from .role_derivation import derive_roles
 from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
 from .types import (
+    DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD,
     ESCALATE_TIMEOUT_POLICIES,
     ESCALATE_TIMEOUT_PRESERVE,
+    PREFLIGHT_GATE_DECOMPOSE,
     SUPPORTED_PROVIDERS,
     VALIDATION_AUTHORITIES,
     VALIDATION_AUTHORITY_ADVISORY,
@@ -1388,9 +1390,27 @@ def load_config(config_path: Path) -> ForgeConfig:
             f"retry.max_spec_gap_pauses: must be >= 0, got {max_spec_gap_pauses} "
             "(0 disables the specification-gap channel)"
         )
+    # Preflight complexity gate (#2681). The threshold is an ordinary integer:
+    # a value above the highest score preflight can assign disables the gate, so
+    # no separate enable switch exists and none is validated here. The
+    # no-decision action is deliberately NOT validated at load: unlike
+    # escalate_timeout_policy, whose two values are equally safe, a typo here
+    # must not be able to authorise spend — it is resolved fail-closed to
+    # ``decompose`` at the gate, which records that a fallback was applied.
+    preflight_complexity_gate_threshold = int(
+        retry_data.get(
+            "preflight_complexity_gate_threshold",
+            DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD,
+        )
+    )
+    preflight_complexity_gate_no_decision = str(
+        retry_data.get("preflight_complexity_gate_no_decision", PREFLIGHT_GATE_DECOMPOSE)
+    )
     retry = RetryPolicy(
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_spec_gap_pauses=max_spec_gap_pauses,
+        preflight_complexity_gate_threshold=preflight_complexity_gate_threshold,
+        preflight_complexity_gate_no_decision=preflight_complexity_gate_no_decision,
         max_dev_transport_retries=int(retry_data.get("max_dev_transport_retries", 1)),
         max_plan_transport_retries=int(retry_data.get("max_plan_transport_retries", 2)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),

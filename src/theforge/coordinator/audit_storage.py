@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 40
+CURRENT_RECORD_SCHEMA_VERSION = 41
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2172,6 +2172,24 @@ def _migrate_v39_to_v40(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v40_to_v41(record: dict) -> dict:
+    """Advance v40 records across the preflight complexity gate (#2681).
+
+    v41 carries ``preflight_complexity_gate`` (whether the end-of-preflight
+    scope decision was put to an operator, and how it resolved), the
+    ``outcome.returned_for_decomposition`` flag, and the two
+    ``retry.preflight_complexity_gate_*`` keys that
+    ``configuration.recorded_values`` enumerates. A v40 record predates the gate
+    entirely, so no such decision could have been made on it. Backfilling
+    ``opened: false`` would look harmless and assert the wrong thing — that the
+    run had the gate and scored under it — when in fact the run was never
+    offered the choice. The reader distinguishes an absent block from a present
+    one, so the migration is a no-op and the stored record is never rewritten
+    (ADR-0002 refusal-to-forget).
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2220,6 +2238,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     37: _migrate_v37_to_v38,
     38: _migrate_v38_to_v39,
     39: _migrate_v39_to_v40,
+    40: _migrate_v40_to_v41,
 }
 
 

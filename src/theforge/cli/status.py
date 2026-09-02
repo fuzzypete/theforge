@@ -676,6 +676,55 @@ def _show_triage_pending_decision(entry: dict, now: datetime.datetime) -> None:
     print(f"    discard: forge triage --discard {run_id}")
 
 
+def _preflight_gate_lines(entry: dict, run_id: str) -> list[str]:
+    """Render the preflight complexity gate's own context, if this is one.
+
+    The gate's prose reason already says all of this, but the numbers are what
+    the decision turns on, so they get their own structured line rather than
+    being left to the operator to pick out of a paragraph. Both complexity axes
+    are shown when present: the projected score is what opened the gate, and the
+    implementation/validation split is what says whether the size came from the
+    code change or from what it takes to validate it (#2681).
+    """
+    from theforge.coordinator.preflight_complexity_gate import (  # noqa: PLC0415
+        PREFLIGHT_GATE_EXTRA_KEY,
+    )
+
+    payload = entry.get(PREFLIGHT_GATE_EXTRA_KEY)
+    if not isinstance(payload, dict):
+        return []
+
+    axes = []
+    impl = payload.get("implementation_complexity_score")
+    validation = payload.get("validation_complexity_score")
+    if isinstance(impl, int):
+        axes.append(f"impl {impl}")
+    if isinstance(validation, int):
+        axes.append(f"validation {validation}")
+    axis_text = f" ({', '.join(axes)})" if axes else ""
+
+    lines = [
+        f"    scope:   complexity {payload.get('complexity_score')}{axis_text}"
+        f"  threshold {payload.get('threshold')}",
+        "    nothing has been spent beyond preflight for this story",
+    ]
+    for action, gloss in (
+        ("approve", "plan and implement it as scoped"),
+        ("decompose", "return it to be split"),
+    ):
+        if action in [str(o) for o in entry.get("options") or []]:
+            lines.append(f"      forge decide {run_id} {action:<10} {gloss}")
+    no_decision = payload.get("no_decision_action")
+    if no_decision:
+        fallback = payload.get("no_decision_fallback")
+        suffix = f" ({fallback}; falling back)" if fallback else ""
+        lines.append(f"    on timeout: {no_decision}{suffix}")
+    note = payload.get("score_provenance_note")
+    if note:
+        lines.append(f"    score provenance: {note}")
+    return lines
+
+
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
     """Print the pending-decisions section."""
     # These predicates are pure functions of the record, not of whichever module
@@ -722,6 +771,8 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
             status_str = f"decided: {decision}" if decision else f"waiting{time_remaining}"
             opts_str = "/".join(options) if options else ""
             print(f"  {run_id}  [{phase}]  story={story}  {status_str}")
+            for line in _preflight_gate_lines(entry, str(run_id)):
+                print(line)
             if reason:
                 _print_pending_reason(reason)
             if opts_str:
