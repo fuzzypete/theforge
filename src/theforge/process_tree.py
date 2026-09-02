@@ -97,6 +97,22 @@ class ProcessInfo:
     that began at time T?", which needs a number a caller can order. None where
     the platform cannot say.
     """
+    started_since_boot: float | None = None
+    """The same start time as seconds since boot, straight from the kernel.
+
+    ``started_at`` is composed on Linux from a *cached* boot epoch plus this
+    process's boot-relative start, so ordering two processes through it crosses
+    from the kernel's boot-relative clock into wall time and back. If the cached
+    boot epoch and a later wall-clock read disagree — a clock step, a cache that
+    has outlived its frame — the composed answer is wrong in a way no slack
+    constant can bound, and a live descendant reads as older than the spawn that
+    created it (#2689).
+
+    This field never leaves the kernel's own domain, so a caller that also has a
+    boot-relative "now" can order the two without a wall clock in between. None
+    where the platform does not expose one (macOS reports a wall-clock start
+    directly, so ``started_at`` there needs no composition).
+    """
 
 
 # ── Linux: /proc ─────────────────────────────────────────────────────
@@ -148,11 +164,12 @@ def _boot_time_epoch() -> float | None:
     return value
 
 
-def _linux_started_at_epoch(ticks: float) -> float | None:
-    """``starttime`` (clock ticks since boot, proc(5)) as epoch seconds."""
-    boot = _boot_time_epoch()
-    if boot is None:
-        return None
+def _clock_ticks_per_second() -> float:
+    """``SC_CLK_TCK`` — the unit ``/proc/<pid>/stat``'s ``starttime`` counts in.
+
+    Cached, and 0.0 where the platform will not say, which leaves both derived
+    start times None rather than scaled by a guess.
+    """
     hz = _state.get("hz")
     if not isinstance(hz, float):
         try:
@@ -160,7 +177,51 @@ def _linux_started_at_epoch(ticks: float) -> float | None:
         except (ValueError, OSError, AttributeError):
             hz = 0.0
         _state["hz"] = hz
-    return None if hz <= 0 else boot + ticks / hz
+    return hz
+
+
+def _linux_started_since_boot(ticks: float) -> float | None:
+    """``starttime`` (clock ticks since boot, proc(5)) as seconds since boot.
+
+    The kernel's own frame, with no boot epoch and no wall clock in it — see
+    :attr:`ProcessInfo.started_since_boot` for why that distinction matters.
+    """
+    hz = _clock_ticks_per_second()
+    return None if hz <= 0 else ticks / hz
+
+
+def boot_relative_now() -> float | None:
+    """Seconds since boot *now*, in the same frame as ``started_since_boot``.
+
+    ``CLOCK_BOOTTIME`` is the clock ``starttime`` is recorded against (it counts
+    suspended time, which ``CLOCK_MONOTONIC`` does not, so a host that slept
+    between boot and a spawn would otherwise misorder them). ``/proc/uptime``
+    reports the same quantity and is the fallback where the clock id is missing.
+
+    None off Linux, where nothing needs it: those platforms report a process's
+    start as a wall-clock time directly.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    clock_id = getattr(time, "CLOCK_BOOTTIME", None)
+    if clock_id is not None:
+        try:
+            return float(time.clock_gettime(clock_id))
+        except (OSError, ValueError, AttributeError):
+            pass
+    try:
+        return float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _linux_started_at_epoch(ticks: float) -> float | None:
+    """``starttime`` (clock ticks since boot, proc(5)) as epoch seconds."""
+    boot = _boot_time_epoch()
+    if boot is None:
+        return None
+    since_boot = _linux_started_since_boot(ticks)
+    return None if since_boot is None else boot + since_boot
 
 
 def _linux_info(pid: int) -> ProcessInfo | None:
@@ -172,12 +233,14 @@ def _linux_info(pid: int) -> ProcessInfo | None:
     if parsed is None:
         return None
     ticks = parsed[2].split(":", 1)[1]
+    datable = ticks.isdigit()
     return ProcessInfo(
         pid,
         parsed[0],
         parsed[1],
         parsed[2],
-        started_at=_linux_started_at_epoch(float(ticks)) if ticks.isdigit() else None,
+        started_at=_linux_started_at_epoch(float(ticks)) if datable else None,
+        started_since_boot=_linux_started_since_boot(float(ticks)) if datable else None,
     )
 
 
