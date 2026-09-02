@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 41
+CURRENT_RECORD_SCHEMA_VERSION = 42
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2190,6 +2190,25 @@ def _migrate_v40_to_v41(record: dict) -> dict:
     return record
 
 
+def _migrate_v41_to_v42(record: dict) -> dict:
+    """Advance v41 records across the preflight decomposition assessment (#2686).
+
+    v42 adds the assessment the complexity pause now carries — the artifact,
+    whether one was produced, the reason when none was, its cost/duration/model
+    identity, and the operator's disposition of it — inside the existing
+    ``preflight_complexity_gate`` block.
+
+    A v41 record predates the assessment step entirely: its gate paused (or did
+    not) without one ever being attempted. Backfilling ``assessment_generated:
+    false`` would be indistinguishable from a run where the step ran and found
+    nothing to split, which is precisely the distinction the audit exists to
+    keep. The reader tells an absent key from a present one, so the migration is
+    a no-op and the stored record is never rewritten (ADR-0002
+    refusal-to-forget).
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2239,6 +2258,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     38: _migrate_v38_to_v39,
     39: _migrate_v39_to_v40,
     40: _migrate_v40_to_v41,
+    41: _migrate_v41_to_v42,
 }
 
 

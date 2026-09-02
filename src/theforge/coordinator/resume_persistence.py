@@ -194,6 +194,36 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "complexity_gate_waited_seconds": state.preflight_complexity_gate_waited_seconds,
         "complexity_gate_decided_at": state.preflight_complexity_gate_decided_at,
         "complexity_gate_score_provenance": state.preflight_complexity_gate_score_provenance,
+        # The decomposition assessment carried on that pause (#2686). Restored
+        # so a resumed attempt neither loses an artifact that was paid for nor
+        # pays to produce it a second time.
+        "complexity_gate_assessment": _jsonable(state.preflight_complexity_gate_assessment),
+        "complexity_gate_assessment_generated": bool(
+            state.preflight_complexity_gate_assessment_generated
+        ),
+        "complexity_gate_assessment_none_reason": (
+            state.preflight_complexity_gate_assessment_none_reason
+        ),
+        "complexity_gate_assessment_errors": [
+            str(e) for e in state.preflight_complexity_gate_assessment_errors or []
+        ],
+        "complexity_gate_assessment_duration_s": (
+            state.preflight_complexity_gate_assessment_duration_s
+        ),
+        "complexity_gate_assessment_model": state.preflight_complexity_gate_assessment_model,
+        "complexity_gate_assessment_profile": state.preflight_complexity_gate_assessment_profile,
+        "complexity_gate_assessment_cost_provenance": (
+            state.preflight_complexity_gate_assessment_cost_provenance
+        ),
+        # Provenance only, for the same reason as preflight's own cost below: a
+        # restored figure describes what a PRIOR attempt spent, and folding it
+        # into this process's aggregates would double-count it at the sprint
+        # roll-up. ``_apply_preflight`` lands it on the prior-cost field.
+        "complexity_gate_assessment_cost_usd": (
+            state.preflight_complexity_gate_assessment_cost_usd
+            if state.preflight_complexity_gate_assessment_invoked
+            else state.preflight_complexity_gate_assessment_prior_cost_usd
+        ),
         "sufficiency": state.preflight_sufficiency,
         "work_type": state.preflight_work_type,
         "domains": list(state.preflight_domains or []),
@@ -985,6 +1015,33 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         (
             "preflight_complexity_gate_score_provenance",
             "complexity_gate_score_provenance",
+        ),
+        ("preflight_complexity_gate_assessment", "complexity_gate_assessment"),
+        (
+            "preflight_complexity_gate_assessment_generated",
+            "complexity_gate_assessment_generated",
+        ),
+        (
+            "preflight_complexity_gate_assessment_none_reason",
+            "complexity_gate_assessment_none_reason",
+        ),
+        ("preflight_complexity_gate_assessment_errors", "complexity_gate_assessment_errors"),
+        (
+            "preflight_complexity_gate_assessment_duration_s",
+            "complexity_gate_assessment_duration_s",
+        ),
+        ("preflight_complexity_gate_assessment_model", "complexity_gate_assessment_model"),
+        ("preflight_complexity_gate_assessment_profile", "complexity_gate_assessment_profile"),
+        (
+            "preflight_complexity_gate_assessment_cost_provenance",
+            "complexity_gate_assessment_cost_provenance",
+        ),
+        # Deliberately NOT ``..._cost_usd``: a restored cost is a prior attempt's
+        # spend, and ``total_decomposition_assessment_cost`` reads the live field
+        # only when THIS process invoked the assessment.
+        (
+            "preflight_complexity_gate_assessment_prior_cost_usd",
+            "complexity_gate_assessment_cost_usd",
         ),
         ("preflight_sufficiency", "sufficiency"),
         ("preflight_work_type", "work_type"),

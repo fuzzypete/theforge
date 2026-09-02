@@ -624,3 +624,460 @@ class TestSiblingStoriesAreNotBlocked:
 
         assert waiting_state.preflight_complexity_gate_decision == "decompose"
         assert below.preflight_complexity_gate_decision is None
+
+
+# ── The pause carries a decomposition assessment (#2686) ─────────────────
+
+
+_ASSESSMENT_OUTPUT = """\
+<decomposition_assessment>
+atomic: false
+slices:
+  - id: 1
+    title: "Parser and data contract"
+    scope: "The pure-data types and the parser. Excludes every call site."
+    depends_on: []
+    covers_criteria: [1]
+  - id: 2
+    title: "Wire it at the gate"
+    scope: "Only the call site and its failure handling."
+    depends_on: [1]
+    covers_criteria: [2]
+unsettled:
+  - "Whether criterion 2 belongs with slice 2 or its own slice."
+</decomposition_assessment>
+"""
+
+_ATOMIC_OUTPUT = """\
+<decomposition_assessment>
+atomic: true
+atomic_reason: "One indivisible schema change; every criterion depends on it."
+</decomposition_assessment>
+"""
+
+_STORY_WITH_CRITERIA = """\
+# A large story
+
+## Acceptance criteria
+
+- the parser validates its output
+- the gate renders the artifact
+"""
+
+
+def _assessment_agent(output: str = _ASSESSMENT_OUTPUT, *, cost_usd=0.11, success: bool = True):
+    """Patch the one agent the assessment invokes, and count the invocations."""
+    return patch(
+        "theforge.coordinator.preflight_decomposition_flow.run_agent",
+        return_value=_make_agent_result(success=success, output=output, cost_usd=cost_usd),
+    )
+
+
+def _assessed_state(**kwargs) -> CoordinatorState:
+    state = _gated_state(**kwargs)
+    state.story_content = _STORY_WITH_CRITERIA
+    return state
+
+
+class TestThePauseCarriesAnAssessment:
+    def test_the_pending_record_carries_the_slices_edges_and_coverage(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+        captured: dict = {}
+
+        real_write = pending.write_pending
+
+        def _capture(**kwargs):
+            path = real_write(**kwargs)
+            captured.update(kwargs)
+            return path
+
+        with (
+            _assessment_agent(),
+            patch("theforge.pending.write_pending", side_effect=_capture),
+            patch("theforge.pending.poll_pending", side_effect=_never_answered),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        # The prose an operator reads at the pause, alongside the question.
+        reason = captured["reason"]
+        assert "Decomposition assessment (2 candidate slices)" in reason
+        assert "1. Parser and data contract — scope:" in reason
+        assert "depends_on: 1" in reason
+        assert "covers AC 1" in reason
+        assert "Unsettled:" in reason
+        assert "forge decide 7c1e04b9d3af decompose" in reason
+
+        # And the same thing as data, so status/notification surfaces do not
+        # have to parse the prose.
+        payload = captured["extra"][PREFLIGHT_GATE_EXTRA_KEY]
+        assert payload["assessment_generated"] is True
+        assert payload["assessment"]["slices"][1]["depends_on"] == [1]
+        assert payload["assessment"]["unsettled"]
+        assert payload["assessment_none_reason"] is None
+        assert payload["assessment_cost_usd"] == 0.11
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_a_gated_run_assesses_before_the_pause_and_still_spends_nothing_after_it(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
+    ):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        (tmp_path / "test-task").mkdir()
+
+        mock_shell.return_value = (True, "OK", 0, False)
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=_preflight_output(9), cost_usd=0.37
+        )
+
+        with (
+            _assessment_agent() as mock_assess,
+            patch("theforge.pending.poll_pending", side_effect=_never_answered),
+        ):
+            result = run_task(config, task)
+
+        # One assessment, produced before the operator was asked.
+        assert mock_assess.call_count == 1
+        assert result.state.preflight_complexity_gate_assessment_generated is True
+        assert len(result.state.preflight_complexity_gate_assessment["slices"]) == 2
+        # And nothing past preflight was charged either way.
+        mock_plan.assert_not_called()
+        mock_dev.assert_not_called()
+        mock_pool.assert_not_called()
+
+    def test_the_assessment_is_not_produced_for_a_story_that_never_pauses(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state(score=8, implementation=8)
+
+        with _assessment_agent() as mock_assess:
+            assert evaluate_preflight_complexity_gate(state, config, task, "PROCEED") is None
+
+        mock_assess.assert_not_called()
+        assert state.preflight_complexity_gate_assessment is None
+
+    def test_the_original_story_is_left_intact_and_runnable_either_way(self, tmp_path: Path):
+        """The assessment mutates nothing: not the story file, not the state's text."""
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        before = task.story_path.read_text(encoding="utf-8")
+        state = _assessed_state()
+
+        with (
+            _assessment_agent(),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        assert result is None  # approved: the run continues on the original story
+        assert task.story_path.read_text(encoding="utf-8") == before
+        assert state.story_content == _STORY_WITH_CRITERIA
+
+
+class TestTheAssessmentCannotMutateAnything:
+    def test_the_invocation_is_sealed_read_only_regardless_of_the_configured_profile(
+        self, tmp_path: Path
+    ):
+        """Non-mutation is a property of the invocation, not of the prompt."""
+        from dataclasses import replace  # noqa: PLC0415
+
+        from theforge.coordinator.preflight_decomposition_flow import (
+            ASSESSMENT_PROFILE_NAME,
+        )
+
+        config = _config_with(tmp_path)
+        # A project whose preflight profile was widened to a writable sandbox
+        # with a shell must not carry that into the assessment.
+        config = replace(
+            config,
+            preflight_profile=replace(
+                config.preflight_profile,
+                allowed_tools=("Read", "Bash", "Write", "Edit"),
+                sandbox_mode="workspace-write",
+            ),
+            secrets={"GH_TOKEN": "tracker-write", "ANTHROPIC_API_KEY": "inference"},
+        )
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+        captured: dict = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return _make_agent_result(success=True, output=_ASSESSMENT_OUTPUT, cost_usd=0.11)
+
+        with (
+            patch(
+                "theforge.coordinator.preflight_decomposition_flow.run_agent",
+                side_effect=_capture,
+            ),
+            patch("theforge.pending.poll_pending", side_effect=_never_answered),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        profile = captured["profile"]
+        assert profile.name == ASSESSMENT_PROFILE_NAME
+        assert profile.sandbox_mode == "read-only"
+        assert "Bash" not in profile.allowed_tools
+        assert "Write" not in profile.allowed_tools
+        assert "Edit" not in profile.allowed_tools
+        assert profile.allowed_tools  # set, never emptied — empty means unrestricted
+        # A tracker credential cannot reach an advisory stage.
+        assert "GH_TOKEN" not in captured["secrets"]
+        assert captured["secrets"]["ANTHROPIC_API_KEY"] == "inference"
+        # And it reads a clean baseline checkout, not the story's worktree.
+        assert Path(captured["working_dir"]) != Path(config.project_root)
+
+    def test_the_assessment_is_bounded_below_the_planning_spend_it_displaces(self, tmp_path: Path):
+        from theforge.coordinator.preflight_decomposition_flow import (
+            assessment_budget_usd,
+            assessment_timeout_seconds,
+        )
+
+        config = _config_with(tmp_path)
+        planning = config.plan.budget_usd
+
+        budget = assessment_budget_usd(config, config.preflight_profile)
+
+        assert budget < planning
+        assert budget <= config.preflight_profile.budget_usd
+        # And the invocation cannot outlast the pause it is written before.
+        assert assessment_timeout_seconds(config.preflight_profile, 4000) < 4000
+
+
+class TestNoAssessmentNeverBlocksThePause:
+    @pytest.mark.parametrize(
+        ("output", "success", "expected"),
+        [
+            (_ATOMIC_OUTPUT, True, "judged the story atomic"),
+            ("no block here at all", True, "no <decomposition_assessment> block"),
+            (
+                "<decomposition_assessment>\nslices: []\n</decomposition_assessment>",
+                True,
+                "failed validation",
+            ),
+            ("", False, "returned failure"),
+        ],
+    )
+    def test_the_pause_still_opens_and_records_why_none_was_produced(
+        self, output, success, expected, tmp_path: Path
+    ):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+        captured: dict = {}
+
+        real_write = pending.write_pending
+
+        def _capture(**kwargs):
+            path = real_write(**kwargs)
+            captured.update(kwargs)
+            return path
+
+        with (
+            _assessment_agent(output, success=success),
+            patch("theforge.pending.write_pending", side_effect=_capture),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        # The absence never blocks the pause from being answered.
+        assert result is None
+        assert state.preflight_complexity_gate_decision == "approve"
+        assert state.preflight_complexity_gate_decision_source == "operator"
+        # And the pause carried the question plus a recorded statement of absence.
+        assert state.preflight_complexity_gate_assessment is None
+        assert state.preflight_complexity_gate_assessment_generated is False
+        assert expected in state.preflight_complexity_gate_assessment_none_reason
+        assert "No decomposition assessment:" in captured["reason"]
+        assert expected in captured["reason"]
+        assert f"forge decide {state.run_id} decompose" in captured["reason"]
+
+    def test_an_agent_that_cannot_be_invoked_leaves_the_gate_working(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+
+        with (
+            patch(
+                "theforge.coordinator.preflight_decomposition_flow.run_agent",
+                side_effect=RuntimeError("no runner"),
+            ),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("decompose")),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        assert result is not None and result.success is False
+        assert state.preflight_complexity_gate_assessment_generated is False
+        assert "no runner" in state.preflight_complexity_gate_assessment_none_reason
+        # No agent ran, so the run's measured total is not poisoned by it.
+        assert state.total_decomposition_assessment_cost_measured == 0.0
+
+
+class TestAssessmentCostIsRecordedPerRun:
+    def test_a_measured_assessment_is_charged_to_the_run(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+
+        with (
+            _assessment_agent(cost_usd=0.11),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        assert state.preflight_complexity_gate_assessment_cost_usd == 0.11
+        assert state.total_decomposition_assessment_cost == 0.11
+        assert state.total_decomposition_assessment_cost_measured == 0.11
+        assert state.total_cost == pytest.approx(0.11)
+        assert state.total_cost_measured == pytest.approx(0.11)
+
+    def test_an_unmeasured_assessment_poisons_the_run_total(self, tmp_path: Path):
+        """A killed assessment reported no cost; coercing it to $0.00 would lie."""
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+
+        with (
+            _assessment_agent(cost_usd=None),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        assert state.preflight_complexity_gate_assessment_invoked is True
+        assert state.total_decomposition_assessment_cost_measured is None
+        assert state.total_cost_measured is None
+
+    def test_a_run_that_produced_no_assessment_contributes_a_measured_zero(self, tmp_path: Path):
+        state = CoordinatorState()
+
+        assert state.total_decomposition_assessment_cost == 0.0
+        assert state.total_decomposition_assessment_cost_measured == 0.0
+        assert state.total_cost_measured == 0.0
+
+
+class TestTheAssessmentAndItsDispositionAreAudited:
+    def _record_for(self, tmp_path: Path, answer: str) -> dict:
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+        state.started_at = "2026-01-01T00:00:00+00:00"
+
+        with (
+            _assessment_agent(),
+            patch("theforge.pending.poll_pending", side_effect=_answer_with(answer)),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        return generate_audit_log(
+            config,
+            task,
+            CoordinatorResult(
+                success=answer == "approve", phase=Phase.PREFLIGHT, state=state, message="m"
+            ),
+        )
+
+    def test_the_artifact_and_an_acted_on_split_are_both_recorded(self, tmp_path: Path):
+        gate = self._record_for(tmp_path, "decompose")["preflight_complexity_gate"]
+
+        assert gate["assessment_generated"] is True
+        assert len(gate["assessment"]["slices"]) == 2
+        assert gate["assessment"]["slices"][1]["depends_on"] == [1]
+        assert gate["assessment"]["unsettled"]
+        assert gate["none_produced_reason"] is None
+        assert gate["assessment_cost_usd"] == 0.11
+        assert gate["assessment_duration_s"] is not None
+        assert gate["assessment_profile"] == "preflight_decomposition_assessment"
+        # The disposition is what lets assessment quality be measured later.
+        assert gate["assessment_disposition"] == "operator_decompose"
+
+    def test_an_overridden_assessment_records_the_override(self, tmp_path: Path):
+        gate = self._record_for(tmp_path, "approve")["preflight_complexity_gate"]
+
+        assert gate["assessment_generated"] is True
+        assert gate["assessment_disposition"] == "operator_approve"
+
+    def test_an_ungated_run_keeps_the_assessment_fields_present_and_empty(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.started_at = "2026-01-01T00:00:00+00:00"
+
+        record = generate_audit_log(
+            config,
+            task,
+            CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done"),
+        )
+
+        gate = record["preflight_complexity_gate"]
+        assert gate["assessment"] is None
+        assert gate["assessment_generated"] is False
+        assert gate["none_produced_reason"] is None
+        assert gate["assessment_disposition"] is None
+        assert gate["assessment_cost_usd"] == 0.0
+
+
+class TestTheAssessmentSurvivesResumeWithoutBeingPaidForTwice:
+    def test_an_interrupted_pause_reuses_the_recorded_assessment(self, tmp_path: Path):
+        """The pause is re-asked on resume; the artifact it carries is not re-bought."""
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        first = _assessed_state()
+
+        with (
+            _assessment_agent() as mock_assess,
+            patch("theforge.pending.poll_pending", side_effect=_never_answered),
+        ):
+            evaluate_preflight_complexity_gate(first, config, task, "PROCEED")
+        assert mock_assess.call_count == 1
+
+        # The gate saved its own record after generating the assessment, so the
+        # artifact is on disk even though preflight's save ran before the gate.
+        record = load_resume_record(config.project_root, task.slug)
+        assert record is not None
+        resumed = CoordinatorState()
+        resumed.run_id = "7c1e04b9d3af"
+        resumed.story_content = _STORY_WITH_CRITERIA
+        apply_resume_record_to_state(resumed, record)
+
+        assert resumed.preflight_complexity_gate_assessment["slices"][0]["title"] == (
+            "Parser and data contract"
+        )
+        assert resumed.preflight_complexity_gate_assessment_generated is True
+        # Restored as provenance only: a prior attempt's spend is not this run's.
+        assert resumed.preflight_complexity_gate_assessment_prior_cost_usd == 0.11
+        assert resumed.total_decomposition_assessment_cost == 0.0
+        assert resumed.total_decomposition_assessment_cost_measured == 0.0
+
+        # Clear the recorded decision so the resumed attempt re-opens the pause,
+        # which is the case where regeneration would otherwise happen.
+        resumed.preflight_complexity_gate_decision = None
+        resumed.preflight_complexity_gate_decision_source = None
+        with (
+            _assessment_agent() as mock_again,
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            assert evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED") is None
+
+        mock_again.assert_not_called()
+        assert resumed.preflight_complexity_gate_assessment_generated is True
+
+    def test_a_recorded_absence_is_not_re_attempted_either(self, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        state = _assessed_state()
+        state.preflight_complexity_gate_assessment_none_reason = (
+            "the assessment judged the story atomic — it found no boundary to split on"
+        )
+
+        with (
+            _assessment_agent() as mock_assess,
+            patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")),
+        ):
+            evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+
+        mock_assess.assert_not_called()

@@ -58,6 +58,31 @@ make v0.10.0 safe to build v0.11.0 on.
 
 ### Added
 
+- **The complexity pause carries a decomposition assessment (#2686):** when the
+  preflight complexity gate opens, it no longer shows only the question. One
+  bounded, read-only agent invocation now produces an assessment from evidence
+  preflight already holds — candidate slices, each with a title and a scope
+  boundary; the dependency edges between them; how the original story's
+  acceptance criteria distribute across them; and the decisions it could not
+  settle. It is rendered on the pause and carried as data on the pending record
+  (`preflight_complexity_gate.assessment`), so answering the question is a review
+  of something concrete rather than an investigation. **It mutates nothing** —
+  the invocation is sealed to a read-only tool surface with no shell, a
+  read-only sandbox, and inference credentials only, and it runs against a clean
+  baseline checkout, so no issue is created, edited, or closed and the original
+  story stays intact and runnable whichever way the pause is answered (applying
+  an assessment is #2824). A story that is genuinely atomic despite a high score
+  — and every failure path: an agent that could not launch, one that returned
+  failure, output that failed validation — emits the pause with its question and
+  a recorded statement that no assessment was produced and why; the absence never
+  blocks the pause from being answered. A split that would drop an acceptance
+  criterion, or that names a dependency on a slice it did not declare, is
+  refused by the parser rather than shown. The assessment and the operator's
+  disposition of it (`assessment_disposition`) are written to the run audit so
+  assessment quality can later be measured against whether a split that was
+  acted on landed, and its cost is recorded per run — bounded to half the
+  configured planning budget and to a fraction of the pause's own wait window,
+  so the step stays cheap relative to the planning spend it exists to displace.
 - **Preflight complexity gate (#2681):** a story whose preflight verdict is
   PROCEED and whose complexity score reaches
   `retry.preflight_complexity_gate_threshold` (shipped: 9, active by default)
