@@ -136,6 +136,7 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
             max_dev_iterations_cap=4,
             max_review_cycles_cap=3,
             adaptive_iterations=True,
+            preflight_complexity_gate_threshold=11,
         ),
     )
 
