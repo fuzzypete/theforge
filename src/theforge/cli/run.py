@@ -278,6 +278,10 @@ def cmd_run(args: "argparse.Namespace") -> int:
                     auto_merge=auto_merge,
                     notify=not args.no_notify,
                     no_pull=no_pull,
+                    # Same triage, same handoff as the sprint scheduler's DEV
+                    # resume: a direct `forge run --resume` whose reuse gate ran
+                    # out of time must tell the dev agent that too (#2796).
+                    entry_gate_outcome=triage.gate_outcome,
                 )
             else:
                 # "full" or no worktree — run from scratch

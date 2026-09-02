@@ -882,6 +882,18 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # cases would make an unwarned dev indistinguishable from a warned
             # one.
             "inherited_work_surfaced_to_dev": state.workspace_inherited_work_surfaced_to_dev,
+            # The gate that ran before this run and decided it enters at DEV —
+            # sprint resume's reuse gate (#2796). None for every other entry
+            # path. Carries the resolved budget and the measured elapsed time,
+            # the two quantities a reader needs to tell "the suite outgrew its
+            # budget" from "the diff hangs", neither of which is recoverable
+            # from the triage reason string.
+            "entry_gate": (
+                state.entry_gate_outcome.audit_payload() if state.entry_gate_outcome else None
+            ),
+            # Whether the dev agent was actually told, for the same reason the
+            # inherited-work pair above is split in two.
+            "entry_gate_surfaced_to_dev": state.entry_gate_surfaced_to_dev,
             # Run-level substrate decision: which forge-owned sandbox capability
             # profile widened containment, and to exactly what (#1947).
             "sandbox_capabilities": (
