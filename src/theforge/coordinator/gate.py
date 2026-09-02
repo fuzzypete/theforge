@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.coordinator.state import GateDebugTelemetry, GateLabel
+from theforge.coordinator.state import GateDebugTelemetry, GateLabel, GateRunFacts
 from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 from theforge.traces import write_trace
@@ -140,6 +140,7 @@ def run_gate_full(
     label: GateLabel | None = None,
     selection_out: list[SelectedValidation] | None = None,
     worktree_state_out: list[dict[str, object]] | None = None,
+    facts_out: list[GateRunFacts] | None = None,
     ignore_gate_override: bool = False,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
@@ -191,6 +192,14 @@ def run_gate_full(
     that does not persist provenance should not have to unpack it. A caller that
     records a verdict needs it, because a verdict is only a verdict if the
     profile behind it carries merge authority (#2358).
+
+    ``facts_out``, when given, receives a `GateRunFacts` recording whether the
+    run was killed at its budget and what that resolved budget was. The verdict
+    tuple cannot answer either question — a timeout arrives as an error *string*
+    — so a caller that must act differently on "did not finish" than on "failed"
+    would otherwise have to match that text and re-derive the budget from config
+    (#2796). Same out-parameter shape as ``selection_out``; only populated once
+    the gate command actually ran.
 
     ``worktree_state_out``, when given, receives a dict naming the untracked
     and ignored paths visible in the worktree immediately before the gate
@@ -263,7 +272,18 @@ def run_gate_full(
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
 
-    if timed_out or output.startswith("TIMEOUT"):
+    gate_timed_out = bool(timed_out or output.startswith("TIMEOUT"))
+    if facts_out is not None:
+        facts_out.append(
+            GateRunFacts(
+                timed_out=gate_timed_out,
+                timeout_s=gate_timeout,
+                command=gate_cmd,
+                exit_code=exit_code,
+            )
+        )
+
+    if gate_timed_out:
         return (
             None,
             f"Gate timed out after {gate_timeout}s",
@@ -370,6 +390,7 @@ def _run_gate(
     *,
     label: GateLabel | None = None,
     selection_out: list[SelectedValidation] | None = None,
+    facts_out: list[GateRunFacts] | None = None,
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command. Returns (decision, error, output_tail).
 
@@ -379,8 +400,17 @@ def _run_gate(
     produced it and what authority it carried (#2358). Without the passthrough
     those two runs were the only coordinator-executed validation whose standing
     left no trace at all.
+
+    ``facts_out`` is passed through for the same reason: resume triage acts on
+    the result, and a gate that was killed at its budget asks for different work
+    than one whose tests failed (#2796).
     """
     decision, error, output_tail, _resolved_cmd, _exit_code = run_gate_full(
-        config, workspace_path, task, label=label, selection_out=selection_out
+        config,
+        workspace_path,
+        task,
+        label=label,
+        selection_out=selection_out,
+        facts_out=facts_out,
     )
     return decision, error, output_tail

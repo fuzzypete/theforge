@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A reuse gate that ran out of time now says so to the dev agent (#2796):**
+  sprint resume runs a gate on an existing worktree and routes the story to DEV
+  when it does not pass, but a gate killed at its `validation.gate_timeout`
+  budget arrived as an ordinary first-iteration prompt — no mention that a gate
+  had run at all — so the agent searched for a failing test in a suite where
+  nothing was failing. The timeout now travels as structured state from triage
+  into the resumed run (`forge sprint --resume` and `forge run --resume` alike),
+  and the first dev prompt states that the gate did not finish, names the
+  configured budget and the measured elapsed time, and says explicitly that no
+  test failed. The run audit records the same values under
+  `workspace.entry_gate`, with `workspace.entry_gate_surfaced_to_dev` recording
+  whether the agent was actually told. Audit record schema version 43.
+
 - **Failing-test extraction no longer silently assumes pytest (#1738):** the
   gate-failure retry path extracted failing-test identifiers using pytest's
   summary grammar only, so a project whose gate speaks another toolchain

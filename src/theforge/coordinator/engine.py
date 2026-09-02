@@ -77,6 +77,7 @@ from .signals import (  # noqa: E402
 from .state import (
     CoordinatorResult,
     CoordinatorState,
+    EntryGateOutcome,
     Phase,
     RetryReason,
 )
@@ -1743,6 +1744,7 @@ def _run_resume_coordinator(
     base_lands_locally: bool | None = None,
     lands_in_project_root: bool | None = None,
     reentry_mode: str = REENTRY_MODE_PIPELINE_RESUME,
+    entry_gate_outcome: EntryGateOutcome | None = None,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -1774,6 +1776,28 @@ def _run_resume_coordinator(
     if isinstance(setup, CoordinatorResult):
         return _attach_runtime_config(setup, config)
     state, logger, branch_name, story_content, _task_start = setup
+
+    # The condition that decided this run's entry point, carried into the run
+    # that has to act on it. Seeded before any phase runs so DEV's first prompt
+    # can name it, and left on the state afterwards so the audit records the
+    # real budget and elapsed time rather than a reconstruction (#2796).
+    if entry_gate_outcome is not None:
+        state.entry_gate_outcome = entry_gate_outcome
+        logger._safe_emit(
+            "entry_gate_outcome",
+            outcome=entry_gate_outcome.outcome,
+            command=entry_gate_outcome.command,
+            timeout_s=entry_gate_outcome.timeout_s,
+            elapsed_s=round(entry_gate_outcome.elapsed_s, 2),
+            profile=entry_gate_outcome.profile,
+        )
+        if entry_gate_outcome.outcome == "timeout":
+            _log(
+                f"↻ RESUME     entry gate did not finish:"
+                f" `{entry_gate_outcome.command}` killed at its"
+                f" {entry_gate_outcome.timeout_s}s budget after"
+                f" {entry_gate_outcome.elapsed_s:.1f}s"
+            )
 
     # Same landing precondition run_task enforces, at the resume entry point:
     # a resumed story re-runs dev and/or review, so a dirty project root has to
@@ -2091,6 +2115,7 @@ def run_from_dev(
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
     lands_in_project_root: bool | None = None,
+    entry_gate_outcome: EntryGateOutcome | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -2109,6 +2134,11 @@ def run_from_dev(
             merges into the project-root checkout, used by the landing
             precondition. The sprint scheduler supplies it; None derives it from
             auto_merge and config.
+        entry_gate_outcome: Structured outcome of the gate that routed this story
+            here, when the caller ran one. A reuse gate that was killed at its
+            budget is what the DEV phase must be told about, because otherwise it
+            is handed an ordinary first-iteration prompt and goes looking for a
+            failing test that cannot exist (#2796).
     """
     return _run_resume_coordinator(
         config,
@@ -2128,6 +2158,7 @@ def run_from_dev(
         stop_event=stop_event,
         base_lands_locally=base_lands_locally,
         lands_in_project_root=lands_in_project_root,
+        entry_gate_outcome=entry_gate_outcome,
     )
 
 

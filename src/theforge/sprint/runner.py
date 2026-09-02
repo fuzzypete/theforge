@@ -2301,6 +2301,11 @@ def _run_single_story(
                     stop_event=stop_event,
                     base_lands_locally=base_lands_locally,
                     lands_in_project_root=lands_in_project_root,
+                    # Why this story is entering at DEV, in the form the phase
+                    # can act on. The triage reason string stays the sprint
+                    # log's record; the structured outcome is what tells a dev
+                    # agent the gate ran out of time rather than failed (#2796).
+                    entry_gate_outcome=triage.gate_outcome,
                 )
             else:
                 result = _run_fresh(

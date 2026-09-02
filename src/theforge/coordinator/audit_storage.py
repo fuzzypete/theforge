@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 42
+CURRENT_RECORD_SCHEMA_VERSION = 43
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2209,6 +2209,23 @@ def _migrate_v41_to_v42(record: dict) -> dict:
     return record
 
 
+def _migrate_v42_to_v43(record: dict) -> dict:
+    """Advance v42 records across the entry-gate outcome (#2796).
+
+    v43 adds ``workspace.entry_gate`` — the gate that ran *before* the run and
+    routed it to DEV, with the budget it was killed at and the time it took —
+    and ``workspace.entry_gate_surfaced_to_dev``.
+
+    A v42 record predates the handoff entirely. Backfilling ``null``/``false``
+    would be indistinguishable from a run whose reuse gate passed, or one whose
+    dev agent was deliberately not told, and telling those apart is the whole
+    point of the pair. The reader distinguishes an absent key from a present
+    one, so the migration is a no-op and the stored record is never rewritten
+    (ADR-0002 refusal-to-forget).
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2259,6 +2276,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     39: _migrate_v39_to_v40,
     40: _migrate_v40_to_v41,
     41: _migrate_v41_to_v42,
+    42: _migrate_v42_to_v43,
 }
 
 

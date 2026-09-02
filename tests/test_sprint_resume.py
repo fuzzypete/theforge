@@ -22,7 +22,13 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator import audit_substrate
-from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.state import (
+    CoordinatorResult,
+    CoordinatorState,
+    EntryGateOutcome,
+    GateRunFacts,
+    Phase,
+)
 from theforge.sprint.audit import (
     persist_accepted_unmeasured_spend,
     persist_accumulated_story_state,
@@ -284,6 +290,81 @@ class TestTriageSpec:
 
         assert triage.action == "dev"
         assert triage.worktree_path == worktree
+
+    def test_triage_gate_timeout_carries_structured_outcome(self, tmp_path: Path) -> None:
+        """A reuse gate killed at its budget routes to DEV *and* says so (#2796)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        def _timed_out_gate(*_args, facts_out=None, **_kwargs):
+            if facts_out is not None:
+                facts_out.append(
+                    GateRunFacts(
+                        timed_out=True, timeout_s=360, command="make gate", exit_code=None
+                    )
+                )
+            return None, "Gate timed out after 360s", "collected 4000 items"
+
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint.dag._run_gate", side_effect=_timed_out_gate):
+                triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "dev"
+        assert triage.gate_outcome is not None
+        assert triage.gate_outcome.outcome == "timeout"
+        assert triage.gate_outcome.timeout_s == 360
+        assert triage.gate_outcome.command == "make gate"
+        assert triage.gate_outcome.elapsed_s >= 0.0
+        assert triage.gate_outcome.output_tail == "collected 4000 items"
+
+    def test_triage_failing_gate_carries_no_timeout_outcome(self, tmp_path: Path) -> None:
+        """A gate that failed is not reported as one that ran out of time (#2796)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        def _failing_gate(*_args, facts_out=None, **_kwargs):
+            if facts_out is not None:
+                facts_out.append(
+                    GateRunFacts(timed_out=False, timeout_s=360, command="make gate", exit_code=1)
+                )
+            return "FAIL", None, "1 failed, 300 passed"
+
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint.dag._run_gate", side_effect=_failing_gate):
+                triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "dev"
+        assert triage.gate_outcome is None
 
     def test_triage_no_worktree(self, tmp_path: Path) -> None:
         """No worktree found → full."""
@@ -911,6 +992,41 @@ class TestResumeSprintIntegration:
         mock_dev.assert_called_once()
         mock_task.assert_not_called()
         assert result.specs_succeeded == 1
+
+    def test_resume_sprint_forwards_entry_gate_timeout_to_dev(self, tmp_path: Path) -> None:
+        """The triage timeout handoff reaches the coordinator, not just the log (#2796)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        outcome = EntryGateOutcome(
+            outcome="timeout",
+            command="make gate",
+            timeout_s=360,
+            elapsed_s=361.4,
+            output_tail="collected 4000 items",
+            profile="complete (merge authority)",
+        )
+        dev_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="dev",
+            reason="worktree exists, gate fails (Gate timed out after 360s)",
+            worktree_path=worktree,
+            gate_outcome=outcome,
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=dev_triage):
+            with patch(
+                "theforge.sprint.runner.run_from_dev", return_value=coord_result
+            ) as mock_dev:
+                with patch("theforge.sprint.runner.run_task"):
+                    run_sprint_ctx(config, manifest_path, resume=True)
+
+        assert mock_dev.call_args.kwargs["entry_gate_outcome"] is outcome
 
     def test_resume_budget_exhausted_merged_spec_still_succeeds(self, tmp_path: Path) -> None:
         """Merged spec stays skipped/already done even when budget is exhausted."""

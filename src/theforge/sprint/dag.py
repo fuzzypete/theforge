@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,7 @@ from pathlib import Path
 from ..config import ForgeConfig
 from ..coordinator.audit import has_review_approve, latest_run_outcome
 from ..coordinator.gate import _run_gate
-from ..coordinator.state import GateLabel
+from ..coordinator.state import EntryGateOutcome, GateLabel, GateRunFacts
 from ..log_util import _log_line
 from ..task import TaskStory
 from .manifest import _build_task_from_story
@@ -54,6 +55,12 @@ class StoryTriage:
     reason: str
     worktree_path: Path | None = None
     slug: str = ""
+    # Structured outcome of the reuse gate when it is what routed this story to
+    # DEV, for the phase that has to act on it. ``reason`` above stays the
+    # operator-facing record for the sprint log; nothing downstream parses it
+    # (#2796). None for every action the reuse gate did not decide, and for a
+    # gate that failed outright rather than running out of time.
+    gate_outcome: EntryGateOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -938,11 +945,19 @@ def _triage_spec(
     # state report for "why did this story enter at REVIEW" — so the profile
     # travels in it rather than being reconstructible only from config (#2358).
     gate_selection: list = []
+    gate_facts: list[GateRunFacts] = []
+    _gate_started = time.monotonic()
     try:
-        gate_decision, gate_err, _gate_output = _run_gate(
-            config, worktree_path, task=task, label=gate_label, selection_out=gate_selection
+        gate_decision, gate_err, gate_output_tail = _run_gate(
+            config,
+            worktree_path,
+            task=task,
+            label=gate_label,
+            selection_out=gate_selection,
+            facts_out=gate_facts,
         )
     finally:
+        gate_elapsed_s = time.monotonic() - _gate_started
         if on_gate_end is not None:
             on_gate_end(gate_label)
 
@@ -960,10 +975,30 @@ def _triage_spec(
         )
 
     reason_detail = gate_err or f"gate returned {gate_decision}"
+    # A gate that ran out of time is a different condition from a gate that
+    # failed, and the story it routes to DEV has to be told which one happened.
+    # The flag comes from the gate's own run facts rather than from matching its
+    # error text, so nothing downstream re-derives it (#2796).
+    facts = gate_facts[0] if gate_facts else None
+    gate_outcome = None
+    if facts is not None and facts.timed_out:
+        gate_outcome = EntryGateOutcome(
+            outcome="timeout",
+            command=facts.command,
+            timeout_s=facts.timeout_s,
+            elapsed_s=gate_elapsed_s,
+            output_tail=gate_output_tail or "",
+            profile=gate_selection[0].describe() if gate_selection else None,
+        )
+        _log(
+            f"  reuse gate did not finish for {slug}:"
+            f" killed at its {facts.timeout_s}s budget after {gate_elapsed_s:.1f}s"
+        )
     return StoryTriage(
         story_path=story_path,
         action="dev",
         reason=f"worktree exists, gate fails ({reason_detail}{profile_note})",
         worktree_path=worktree_path,
         slug=slug,
+        gate_outcome=gate_outcome,
     )
