@@ -1,0 +1,80 @@
+schema_version: 2
+run_id: bdd4666b3d64
+authoritative_run_record: .forge/audits/runs/bdd4666b3d64.json
+generated_at: '2026-09-02T06:32:49.008661+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0037365000000000002
+story:
+  slug: issue-2686
+  name: The complexity pause carries a decomposition assessment instead of only asking
+    a question
+  github_issue: 2686
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/controller-runbook.md
+- src/theforge/config/auth.py
+- src/theforge/coordinator/agent_failure.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/baseline_checkout.py
+- src/theforge/coordinator/escalation_advisor_flow.py
+- src/theforge/coordinator/preflight_complexity_gate.py
+- src/theforge/coordinator/preflight_decomposition_flow.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/resume_persistence.py
+- src/theforge/coordinator/state.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/decomposition_assessment.py
+- src/theforge/task/__init__.py
+- src/theforge/task/decomposition_assessment_prompts.py
+- src/theforge/task/story.py
+- tests/fixtures/audit_record_schema_v42.json
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_decomposition_assessment.py
+- tests/test_preflight_complexity_gate_seam.py
+what_changed:
+  description: The preflight complexity pause was extended to optionally emit a decomposition
+    assessment artifact with candidate slices, dependency edges, acceptance-criteria
+    distribution, unresolved decisions, audit recording, and per-run cost capture,
+    while preserving a no-mutation path and allowing pauses with no assessment when
+    decomposition is not possible.
+  approach: The run added a dedicated preflight decomposition flow and assessment
+    model/prompting path, then threaded its outputs through the complexity gate, coordinator
+    state, persistence, and audit schema so the pause can present and record the artifact
+    without creating or mutating issues.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- preflight-artifact-before-spend
+- explicit-no-assessment-fallback
+- audit-schema-with-resume-threading
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Single-cycle review approved the coordinator flow as sound, with non-mutation
+    enforcement and acceptance-criteria handling landing without surfaced defects.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 29.1989786
+  dominant_difficulty: Threading a new optional preflight artifact through pause,
+    audit, and resume paths without changing the story or issue state.

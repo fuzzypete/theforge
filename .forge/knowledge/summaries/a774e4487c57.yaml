@@ -1,0 +1,99 @@
+schema_version: 2
+run_id: a774e4487c57
+authoritative_run_record: .forge/audits/runs/a774e4487c57.json
+generated_at: '2026-09-01T17:17:31.034936+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00652275
+story:
+  slug: issue-2828
+  name: 'bug: workspace setup is killed at an unconfigurable 120-second limit'
+  github_issue: 2828
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- config
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/inputs-reference.md
+- src/theforge/config/_loaders.py
+- src/theforge/config/defaults.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/workspace.py
+- src/theforge/sprint/runner.py
+- tests/fixtures/audit_record_schema_v40.json
+- tests/test_audit_substrate.py
+- tests/test_config_load.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_coord_workspace_venv.py
+- tests/test_process_teardown_lifecycle.py
+- tests/test_sprint_baseline_gate.py
+- tests/test_sprint_gate_timeout_scaling.py
+what_changed:
+  description: This run made workspace setup timeout a configurable, operator-visible
+    policy and threaded the resolved timeout through baseline setup, batch preflight,
+    and dispatch-time workspace creation. It also recorded the resolved policy in
+    audit/provenance data and documented the new configuration surface.
+  approach: The change was applied by extending config types/default loading, resolving
+    setup timeout alongside sprint timeout scaling, passing that resolved value into
+    all workspace setup call sites, and updating audit/schema plumbing so the effective
+    policy is preserved consistently.
+  files_modified: *id002
+what_was_learned:
+- claim: When timeout policy is resolved conditionally from config objects, any later
+    context rebinding must be guarded independently at the exact mutation site; an
+    earlier capability check is not enough if subsequent code can still call dataclass-only
+    helpers on non-dataclass config.
+  evidence:
+  - type: review_finding
+    finding_id: f56ab5928a2dff28
+    description: The review found that sprint startup correctly computed a guard for
+      whether workspace config could be rebound, but a later rebind path still called
+      dataclasses.replace() when gate timeout changed. That demonstrates the practical
+      lesson that each rebind site must enforce the same compatibility check, not
+      rely on a prior one.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that the fix 'split the rebind so the workspace replace()
+      is guarded by the dataclass check', showing the accepted resolution was to move
+      the guard to the actual mutation path rather than treating the earlier check
+      as sufficient.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: This is the file where timeout resolution and subsequent sprint-context
+      rebinding both occur, so its involvement shows the hazard arises specifically
+      when policy resolution and config-object replacement are interleaved in one
+      control flow.
+learned_patterns:
+- guard-rebind-at-use-site
+- thread-resolved-policy-through-all-entrypoints
+- audit-effective-timeout-policy
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'The review loop focused on a hidden coupling in sprint runner: resolving and
+    rebinding timeout policy across mixed config object shapes must be checked where
+    replacement actually happens.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 10.67896285
+  dominant_difficulty: Applying one timeout policy consistently across multiple workspace-creation
+    paths while preserving provenance and handling heterogeneous config object shapes.
