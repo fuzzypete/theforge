@@ -19,7 +19,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from theforge.agent_types import COST_UNKNOWN, AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_UNKNOWN,
+    FAILURE_KILLED_BEFORE_OUTPUT,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 
@@ -920,14 +925,25 @@ def run_agent_pool(
     return cast(list[AgentResult], results)
 
 
+def _killed_before_output(result: AgentResult) -> bool:
+    """True when the runner classified this result as an invocation that never ran."""
+    return getattr(result, "failure_code", None) == FAILURE_KILLED_BEFORE_OUTPUT
+
+
 def log_agent_result(result: AgentResult, role: str) -> None:
     """Print a summary of an agent result to stderr (verbose-only)."""
     status = "OK" if result.success else "FAIL"
+    # An invocation that never ran says so on the line an operator actually
+    # reads (#2832). Without it, `exit=-9 | cost=$0.000 | output=0 chars` is
+    # what a killed-before-anything invocation and an agent that worked and
+    # went quiet both print, and the three occurrences in that issue were read
+    # as agent failures for exactly that reason.
+    _never_ran = " | never ran (killed before any output)" if _killed_before_output(result) else ""
     _log_verbose(
         f"  [{role}] {status} | exit={result.exit_code} | "
         f"cost={'${:.3f}'.format(result.cost_usd) if result.cost_usd is not None else 'unknown'} |"
         f" "
-        f"output={len(result.output)} chars"
+        f"output={len(result.output)} chars{_never_ran}"
     )
     if not result.success and result.output:
         preview = result.output[:300].replace("\n", " ").strip()

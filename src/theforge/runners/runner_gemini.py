@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from theforge import process_group
-from theforge.agent_types import COST_ESTIMATED, COST_UNKNOWN, AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_UNKNOWN,
+    FAILURE_KILLED_BEFORE_OUTPUT,
+    KILLED_BEFORE_OUTPUT_MARKER,
+    AgentResult,
+    ModelUsage,
+    killed_before_output,
+)
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
@@ -269,6 +277,28 @@ def _run_gemini(
     assert proc is not None
     if not quiet:
         _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
+
+    if killed_before_output(
+        exit_code=proc.returncode,
+        produced_output=bool((proc.stdout or "").strip()),
+    ):
+        _killed_output = KILLED_BEFORE_OUTPUT_MARKER
+        if (proc.stderr or "").strip():
+            _killed_output = f"{_killed_output}\n{proc.stderr.strip()}"
+        return AgentResult(
+            success=False,
+            output=_killed_output,
+            failure_code=FAILURE_KILLED_BEFORE_OUTPUT,
+            session_id=None,
+            # Measured $0.00 — nothing streamed, so nothing was billed. Unlike
+            # the no-JSON return below, this shape knows its spend.
+            cost_usd=0.0,
+            cost_provenance=COST_ESTIMATED,
+            exit_code=proc.returncode,
+            raw={},
+            profile_name=profile.name,
+            process_teardown=_teardown,
+        )
 
     # Parse JSON output (-o json requests structured response).
     # The gemini CLI emits preamble lines (e.g. "YOLO mode is enabled.") to

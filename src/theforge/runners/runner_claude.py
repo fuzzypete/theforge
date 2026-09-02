@@ -20,8 +20,11 @@ from theforge.agent_types import (
     COST_PROVIDER_REPORTED,
     COST_UNKNOWN,
     FAILURE_ENDED_WITHOUT_RESULT,
+    FAILURE_KILLED_BEFORE_OUTPUT,
+    KILLED_BEFORE_OUTPUT_MARKER,
     AgentResult,
     ModelUsage,
+    killed_before_output,
 )
 from theforge.log_util import _log_line
 from theforge.runners.stuck_detection import StuckTracker, build_observation
@@ -851,6 +854,17 @@ def _run_claude(
     # as this one; Event carries its own lock, so the flag needs no reasoning
     # about which writes are atomic.
     group_kill_failed = threading.Event()
+    # Set when the *watchdog* thread ends the run — the deadline passed, or a
+    # stop_event cancelled it. Both are endings the in-loop checks already
+    # record as `timed_out`, but the watchdog fires when the stream loop is
+    # blocked and so cannot reach those checks, and the elapsed-time fallback
+    # below only catches the deadline case once the run is 5% past its limit.
+    # A watchdog kill landing exactly on the deadline therefore reached the
+    # no-result branch unnamed — and once `killed_before_output` exists, an
+    # agent that was given its full allowance and used it would be recorded as
+    # an invocation that never ran, and refunded a retry it did spend (#2832).
+    # An Event for the same reason as the flag above: the watchdog sets it.
+    watchdog_killed = threading.Event()
 
     def _kill_group() -> None:
         # Kill the whole process group so node/tool grandchildren die too — a
@@ -901,11 +915,13 @@ def _run_claude(
                 if proc.poll() is not None:
                     return
                 if stop_event is not None and stop_event.is_set():
+                    watchdog_killed.set()
                     _kill_group()
                     return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     if proc.poll() is None:
+                        watchdog_killed.set()
                         _kill_group()
                     return
                 time.sleep(min(0.5, remaining))
@@ -1026,7 +1042,11 @@ def _run_claude(
             partial_output=_extract_stream_output(lines),
         )
 
-    if timed_out or (time.monotonic() - start) >= profile.timeout_seconds * 1.05:
+    if (
+        timed_out
+        or watchdog_killed.is_set()
+        or (time.monotonic() - start) >= profile.timeout_seconds * 1.05
+    ):
         timed_out = True
 
     if timed_out:
@@ -1083,6 +1103,36 @@ def _run_claude(
                 stderr_text = proc.stderr.read()
             except Exception:
                 pass
+        if killed_before_output(
+            exit_code=proc.returncode,
+            # ``lines`` is every stream event the CLI emitted, so empty means it
+            # emitted none — not one init, assistant, tool or usage event. The
+            # timeout and stuck-pattern endings returned above, so what is left
+            # here with a signal exit and an empty stream is the #2832 shape: the
+            # stream closed with nothing and the process had to be killed at the
+            # exit grace. ``extracted_output`` is checked too and is None when
+            # there was nothing to extract, which is why it is not dereferenced.
+            produced_output=bool(lines) or bool((extracted_output or "").strip()),
+        ):
+            # Nothing streamed before the signal landed, so there is no partial
+            # cost to salvage and no session to resume: the $0.00 here is
+            # measured, not unknown, which is what lets the coordinator tell this
+            # apart from a run whose spend could not be read (#2832).
+            _killed_output = KILLED_BEFORE_OUTPUT_MARKER
+            if stderr_text.strip():
+                _killed_output = f"{_killed_output}\n{stderr_text.strip()}"
+            return AgentResult(
+                success=False,
+                output=_killed_output,
+                failure_code=FAILURE_KILLED_BEFORE_OUTPUT,
+                session_id=None,
+                cost_usd=0.0,
+                cost_provenance=COST_ESTIMATED,
+                exit_code=proc.returncode,
+                raw={},
+                profile_name=profile.name,
+                process_teardown=teardown,
+            )
         _noresult_output = (
             extracted_output or stderr_text or _build_no_text_marker("missing_result_event")
         )
