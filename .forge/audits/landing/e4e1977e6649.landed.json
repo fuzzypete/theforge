@@ -1,0 +1,16 @@
+{
+  "carrier_kind": "pull_request",
+  "carrier_ref": "#2844",
+  "gated_commit": "5892989277570384dbf7ea6d56ddd7868309eb13",
+  "kind": "landing_assertion",
+  "landed_commit": "c256783f748882bdc1be875b70184aa4cf2a5420",
+  "landing_mode": "merge-pr",
+  "observed_at": "2026-09-02T07:08:04.099478+00:00",
+  "observer": "sprint.queued-pr",
+  "pr_url": "https://github.com/fuzzypete/theforge/pull/2844",
+  "reviewed_commit": "5892989277570384dbf7ea6d56ddd7868309eb13",
+  "run_id": "e4e1977e6649",
+  "schema_version": 1,
+  "slug": "issue-2796",
+  "target_branch": "release/v0.16"
+}
