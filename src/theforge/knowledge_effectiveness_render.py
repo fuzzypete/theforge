@@ -100,6 +100,8 @@ def _report_payload(report: KnowledgeEffectivenessReport) -> dict:
                 "stories_per_dollar": point.stories_per_dollar,
                 "completed_stories": point.completed_stories,
                 "measured_cost_usd": point.measured_cost_usd,
+                "measured_cost_run_count": point.measured_cost_run_count,
+                "unmeasured_cost_run_count": point.unmeasured_cost_run_count,
             }
             for point in report.stories_per_dollar_trend
         ],
@@ -109,6 +111,8 @@ def _report_payload(report: KnowledgeEffectivenessReport) -> dict:
 def _cohort_payload(cohort: CohortMetrics) -> dict:
     return {
         "run_count": cohort.run_count,
+        "measured_cost_run_count": cohort.measured_cost_run_count,
+        "unmeasured_cost_run_count": cohort.unmeasured_cost_run_count,
         "metrics": {item.name: _metric_payload(item) for item in cohort.metrics},
     }
 
@@ -130,6 +134,8 @@ def _comparison_payload(comparison: MetricComparison) -> dict:
         "comparable": comparison.comparable,
         "with_prior_summary": _metric_payload(comparison.with_prior),
         "without_prior_summary": _metric_payload(comparison.without_prior),
+        "comparative_claim_supported": comparison.comparative_claim_supported,
+        "comparison_note": comparison.comparison_note,
         "delta": comparison.delta,
         "improved": comparison.improved,
     }
@@ -200,6 +206,18 @@ def _render_comparison(report: KnowledgeEffectivenessReport, lines: list[str]) -
     with_n = with_cohort.run_count if with_cohort else 0
     without_n = without_cohort.run_count if without_cohort else 0
     lines.append(f"Matched cohorts: {with_n} with prior / {without_n} without prior")
+    if with_cohort is not None or without_cohort is not None:
+        lines.append(
+            "  cost telemetry: "
+            f"{_cost_telemetry_note(with_cohort)} with prior; "
+            f"{_cost_telemetry_note(without_cohort)} without prior"
+        )
+    note = next(
+        (item.comparison_note for item in report.comparisons if item.comparison_note),
+        None,
+    )
+    if note is not None:
+        lines.append(f"  comparison mode: {note}")
     header = f"  {'metric':<30} {'with':>12} {'without':>12}  verdict"
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
@@ -227,6 +245,8 @@ def _cell(metric_name: str, metric: Metric) -> str:
 
 
 def _verdict(comparison: MetricComparison) -> str:
+    if not comparison.comparative_claim_supported:
+        return "descriptive only"
     if not comparison.comparable:
         return "insufficient data"
     if comparison.improved:
@@ -239,12 +259,13 @@ def _verdict(comparison: MetricComparison) -> str:
 def _render_trend(report: KnowledgeEffectivenessReport, lines: list[str]) -> None:
     if not report.stories_per_dollar_trend:
         return
-    lines.append("Stories per dollar over the window (classified runs, measured cost only)")
+    lines.append("Stories per dollar over the window (classified runs)")
     for point in report.stories_per_dollar_trend:
         value = f"{point.stories_per_dollar:.2f}" if point.stories_per_dollar is not None else "—"
         lines.append(
             f"  {point.label:<8} {value:>8}  "
-            f"({point.completed_stories} completed, ${point.measured_cost_usd:.2f} measured)"
+            f"({point.completed_stories} completed, ${point.measured_cost_usd:.2f} measured"
+            f"{_excluded_unmeasured_suffix(point.unmeasured_cost_run_count)})"
         )
     lines.append("")
 
@@ -252,6 +273,21 @@ def _render_trend(report: KnowledgeEffectivenessReport, lines: list[str]) -> Non
 def _render_verdict(report: KnowledgeEffectivenessReport, lines: list[str]) -> None:
     marker = "?" if report.status == STATUS_INSUFFICIENT_DATA else "→"
     lines.append(f"{marker} {report.status}: {report.status_reason}")
+
+
+def _cost_telemetry_note(cohort: CohortMetrics | None) -> str:
+    if cohort is None:
+        return "0 measured, 0 unmeasured excluded"
+    return (
+        f"{cohort.measured_cost_run_count} measured, "
+        f"{cohort.unmeasured_cost_run_count} unmeasured excluded"
+    )
+
+
+def _excluded_unmeasured_suffix(unmeasured_cost_run_count: int) -> str:
+    if unmeasured_cost_run_count == 0:
+        return ""
+    return f", {unmeasured_cost_run_count} unmeasured excluded"
 
 
 # ── Invariant-context proof section (#1875) ──────────────────────────────────
