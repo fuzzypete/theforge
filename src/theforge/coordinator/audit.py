@@ -286,6 +286,26 @@ def _preflight_no_judgment_run(state: CoordinatorState) -> bool:
     )
 
 
+def _assessment_disposition(state: CoordinatorState) -> str | None:
+    """What was done with the decomposition assessment, or None if none was offered.
+
+    The assessment's value can only be measured against what happened next: a
+    split that was acted on and whose pieces landed is evidence the artifact was
+    good, and one an operator read and overrode is evidence of the opposite. That
+    comparison needs the disposition recorded next to the artifact rather than
+    reconstructed by joining two blocks, so the decision and whether a human made
+    it are folded into one value here (#2686).
+    """
+    if not state.preflight_complexity_gate_opened:
+        return None
+    decision = state.preflight_complexity_gate_decision
+    if decision is None:
+        return None
+    if state.preflight_complexity_gate_decision_source == "operator":
+        return f"operator_{decision}"
+    return f"no_decision_{decision}"
+
+
 def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     """Build the phases + totals block for the audit log.
 
@@ -783,6 +803,37 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # the gate opens on any PROCEED score at or above the threshold, and
             # the operator rules with this provenance in front of them.
             "score_provenance_note": state.preflight_complexity_gate_score_provenance,
+            # ── Decomposition assessment (#2686) ───────────────────────────
+            # The artifact the operator was shown next to the question, and what
+            # they then did with it. The pair is what lets assessment quality be
+            # measured later: a split that was acted on can be traced to whether
+            # the stories it named landed. Explicit null/false on every run that
+            # produced none — including one where the gate never opened — so the
+            # block's shape does not depend on the outcome.
+            "assessment": state.preflight_complexity_gate_assessment,
+            "assessment_generated": bool(state.preflight_complexity_gate_assessment_generated),
+            # Non-null exactly when no artifact was produced: an atomic story, an
+            # agent that could not be launched, or output that failed validation.
+            "none_produced_reason": state.preflight_complexity_gate_assessment_none_reason,
+            "assessment_validation_errors": list(
+                state.preflight_complexity_gate_assessment_errors or []
+            ),
+            # What this run spent producing it. ``null`` means an assessment ran
+            # and reported no cost (which poisons the run total), while ``0.0``
+            # with ``assessment_generated: false`` means none ran.
+            "assessment_cost_usd": state.total_decomposition_assessment_cost_measured,
+            "assessment_cost_provenance": (
+                state.preflight_complexity_gate_assessment_cost_provenance
+            ),
+            # A prior attempt's spend, restored as provenance and deliberately
+            # not charged to this run (see resume_persistence).
+            "assessment_prior_cost_usd": (
+                state.preflight_complexity_gate_assessment_prior_cost_usd
+            ),
+            "assessment_duration_s": state.preflight_complexity_gate_assessment_duration_s,
+            "assessment_model": state.preflight_complexity_gate_assessment_model,
+            "assessment_profile": state.preflight_complexity_gate_assessment_profile,
+            "assessment_disposition": _assessment_disposition(state),
         },
         "outcome": {
             "success": result.success,

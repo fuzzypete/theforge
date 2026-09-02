@@ -254,6 +254,54 @@ Where to look afterwards: `preflight_complexity_gate` in the run audit (whether
 it opened, both complexity axes, the threshold, the decision and its source, and
 any `score_provenance_note`) and `outcome.returned_for_decomposition`.
 
+**The pause shows you a candidate split (issue #2686).** Before you are asked,
+the gate spends one bounded read-only invocation turning the evidence preflight
+already holds into an assessment, and puts it on the pause:
+
+```
+▸ #2686  PREFLIGHT  complexity 9 (impl 9, validation 3)  — awaiting operator
+
+  Decomposition assessment (4 candidate slices):
+    1. <title> — scope: <boundary>                       covers AC 1, 2
+    2. <title> — scope: <boundary>     depends_on: 1     covers AC 3
+
+  Unsettled:
+    - whether AC 5 belongs with slice 3 or its own slice
+```
+
+It is an artifact, not a recommendation: it does not tell you which action to
+pick, and it changes nothing. **No issue is created, edited, or closed** — the
+invocation runs with a read-only tool surface that has no shell, in a read-only
+sandbox, against a clean baseline checkout, holding inference credentials only.
+The original story is left intact and runnable whichever way you answer. Acting
+on a split is your call and is tracked separately (#2824).
+
+- **No assessment is a normal outcome.** A story the step judges genuinely
+  atomic — and every failure: the agent could not launch, returned failure, or
+  produced output that failed validation — gets the pause with its question and
+  `No decomposition assessment: <reason>.` in place of the block. The pause is
+  answerable exactly as before; the absence never holds a story.
+- **A split that would drop an acceptance criterion is never shown.** The parser
+  requires every criterion to land in at least one slice and every `depends_on`
+  edge to name a declared slice, and turns anything else into a recorded absence
+  rather than an artifact you might act on without noticing what it dropped.
+- **It is bounded on purpose.** One attempt, no model pool and no cross-review, a
+  budget of half the configured planning spend, and a timeout inside a fraction
+  of the pause's own wait window — the notification is written *after* the
+  assessment returns, so a hung one must not be able to delay the pause.
+- **A resume does not re-buy it.** The gate saves its own resume record once the
+  assessment exists and again once you answer. An attempt interrupted while the
+  pause was open re-asks the question and reuses the recorded artifact; a
+  restored cost is kept as provenance and is never charged to the resumed run.
+
+Where to look afterwards: the same `preflight_complexity_gate` audit block now
+also carries `assessment` (the slices, edges, coverage, and unsettled items),
+`assessment_generated`, `none_produced_reason`, `assessment_cost_usd`,
+`assessment_duration_s`, `assessment_model`/`assessment_profile`, and
+`assessment_disposition` (`operator_approve`, `operator_decompose`, or the
+`no_decision_*` forms) — the last being what makes assessment quality measurable
+later against whether a split that was acted on actually landed.
+
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 
 A dev agent that reaches an acceptance criterion which does not define the case

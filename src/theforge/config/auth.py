@@ -386,3 +386,33 @@ def check_agent_auth(
     raise ValueError(
         f"check_agent_auth: profile {profile.name!r} has neither 'cli' nor 'provider' set"
     )
+
+
+def inference_only_secrets(secrets: "Mapping[str, str] | None") -> dict[str, str]:
+    """Return only the credentials an advisory agent legitimately needs.
+
+    An ALLOW-list, and the distinction from a deny-list is the point: denying
+    ``GH_TOKEN`` answers "is today's known tracker credential absent?", while
+    allowing only provider API keys answers "is every credential this stage
+    holds one that cannot mutate a tracker?" Only the second survives an
+    operator putting a new forge-of-record credential in ``.forge/.env``.
+
+    A key qualifies if it is a provider API key by name, or one of the Claude
+    CLI's inference-token env vars. Everything else — tracker tokens, webhook
+    URLs, deploy credentials — is dropped, so an advisory stage cannot
+    authenticate as the operator against anything.
+
+    Lives here, next to the credential vocabulary it is derived from, because
+    more than one advisory stage now needs it (backlog-triage proposals and the
+    preflight decomposition assessment) and "which credentials may an advisory
+    stage hold" must have exactly one answer.
+    """
+    if not secrets:
+        return {}
+    known = {value.upper() for value in PROVIDER_API_KEY_MAP.values()}
+    known.update(token.upper() for token in CLAUDE_CLI_ENV_TOKENS)
+    return {
+        key: value
+        for key, value in secrets.items()
+        if key.upper() in known or key.upper().endswith("_API_KEY")
+    }

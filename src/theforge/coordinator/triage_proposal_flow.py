@@ -41,8 +41,7 @@ from typing import TYPE_CHECKING
 from theforge.agent_types import COST_PROVIDER_REPORTED, COST_UNKNOWN
 from theforge.assignment import NoCapableCandidateError
 from theforge.config import TRIAGE_PROPOSER_TOOLS
-from theforge.config.auth import CLAUDE_CLI_ENV_TOKENS, check_claude_credentials
-from theforge.config.defaults import PROVIDER_API_KEY_MAP
+from theforge.config.auth import check_claude_credentials, inference_only_secrets
 from theforge.config.model_identity import PHASE_ADVISOR
 from theforge.task.triage_prompts import (
     build_triage_prompt,
@@ -78,8 +77,6 @@ from . import util as _cu
 from .escalation_advisor_flow import _select_advisor_profile
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from theforge.config import ForgeConfig
     from theforge.triage_report import BacklogFinding, BacklogReport
 
@@ -250,29 +247,11 @@ def seal_reviewer_profile(profile: object) -> object:
     )
 
 
-def proposer_secrets(secrets: "Mapping[str, str] | None") -> dict[str, str]:
-    """Return only the credentials a proposer invocation legitimately needs.
-
-    An ALLOW-list, and the distinction from a deny-list is the point: denying
-    ``GH_TOKEN`` answers "is today's known tracker credential absent?", while
-    allowing only provider API keys answers "is every credential this stage
-    holds one that cannot mutate a tracker?" Only the second survives an
-    operator putting a new forge-of-record credential in ``.forge/.env``.
-
-    A key qualifies if it is a provider API key by name, or one of the Claude
-    CLI's inference-token env vars. Everything else — tracker tokens, webhook
-    URLs, deploy credentials — is dropped, so an advisory stage cannot
-    authenticate as the operator against anything.
-    """
-    if not secrets:
-        return {}
-    known = {value.upper() for value in PROVIDER_API_KEY_MAP.values()}
-    known.update(token.upper() for token in CLAUDE_CLI_ENV_TOKENS)
-    return {
-        key: value
-        for key, value in secrets.items()
-        if key.upper() in known or key.upper().endswith("_API_KEY")
-    }
+#: The credentials a proposer invocation may hold: inference keys only, never a
+#: tracker token. The allow-list lives in ``config.auth`` beside the credential
+#: vocabulary it is derived from, because the preflight decomposition assessment
+#: needs the same answer and there must be only one.
+proposer_secrets = inference_only_secrets
 
 
 def _triage_auth_failure(reason: str) -> str:
