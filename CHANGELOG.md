@@ -71,12 +71,14 @@ make v0.10.0 safe to build v0.11.0 on.
   `retry.preflight_complexity_gate_no_decision`, which accepts only the same two
   actions — anything absent, empty, or unrecognised returns the story, so no
   misconfiguration can spend on an unapproved one. Raising the threshold above
-  10 disables the gate; there is no separate enable switch. Only a score
-  preflight actually founded opens it: a degraded attempt, or one that examined
-  no criteria, derives a conservative *high* score precisely because it could
-  not size the story, so gating on it would ask the operator to rule on nothing
-  — and, failing closed, return the story on no evidence. Those runs continue
-  unasked with `preflight_complexity_gate.withheld_reason` on the audit.
+  10 disables the gate; there is no separate enable switch. Every PROCEED score
+  at or above the threshold opens it, including one derived by a degraded
+  preflight or by one that examined no criteria. Such a score is conservatively
+  *high* precisely because the story could not be sized, which is a reason to
+  ask rather than to skip asking — so the provenance is shown to the operator
+  with the score and recorded as
+  `preflight_complexity_gate.score_provenance_note` on the audit, as context for
+  the decision rather than a suppression of it.
 - **`forge diagnose` flow:** a separate flow for root-cause discovery on symptom
   bugs, distinct from fix work. Operators can run diagnosis as its own bounded
   step before deciding whether to sprint a fix. (#1154)

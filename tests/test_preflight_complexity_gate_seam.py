@@ -230,7 +230,12 @@ class TestGateOpensAtTheBoundary:
 
         assert result.state.preflight_complexity_gate_opened is True
         assert result.state.preflight_complexity_gate_decision == "decompose"
-        assert result.state.preflight_complexity_gate_withheld_reason is None
+        # Foundedness is context, not a suppression: the gate opened anyway, and
+        # the provenance the operator ruled on is on the state for the audit.
+        assert (
+            result.state.preflight_complexity_gate_score_provenance
+            == "preflight examined no criteria"
+        )
         mock_plan.assert_not_called()
         mock_dev.assert_not_called()
         mock_pool.assert_not_called()

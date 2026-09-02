@@ -261,7 +261,9 @@ def _record(
         round(waited_seconds, 2) if waited_seconds is not None else None
     )
     state.preflight_complexity_gate_decided_at = decided_at or _now_iso()
-    state.preflight_complexity_gate_withheld_reason = None
+    # The provenance the operator was shown alongside the score. Recorded rather
+    # than recomputed at read time so the audit says what they actually ruled on.
+    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
 
 
 def _decompose_result(
