@@ -290,12 +290,33 @@ def normalize_dependency_plan(
     return NormalizedDependencyPlan(tasks=normalized_tasks, blocked=blocked)
 
 
+def _restored_prior_story(issue: dict, number: int, slug: str, prior: dict) -> TaskStory:
+    """A record-only ``TaskStory`` for an issue this sprint already ran.
+
+    The issue is closed, so its body was never fetched: this story exists to
+    carry the sprint's own recorded execution forward into the audit, and the
+    runner refuses to dispatch it for exactly that reason. Only the identity and
+    scheduling fields the accumulated record already holds are reconstructed.
+    """
+    from ..task import TaskStory  # noqa: PLC0415
+
+    title = issue.get("title") or prior.get("path") or f"Issue #{number}"
+    depends_on = [dep for dep in (prior.get("depends_on") or []) if isinstance(dep, str)]
+    return TaskStory(
+        name=str(title),
+        slug=slug,
+        github_issue=number,
+        depends_on=depends_on,
+    )
+
+
 def build_resolved_sprint(
     issues: list[dict],
     name: str,
     budget_usd: float,
     max_parallel: int | None,
     project_root: Path,
+    prior_outcomes: "dict[str, dict] | None" = None,
 ) -> ResolvedSprint:
     """Build a ResolvedSprint from a list of ``{"number", "title"}`` issue dicts.
 
@@ -303,31 +324,58 @@ def build_resolved_sprint(
     Issues that are already closed at fetch time are skipped with a warning.
     Any other fetch failure (auth, network, malformed JSON) raises immediately.
 
+    ``prior_outcomes`` is this sprint's own accumulated story record, keyed by
+    slug, supplied on the re-exec path. A story that landed just before a
+    mid-sprint re-exec has closed its issue by the time the new process image
+    re-resolves the sprint, and classifying it as a pre-existing closed
+    dependency wrote it out of the record of the sprint that ran it while its
+    spend stayed in the sprint total (#2847). Whether a story earns a record is
+    settled by whether this sprint did the work, so an issue whose closure this
+    sprint's own record accounts for stays a story of the sprint. An issue
+    nothing in the record accounts for is still an external closed dependency.
+
     Args:
         issues: Ordered list of ``{"number": int, "title": str}`` dicts.
         name: Sprint name.
         budget_usd: Budget ceiling in USD.
         max_parallel: Optional concurrency cap.
         project_root: Repository root (used for ``gh`` CWD).
+        prior_outcomes: Slug -> prior-generation story record, or ``None``.
 
     Returns:
         A fully populated ``ResolvedSprint`` ready for ``run_sprint()``.
     """
     from .manifest import ResolvedSprint  # noqa: PLC0415
+    from .prior_landing import prior_execution_recorded  # noqa: PLC0415
     from .sources import GitHubIssueSource, IssueClosedError, StorySource  # noqa: PLC0415
 
+    prior_outcomes = prior_outcomes or {}
     source = GitHubIssueSource()
     stories: list[tuple[TaskStory, StorySource, str]] = []
     closed_dependency_slugs: set[str] = set()
+    reconciled_prior_slugs: set[str] = set()
     for issue in issues:
         number = issue["number"]
+        slug = f"issue-{number}"
+        canonical_ref = f"issue:{number}"
         try:
             task = source.fetch(str(number), project_root)
         except IssueClosedError as exc:
+            prior = prior_outcomes.get(slug)
+            if isinstance(prior, dict) and prior_execution_recorded(prior):
+                _log(
+                    f"RESTORED issue #{number} — closed, but this sprint's own record shows it "
+                    f"ran here (outcome {prior.get('outcome') or 'unknown'}); keeping its story "
+                    "record rather than reclassifying it as a closed dependency"
+                )
+                stories.append(
+                    (_restored_prior_story(issue, number, slug, prior), source, canonical_ref)
+                )
+                reconciled_prior_slugs.add(slug)
+                continue
             _log(f"WARNING: skipping issue #{number} — {exc}")
-            closed_dependency_slugs.add(f"issue-{number}")
+            closed_dependency_slugs.add(slug)
             continue
-        canonical_ref = f"issue:{number}"
         stories.append((task, source, canonical_ref))
 
     return ResolvedSprint(
@@ -336,4 +384,5 @@ def build_resolved_sprint(
         stories=stories,
         max_parallel=max_parallel,
         closed_dependency_slugs=closed_dependency_slugs,
+        reconciled_prior_slugs=reconciled_prior_slugs,
     )

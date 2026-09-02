@@ -558,6 +558,32 @@ derivable ceiling: it is refused with the reason logged and the guard stays
 closed, because accepting an unbounded unknown would defeat the measurement it
 stands in for.
 
+---
+
+### Sprint total is `null` with a `cost_accounting_discrepancy` block
+
+**Symptom:** `sprint-audit.yaml` / `sprint-summary.yaml` report
+`total_cost_usd: null`, `cost_complete: false`, and a `cost_accounting_discrepancy`
+block under `sprint:` — but no story reported unmeasured spend.
+
+**Cause:** The sprint's measured total exceeds what the per-story rows account
+for. The total and the rows are the same money counted twice, so a gap means
+some amount is in the total with no addressable record behind it. Rather than
+render a confident figure assembled from an incomplete set, the writers withhold
+the total and name the gap (#2847).
+
+**Fix:** Read the block — it carries `sprint_measured_usd`, `explained_story_usd`,
+`declared_non_story_usd` (intake remediation on issues the sprint never
+scheduled), `unexplained_usd`, and `stories_without_measured_cost`. The measured
+lower bound is still reported under `total_cost_measured_usd`. Then check whether
+a story is missing from `specs:` / `stories:` entirely: that, not a bad sum, is
+the usual cause, and it is worth filing.
+
+Related: a story whose GitHub issue closed because *this sprint landed it* stays
+a story of the sprint across a re-exec. It keeps its `specs:` row, and
+`forge audits show --slug issue-<n>` finds it. Only an issue this sprint never
+ran is classified under `closed_dependency_slugs`.
+
 An acceptance covers the **occurrence** it was made for — one recorded call, at
 one recorded ceiling, in one recorded run — not the story. If the same story
 runs again and *again* finishes with cost unmeasured, that is a second unknown
