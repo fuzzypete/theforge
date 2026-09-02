@@ -1299,6 +1299,14 @@ reviewer raising it is the claim working, not the development agent ignoring it.
 Preflight renders signals rather than claim prose (ADR-0002 clause 5) and
 contributes no claims.
 
+Timing is part of eligibility, not just of matching. A claim rendered after
+*every* finding the run recorded could not have been acted on by any of them, so
+it is excluded as `rendered_after_every_recorded_finding` rather than counted as
+eligible and then reported unmatched — a run holding nothing else has no
+correspondence to compute at all. A finding whose own recording time was never
+captured does not rule a claim out: unknown order is reported as `indeterminate`,
+not as late.
+
 Read the categories exactly as written:
 
 | Reported as | Means |
@@ -1306,7 +1314,7 @@ Read the categories exactly as written:
 | `corresponding to an eligible claim` | The finding restates a claim the author had been shown. **Not** proof guidance was ignored — the claim may have been irrelevant, ambiguous, or superseded. |
 | `not matched to an eligible injected claim` | No correspondence was found. This is **not** a novelty claim; failing to match establishes only the absence of a match. |
 | `indeterminate` | The comparison could not decide — too little finding text, or a matching claim that could not be ordered against the finding in time. |
-| `no eligible claims` / `no review findings` | Nothing to compare. Distinct from a run that was compared and matched nothing. |
+| `no eligible claims` / `no review findings` | Nothing to compare. Distinct from a run that was compared and matched nothing. The block names which way it failed: no claim reached the author, or every claim that did arrived after the last finding. |
 | `uncomparable — run predates claim-exposure capture` | The run never recorded what its agents were shown, so its findings correspond to *unknown*, not to zero. |
 
 The method name and version are recorded with every figure. Agreement is

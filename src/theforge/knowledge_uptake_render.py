@@ -65,9 +65,14 @@ def render_run_uptake(report: Mapping[str, Any] | None) -> str:
     lines.append(f"  review findings         {_int(report.get('review_findings'))}")
 
     if status == STATUS_NO_ELIGIBLE_CLAIMS:
-        lines.append("  no correspondence computed: no eligible claim reached the author")
+        lines.append(
+            "  no correspondence computed: "
+            + _reason(report, "no eligible claim reached the author")
+        )
     elif status == STATUS_NO_REVIEW_FINDINGS:
-        lines.append("  no correspondence computed: the review recorded no findings")
+        lines.append(
+            "  no correspondence computed: " + _reason(report, "the review recorded no findings")
+        )
     elif status == STATUS_COMPARED:
         lines.extend(_correspondence_lines(report))
 
@@ -75,6 +80,20 @@ def render_run_uptake(report: Mapping[str, Any] | None) -> str:
     lines.append(f"  {_method_line(report)}")
     lines.append(f"  {INTERPRETATION_NOTE}")
     return "\n".join(lines) + "\n"
+
+
+def _reason(report: Mapping[str, Any], default: str) -> str:
+    """The record's own reason for having nothing to compare.
+
+    Read from the report rather than restated here: there is more than one way
+    to end up with no eligible claim — none ever reached the author, or they all
+    arrived after the last finding was recorded — and a renderer that hard-codes
+    one of them tells the reader the wrong thing about the other.
+    """
+    note = report.get("note")
+    if not isinstance(note, str) or not note.strip():
+        return default
+    return note.removesuffix("; nothing to compare").strip()
 
 
 def _correspondence_lines(report: Mapping[str, Any]) -> list[str]:

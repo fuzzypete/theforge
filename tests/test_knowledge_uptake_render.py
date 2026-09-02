@@ -154,6 +154,37 @@ def test_no_eligible_claims_shows_zero_and_no_correspondence_block() -> None:
     assert "not matched to an eligible injected claim" not in text
 
 
+def test_no_eligible_claims_renders_the_records_own_reason() -> None:
+    """Late claims and never-delivered claims must not render identically."""
+    late = render_run_uptake(
+        _base(
+            status=ku.STATUS_NO_ELIGIBLE_CLAIMS,
+            claims_eligible=0,
+            counts=None,
+            correspondences=None,
+            note=(
+                "every injected claim that reached the author was rendered after all "
+                "recorded findings; nothing to compare"
+            ),
+        )
+    )
+    never = render_run_uptake(
+        _base(
+            status=ku.STATUS_NO_ELIGIBLE_CLAIMS,
+            claims_eligible=0,
+            counts=None,
+            correspondences=None,
+            note="no injected claim reached the author of the reviewed work; nothing to compare",
+        )
+    )
+
+    assert "rendered after all recorded findings" in late
+    assert "no injected claim reached the author" in never
+    assert late != never
+    # The trailing "nothing to compare" is the note's, not the line's.
+    assert "nothing to compare" not in late
+
+
 def test_no_review_findings_says_so_rather_than_rendering_totals() -> None:
     text = render_run_uptake(
         _base(

@@ -81,7 +81,11 @@ make v0.10.0 safe to build v0.11.0 on.
   against a finding only where it reached the author of the reviewed work
   before that finding was recorded: a claim shown only to the reviewer is never
   eligible to explain the reviewer's own finding, so the loop working does not
-  read as the loop failing. Unmatched findings are reported as *not matched to
+  read as the loop failing. A claim rendered after every finding the run
+  recorded is excluded on the same footing rather than counted as eligible and
+  then reported unmatched, so a run holding only late claims reports no
+  correspondence instead of asserting a comparison it never made. Unmatched
+  findings are reported as *not matched to
   an eligible injected claim*, never as novel; findings the comparison cannot
   decide are counted as indeterminate beside the totals; and runs predating this
   capture are reported uncomparable rather than as findings that corresponded to

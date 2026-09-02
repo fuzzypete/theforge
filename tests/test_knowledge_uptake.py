@@ -165,12 +165,71 @@ def test_review_only_claim_never_explains_the_reviewers_own_finding() -> None:
     ]
 
 
-def test_claim_rendered_after_the_finding_cannot_explain_it() -> None:
+def test_claim_rendered_after_every_finding_leaves_nothing_to_compare() -> None:
+    """A late claim is not eligible, so the run has no correspondence to compute.
+
+    Counting it as eligible would enter the compared path and report the finding
+    as not matched to an eligible injected claim — asserting a comparison that
+    never happened, since nothing was available to compare it against.
+    """
     report = _report(
         [_claim(_GATE_CLAIM, rendered_at="2026-08-01T18:00:00+00:00")],
         [_finding(_GATE_FINDING, recorded_at="2026-08-01T14:00:00+00:00")],
     )
-    assert _outcomes(report) == [ku.OUTCOME_NOT_MATCHED]
+
+    assert report["status"] == ku.STATUS_NO_ELIGIBLE_CLAIMS
+    assert report["claims_rendered"] == 1
+    assert report["claims_eligible"] == 0
+    assert report["counts"] is None
+    assert report["correspondences"] is None
+    assert report["claims_excluded"] == [
+        {"reason": "rendered_after_every_recorded_finding", "count": 1}
+    ]
+
+
+def test_late_claim_is_reported_as_late_not_as_never_reaching_the_author() -> None:
+    """The two ways eligibility can fail are different facts about the loop."""
+    late = _report(
+        [_claim(_GATE_CLAIM, rendered_at="2026-08-01T18:00:00+00:00")],
+        [_finding(_GATE_FINDING, recorded_at="2026-08-01T14:00:00+00:00")],
+    )
+    never = _report(
+        [_claim(_GATE_CLAIM, role="review", phase="review")], [_finding(_GATE_FINDING)]
+    )
+
+    assert "rendered after all recorded findings" in late["note"]
+    assert "no injected claim reached the author" in never["note"]
+
+
+def test_a_claim_late_for_one_finding_stays_eligible_for_a_later_one() -> None:
+    """Eligibility is per-run; ordering against each finding stays per-finding."""
+    report = _report(
+        [_claim(_GATE_CLAIM, rendered_at="2026-08-01T12:00:00+00:00")],
+        [
+            _finding(_GATE_FINDING, finding_id="early", recorded_at="2026-08-01T09:00:00+00:00"),
+            _finding(_GATE_FINDING, finding_id="late", recorded_at="2026-08-01T14:00:00+00:00"),
+        ],
+    )
+
+    assert report["status"] == ku.STATUS_COMPARED
+    assert report["claims_eligible"] == 1
+    # The claim explains the finding recorded after it, not the one before it.
+    assert {c["finding_id"]: c["outcome"] for c in report["correspondences"]} == {
+        "early": ku.OUTCOME_NOT_MATCHED,
+        "late": ku.OUTCOME_MATCHED,
+    }
+
+
+def test_claim_stays_eligible_when_a_findings_recording_time_is_unknown() -> None:
+    """Unknown order is not late order — it belongs in the indeterminate path."""
+    report = _report(
+        [_claim(_GATE_CLAIM, rendered_at="2026-08-01T18:00:00+00:00")],
+        [_finding(_GATE_FINDING, recorded_at=None)],
+    )
+
+    assert report["status"] == ku.STATUS_COMPARED
+    assert report["claims_eligible"] == 1
+    assert _outcomes(report) == [ku.OUTCOME_INDETERMINATE]
 
 
 def test_claim_rendered_before_the_finding_can_explain_it() -> None:

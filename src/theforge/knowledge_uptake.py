@@ -204,7 +204,13 @@ def _capture_present(context_manifests: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def _eligibility(claim: Mapping[str, Any]) -> str | None:
-    """Why this claim can never explain a finding, or None if it can."""
+    """Why this claim can never reach the author at all, or None if it could.
+
+    This is the *recipient* half of eligibility only. Whether the claim also
+    arrived in time to explain any recorded finding is decided by
+    :func:`_reached_in_time`, against the findings themselves — a claim's own
+    timestamp says nothing about that on its own.
+    """
     role = str(claim.get("agent_role") or "").strip()
     if not role:
         return "recipient_role_unrecorded"
@@ -213,6 +219,30 @@ def _eligibility(claim: Mapping[str, Any]) -> str | None:
     if _parse_time(claim.get("rendered_at")) is None:
         return "render_time_unrecorded"
     return None
+
+
+def _reached_in_time(claim: Mapping[str, Any], findings: Sequence[Mapping[str, Any]]) -> bool:
+    """True when this claim preceded at least one of the recorded findings.
+
+    A claim rendered after *every* finding this run recorded could not have been
+    acted on by any of them, so it is not merely unmatched — it was never
+    eligible, and a run holding nothing else has no correspondence to compute.
+    Counting it as eligible would put such a run in the compared path and report
+    its findings as not matched to an eligible injected claim, which asserts a
+    comparison that never happened (#2684 review cycle 1).
+
+    A finding whose own recording time is unrecorded cannot rule the claim out:
+    the order is unknown, not late, and unknown order is what the compared path
+    reports as indeterminate.
+    """
+    rendered_at = _parse_time(claim.get("rendered_at"))
+    if rendered_at is None:
+        return False
+    for finding in findings:
+        recorded_at = _parse_time(finding.get("recorded_at"))
+        if recorded_at is None or rendered_at <= recorded_at:
+            return True
+    return False
 
 
 # ── Correspondence ───────────────────────────────────────────────────────────
@@ -351,13 +381,26 @@ def build_uptake_report(
 
     claims = _claim_records(manifests)
     exclusions: dict[str, int] = {}
-    eligible: list[dict] = []
+    reached_author: list[dict] = []
     for claim in claims:
         reason = _eligibility(claim)
         if reason is None:
-            eligible.append(claim)
+            reached_author.append(claim)
         else:
             exclusions[reason] = exclusions.get(reason, 0) + 1
+
+    # Temporal eligibility is decided against the findings, not against the
+    # claim alone — and only when there are findings to decide it against. With
+    # no findings recorded there is nothing for a claim to be early or late
+    # relative to, so the recipient filter is the whole answer and the run falls
+    # to the no-findings path below.
+    if finding_list:
+        eligible = [claim for claim in reached_author if _reached_in_time(claim, finding_list)]
+        late = len(reached_author) - len(eligible)
+        if late:
+            exclusions["rendered_after_every_recorded_finding"] = late
+    else:
+        eligible = reached_author
 
     common = {
         **base,
@@ -371,12 +414,20 @@ def build_uptake_report(
     }
 
     if not eligible:
+        # Name which way eligibility failed. "Never reached the author" and
+        # "reached the author only after every finding was recorded" are
+        # different facts about the loop, and an operator inspecting selection
+        # or placement needs to tell them apart.
+        note = (
+            "every injected claim that reached the author was rendered after all "
+            "recorded findings; nothing to compare"
+            if reached_author
+            else "no injected claim reached the author of the reviewed work; nothing to compare"
+        )
         return {
             **common,
             "status": STATUS_NO_ELIGIBLE_CLAIMS,
-            "note": (
-                "no injected claim reached the author of the reviewed work; nothing to compare"
-            ),
+            "note": note,
             "counts": None,
             "correspondences": None,
         }
@@ -525,8 +576,10 @@ def _label_example(example: Mapping[str, Any]) -> str:
         validation={"status": VALIDATION_MEASURED},
     )
     if report["status"] != STATUS_COMPARED:
-        # No eligible claim reached the author, so the finding is not matched to
-        # one. That is the same statement the compared path would make.
+        # No claim was eligible — it never reached the author, or reached it only
+        # after the finding was recorded. Either way the finding is not matched
+        # to an eligible claim, which is the same statement the compared path
+        # would make, so the labelled set can score both shapes uniformly.
         return OUTCOME_NOT_MATCHED
     return str(report["correspondences"][0]["outcome"])
 
