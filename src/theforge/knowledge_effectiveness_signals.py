@@ -126,6 +126,11 @@ def classify_cohort(record: dict) -> str:
     control cohort. An enabled manifest whose selector failed closed on index
     maintenance is also ``unclassified``: unreadable input is not evidence that
     the readable corpus was empty.
+
+    These cohorts are descriptive groupings of what the selector happened to do
+    for a story, not independently assigned treatment/control arms. A later
+    report may summarize them, but it must not treat them as a causal
+    comparison unless the assignment mechanism changes.
     """
     manifests = record.get("context_manifests")
     if not isinstance(manifests, list):

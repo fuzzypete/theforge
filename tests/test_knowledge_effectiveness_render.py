@@ -11,7 +11,6 @@ from __future__ import annotations
 from tests.knowledge_effectiveness_test_helpers import cohorts, record
 from theforge.knowledge_effectiveness import (
     METRIC_COST_PER_STORY,
-    METRIC_DEV_ITERATIONS,
     METRIC_NAMES,
     METRIC_PLAN_REGENERATION,
     METRIC_STORIES_PER_DOLLAR,
@@ -60,8 +59,10 @@ class TestReportPayload:
         )
         assert cost["with_prior_summary"]["value"] == 2.0
         assert cost["without_prior_summary"]["value"] == 8.0
-        assert cost["delta"] == -6.0
-        assert cost["improved"] is True
+        assert cost["comparative_claim_supported"] is False
+        assert "descriptive only" in cost["comparison_note"]
+        assert cost["delta"] is None
+        assert cost["improved"] is None
 
     def test_payload_separates_overall_from_matched_populations(self) -> None:
         records = [
@@ -72,6 +73,7 @@ class TestReportPayload:
         payload = report_payload(build_report(records))
 
         assert payload["overall"]["with_prior_summary"]["run_count"] == 4
+        assert payload["overall"]["with_prior_summary"]["measured_cost_run_count"] == 4
         assert payload["matched"]["with_prior_summary"]["run_count"] == 3
         assert payload["matched_buckets"] == [
             {
@@ -88,8 +90,8 @@ class TestReportPayload:
             build_report(cohorts({"dev_iterations": 1}, {"dev_iterations": 3}))
         )
 
-        assert payload["status"] == "observed_improvement"
-        assert METRIC_DEV_ITERATIONS in payload["status_reason"]
+        assert payload["status"] == "insufficient_data"
+        assert "unreachable" in payload["status_reason"]
 
     def test_payload_carries_the_trend_points(self) -> None:
         records = [
@@ -103,13 +105,14 @@ class TestReportPayload:
             "later",
         ]
         assert payload["stories_per_dollar_trend"][1]["stories_per_dollar"] == 0.5
+        assert payload["stories_per_dollar_trend"][1]["measured_cost_run_count"] == 1
 
     def test_payload_is_json_serializable(self) -> None:
         import json
 
         payload = report_payload(build_report(cohorts({}, {})))
 
-        assert json.loads(json.dumps(payload))["status"] == "no_observed_improvement"
+        assert json.loads(json.dumps(payload))["status"] == "insufficient_data"
 
 
 # ── Terminal renderer ─────────────────────────────────────────────────
@@ -140,13 +143,14 @@ class TestRenderTerminal:
         assert "$2.00 (n=3)" in out  # money
         assert "0% (n=3)" in out  # rate
         assert "1.00 (n=3)" in out  # plain average
+        assert "descriptive only" in out
 
     def test_under_sampled_metrics_read_as_insufficient_not_as_zero(self) -> None:
         """A metric nobody should act on must not render as a number."""
         out = render_terminal(build_report(cohorts({}, {}, count=1)))
 
-        assert "insufficient data" in out
         assert "insufficient_data" in out
+        assert "descriptive only" in out
         assert "0.00" not in out
 
     def test_missing_denominator_renders_as_a_dash(self) -> None:
@@ -157,19 +161,16 @@ class TestRenderTerminal:
 
         plan_row = next(line for line in out.splitlines() if "plan regeneration rate" in line)
         assert "—" in plan_row
-        assert "insufficient data" in plan_row
+        assert "descriptive only" in plan_row
 
-    def test_improvement_and_regression_are_labelled_with_the_delta(self) -> None:
-        improved = render_terminal(
-            build_report(cohorts({"dev_iterations": 1}, {"dev_iterations": 3}))
-        )
-        regressed = render_terminal(
-            build_report(cohorts({"dev_iterations": 3}, {"dev_iterations": 1}))
-        )
+    def test_current_comparison_rows_are_descriptive_only(self) -> None:
+        out = render_terminal(build_report(cohorts({"dev_iterations": 1}, {"dev_iterations": 3})))
 
-        assert "improved (-2.0)" in improved
-        assert "not improved (+2.0)" in regressed
-        assert "unchanged" in improved  # metrics equal on both sides
+        assert "comparison mode: descriptive only" in out
+        assert "descriptive only" in out
+        assert "improved (" not in out
+        assert "not improved (" not in out
+        assert "unchanged" not in out
 
     def test_unmatched_buckets_are_stated_rather_than_left_blank(self) -> None:
         records = [record(f"with-{i}", cohort="with") for i in range(3)]
@@ -196,10 +197,40 @@ class TestRenderTerminal:
             line for line in out.splitlines() if "stories per dollar" in line.lower()
         )
         assert "0.50 (n=3)" in stories_row
-        # The table row is labelled in prose; the metric key appears only in the
-        # verdict line, which names the metrics that moved.
         assert METRIC_STORIES_PER_DOLLAR not in stories_row
-        assert METRIC_STORIES_PER_DOLLAR in out.splitlines()[-1]
+        assert "unreachable" in out.splitlines()[-1]
+
+    def test_cost_telemetry_and_unmeasured_exclusions_are_rendered(self) -> None:
+        records = [
+            *cohorts({"cost": 2.0}, {"cost": 8.0}),
+            record("with-failed", cohort="with", success=False, cost=5.0),
+            record("without-unmeasured", cohort="without", cost=None),
+        ]
+        out = render_terminal(build_report(records))
+
+        assert "cost telemetry: 4 measured, 0 unmeasured excluded with prior" in out
+        assert "3 measured, 1 unmeasured excluded without prior" in out
+
+    def test_trend_renders_unmeasured_exclusion_counts(self) -> None:
+        records = [
+            record("early", cohort="with", cost=4.0, started_at="2026-08-01T00:00:00+00:00"),
+            record(
+                "late-failed",
+                cohort="with",
+                success=False,
+                cost=6.0,
+                started_at="2026-08-02T00:00:00+00:00",
+            ),
+            record(
+                "late-unmeasured",
+                cohort="with",
+                cost=None,
+                started_at="2026-08-03T00:00:00+00:00",
+            ),
+        ]
+        out = render_terminal(build_report(records))
+
+        assert "$6.00 measured, 1 unmeasured excluded" in out
 
     def test_empty_report_renders_without_raising(self) -> None:
         out = render_terminal(build_report([]))
