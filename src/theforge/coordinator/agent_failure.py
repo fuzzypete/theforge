@@ -474,3 +474,28 @@ def record_degraded_pool(
             "failures": [f.to_dict() for f in failures],
         }
     )
+
+
+def classify_launch_failure(result: object) -> str | None:
+    """Return a one-line launch reason when an agent never started, else None.
+
+    Reads the runner's own launch signal (``startup_failure`` / a launch
+    ``failure_code``) rather than pattern-matching provider text — classification
+    of what a subprocess did belongs to the runner; the coordinator only decides
+    what the classification means for the phase that asked.
+
+    The distinction is the module's whole subject applied to advisory steps: an
+    agent that never reached the model produced no judgment *and* spent nothing,
+    which is a defect in the environment forge launched it into rather than an
+    investigation that reached no conclusion. Callers that surface a reason to an
+    operator need to say which of the two happened.
+    """
+    if not getattr(result, "startup_failure", False):
+        code = str(getattr(result, "failure_code", "") or "").lower()
+        if code != "cli_launch_failure":
+            return None
+    output = str(getattr(result, "output", "") or "")
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    if lines:
+        return lines[-1][:500]
+    return str(getattr(result, "failure_code", "") or "") or "agent process exited at launch"

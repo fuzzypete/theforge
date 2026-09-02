@@ -786,6 +786,35 @@ class CoordinatorState:
     # context they were shown when ruling, kept for the audit. None when the
     # score was founded.
     preflight_complexity_gate_score_provenance: str | None = None
+    # ── Decomposition assessment carried on the pause (#2686) ─────────────
+    # The artifact the operator reads next to the question: candidate slices
+    # with scope boundaries, the dependency edges between them, how the
+    # original acceptance criteria distribute, and what the assessment could
+    # not settle. JSON-safe (``DecompositionAssessment.to_dict``), or None when
+    # none was produced — in which case the reason below says why, and the
+    # pause is answerable exactly as before.
+    preflight_complexity_gate_assessment: dict | None = None
+    preflight_complexity_gate_assessment_generated: bool = False
+    preflight_complexity_gate_assessment_none_reason: str | None = None
+    # The parser's own errors when the reason was invalid output. Kept so a
+    # systematically malformed assessment is diagnosable from the audit rather
+    # than only from a log line.
+    preflight_complexity_gate_assessment_errors: list[str] = field(default_factory=list)
+    # Cost of the assessment *this process* produced. None with
+    # ``assessment_invoked`` True means an agent ran and reported nothing, which
+    # poisons the run's measured total like any other unmeasured phase; 0.0 with
+    # it False means no agent ran, which is a genuine measured zero.
+    preflight_complexity_gate_assessment_cost_usd: float | None = None
+    preflight_complexity_gate_assessment_invoked: bool = False
+    preflight_complexity_gate_assessment_cost_provenance: str | None = None
+    preflight_complexity_gate_assessment_duration_s: float | None = None
+    preflight_complexity_gate_assessment_model: str | None = None
+    preflight_complexity_gate_assessment_profile: str | None = None
+    # A PRIOR attempt's assessment spend, restored from the resume record as
+    # provenance only. Never folded into this run's totals: cost aggregates
+    # describe what this process spent, and charging a restored figure again
+    # would double-count it at the sprint roll-up.
+    preflight_complexity_gate_assessment_prior_cost_usd: float | None = None
     # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
     # that fired on each axis. Empty until preflight sizing runs.
     preflight_complexity_evidence: list[dict] = field(default_factory=list)
@@ -1444,6 +1473,31 @@ class CoordinatorState:
         )
 
     @property
+    def total_decomposition_assessment_cost(self) -> float:
+        """Spend on the preflight gate's decomposition assessment (#2686).
+
+        Zero when none was invoked — including on a resumed run that restored a
+        prior attempt's artifact, which was charged to the attempt that produced
+        it and must not be charged again here.
+        """
+        if not self.preflight_complexity_gate_assessment_invoked:
+            return 0.0
+        return float(self.preflight_complexity_gate_assessment_cost_usd or 0.0)
+
+    @property
+    def total_decomposition_assessment_cost_measured(self) -> float | None:
+        """The same figure, or None when an assessment ran and reported no cost.
+
+        An agent that was killed at its timeout returns ``cost_usd=None``: real
+        spend that nothing measured. Coercing it to ``$0.00`` would understate
+        the run, so it poisons the total exactly as an unmeasured dev or review
+        attempt does. A never-invoked assessment is a measured ``0.0``.
+        """
+        if not self.preflight_complexity_gate_assessment_invoked:
+            return 0.0
+        return self.preflight_complexity_gate_assessment_cost_usd
+
+    @property
     def total_cost(self) -> float:
         return (
             self.total_dev_cost
@@ -1452,6 +1506,7 @@ class CoordinatorState:
             + self.total_plan_cost
             + self.total_plan_review_cost
             + self.total_story_validation_cost
+            + self.total_decomposition_assessment_cost
         )
 
     @property
@@ -1470,6 +1525,7 @@ class CoordinatorState:
             self.total_plan_cost_measured,
             self.total_plan_review_cost_measured,
             self.total_story_validation_cost,
+            self.total_decomposition_assessment_cost_measured,
         ]
         if any(p is None for p in parts):
             return None
