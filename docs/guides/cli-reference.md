@@ -1248,7 +1248,8 @@ forge knowledge-report --format json            # structured payload (also: yaml
 Cohorts come from the audit record's context manifests, never from config: a
 run is **with_prior_summary** only when an eligible phase (plan / dev / review)
 recorded `prior_run_context.enabled: true` *and* included at least one summary.
-Enabled with nothing included is the control cohort. Disabled or unrecorded is
+Enabled with nothing included is a descriptive contrast group, not an
+independently assigned control cohort. Disabled or unrecorded is
 `unclassified` and never enters a comparison — a run from before the feature
 existed is not evidence about the feature.
 
@@ -1256,13 +1257,18 @@ Comparisons are bucketed by preflight work type, complexity band, and domains,
 and only buckets holding both cohorts contribute; "stories with prior knowledge
 did better" means nothing if those stories were also smaller.
 
-The report distinguishes **insufficient_data** (cohorts or metric denominators
-too thin to compare) from **no_observed_improvement** (enough data, and the
-with-prior cohort did not do better). Missing telemetry is reported as an
-unavailable denominator, never as a zero: a run with no `plan_review` block is
-not a run with zero regenerations, and a run with null `cost.total_usd` is a
-delivery of unknown spend, counted in its cohort and excluded from both cost
-denominators.
+Cost metrics count all recorded spend in the numerator, including failed or
+abandoned runs, while only successful runs with measured cost contribute the
+completed-story denominator. Runs with null `cost.total_usd` are excluded from
+both sides of the cost metrics and called out explicitly as unmeasured-cost
+exclusions, never treated as free runs.
+
+The report distinguishes ordinary **insufficient_data** from a descriptive-only
+comparison the current cohort classifier cannot turn into a causal verdict. For
+the shipped with/without-prior cohorts, the report explains that
+`without_prior_summary` forms only when enabled selection included nothing, so a
+causal with-prior vs without-prior verdict is structurally unreachable under
+that classifier.
 
 ---
 
