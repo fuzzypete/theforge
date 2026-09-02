@@ -1286,6 +1286,119 @@ class TestClaudeLifecycle:
         assert result.success is False
         assert elapsed < 5.0, f"runner took {elapsed:.2f}s — watchdog did not fire in time"
 
+    def test_silent_stream_close_is_classified_as_never_ran(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The #2832 shape: the CLI emits nothing, and the runner kills it at the exit grace.
+
+        This is the confirmed mechanism behind every occurrence in that issue —
+        three post-gate-failure DEV invocations and one ``forge diagnose`` run,
+        all ``exit=-9``/``$0.000``/no output within 11-13s of starting. The CLI's
+        stdout reaches EOF without a single stream event; the runner closes stdin,
+        waits out ``_EXIT_GRACE_SECONDS``, finds the process still alive and
+        SIGKILLs its own group. Before the fix that result was reported as
+        ``agent_ended_without_result`` with ``cost_usd=None`` — identical in the
+        record to an agent that had worked and gone quiet, and (because
+        cost-unknown fails ``zero_charge_no_model_artifacts``) charged to the
+        story's retry allowance.
+
+        The timing assertion is the load-bearing half: it pins the kill to the
+        exit grace rather than to the profile timeout, which is what makes this a
+        regression test for the mechanism and not just for the exit code.
+        """
+        self._patch_env(monkeypatch, "silent_stdout_close")
+        # A long profile timeout on purpose: if the classification ever starts
+        # depending on the timeout path, this test hangs instead of passing.
+        profile = self._make_profile(timeout_seconds=3600)
+        start = time.monotonic()
+        result = _run_claude(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.success is False
+        assert result.failure_code == "killed_before_output"
+        assert result.exit_code == -9
+        # Measured zero, not unknown. This is the field the coordinator's
+        # zero_charge_no_model_artifacts() predicate turns on, and the reason the
+        # retry slot is released rather than spent.
+        assert result.cost_usd == 0.0
+        assert result.session_id is None
+        assert result.model_usage == ()
+        assert not result.tool_trace
+        assert "KILLED_BEFORE_OUTPUT" in result.output
+        assert runner_claude_mod._EXIT_GRACE_SECONDS <= elapsed < 30.0, (
+            f"killed after {elapsed:.1f}s — expected the post-stream exit grace "
+            f"({runner_claude_mod._EXIT_GRACE_SECONDS}s), not the profile timeout"
+        )
+
+    def test_never_ran_result_releases_the_retry_slot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The classified result satisfies the coordinator predicate that refunds a retry.
+
+        Asserted here, against a real subprocess result rather than a hand-built
+        one, because the whole point of #2832's third criterion is that *this*
+        shape reaches the refund. A unit test over a synthetic AgentResult would
+        pass even if the runner stopped producing the shape.
+        """
+        from theforge.coordinator.agent_failure import (
+            classify_failure_category,
+            produced_model_output,
+            zero_charge_no_model_artifacts,
+        )
+
+        self._patch_env(monkeypatch, "silent_stdout_close")
+        result = _run_claude(
+            prompt="do the thing",
+            profile=self._make_profile(timeout_seconds=3600),
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+
+        assert zero_charge_no_model_artifacts(result) is True
+        assert produced_model_output(result) is False
+        # A process fact, not "the agent ran and reported nothing".
+        assert classify_failure_category(result) == "process"
+
+    def test_hang_until_timeout_is_not_classified_as_never_ran(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A timeout kill keeps its own code even though it too produced no output.
+
+        The distinction #2832 draws is not "did it print anything" — it is
+        whether the invocation was given and used the story's allowance. A
+        timeout spent the full allowance and is evidence about the story, so it
+        must not release a retry slot; ``killed_before_output`` must not swallow
+        it.
+        """
+        self._patch_env(monkeypatch, "hang")
+        result = _run_claude(
+            prompt="do the thing",
+            profile=self._make_profile(timeout_seconds=2),
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.success is False
+        assert result.failure_code == "timeout"
+        assert result.failure_code != "killed_before_output"
+
+    def test_streamed_usage_then_kill_is_not_classified_as_never_ran(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An invocation that streamed real usage before dying did run."""
+        self._patch_env(monkeypatch, "usage_then_hang")
+        result = _run_claude(
+            prompt="do the thing",
+            profile=self._make_profile(timeout_seconds=2),
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.failure_code != "killed_before_output"
+
     def test_nudge_delivery(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Runner writes stuck-detection nudge to stdin; subprocess receives it and responds."""
         self._patch_env(monkeypatch, "nudge")

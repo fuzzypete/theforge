@@ -61,6 +61,74 @@ not what went wrong, and a run whose cause was sitting in its own log was
 reported as unexplained.
 """
 
+FAILURE_KILLED_BEFORE_OUTPUT = "killed_before_output"
+"""The invocation died on a signal having produced nothing at all — it never ran.
+
+Distinct from `FAILURE_ENDED_WITHOUT_RESULT`, and the distinction is the whole
+point (#2832). That code names an agent that *ran*: it streamed, it spoke, and
+its process then ended before the terminal result event, so the run holds the
+agent's own last words. This one names an invocation that never got that far —
+not one stream event, no text, no token usage, no session, no tool call. Nothing
+about the story was attempted, so the attempt is evidence about the host and not
+about the work, and the story's retry allowance must not be charged for it.
+
+The confirmed mechanism, measured against `tests/fake_bin/claude`'s
+``silent_stdout_close`` mode and matching all four occurrences in #2832: the
+CLI's stdout reaches EOF without a single event, the runner closes stdin and
+waits out its short post-stream exit grace, the process is still alive at the
+end of it, and the runner ``SIGKILL``s its own process group — which is what
+writes ``exit=-9``, ``$0.000`` and ``0 chars`` into the record. Before this code
+existed that shape was reported as `FAILURE_ENDED_WITHOUT_RESULT`, identical to
+an agent that had worked for an hour and gone quiet.
+
+Who *sent* the signal is deliberately not part of the definition. The observed
+kills are forge's own supervision and an external signal is equally possible;
+what the record needs to carry, and what the retry decision turns on, is that
+the invocation produced no execution artifacts — which is a fact the runner can
+prove rather than a guess about signal provenance. The endings that *are* about
+the work — a timeout that spent the story's whole allowance, a stuck-pattern
+terminate, an operator cancellation — are named by their own codes and are
+excluded before this one is ever considered.
+"""
+
+KILLED_BEFORE_OUTPUT_MARKER = (
+    "KILLED_BEFORE_OUTPUT: the invocation was killed before it produced any "
+    "output; nothing about the story was attempted"
+)
+"""Stand-in text for output that never existed, for the code above.
+
+Every runner writes the same string, so a consumer classifying by text sees one
+shape across providers rather than three provider-specific phrasings. Registered
+with the coordinator's no-output markers (`coordinator.agent_failure`).
+"""
+
+
+def killed_before_output(*, exit_code: object, produced_output: bool) -> bool:
+    """True when this exit is the `FAILURE_KILLED_BEFORE_OUTPUT` shape.
+
+    Shared by every CLI runner so the three of them classify one signal/no-output
+    shape identically rather than each growing its own near-miss of it. Kept here,
+    beside the constant, because there is no common result-construction boundary
+    to hang it on — the runners build their `AgentResult`s at separate sites.
+
+    Two facts, both provable from the invocation itself. A negative ``exit_code``
+    is POSIX for "died on signal N", so the process did not choose its own ending;
+    ``produced_output`` False says it had emitted nothing when that happened.
+
+    There is deliberately no "was the kill ours?" parameter. Every runner-owned
+    ending that *did* let the agent run — timeout, stuck-pattern, cancellation —
+    returns its own coded result before reaching any call site of this, so asking
+    the question here would only invite a caller to answer it wrongly: the kill in
+    the #2832 occurrences *is* forge's own, and gating on provenance would have
+    classified the bug as ordinary agent failure.
+    """
+    return (
+        isinstance(exit_code, int)
+        and not isinstance(exit_code, bool)
+        and exit_code < 0
+        and not produced_output
+    )
+
 
 @dataclass(frozen=True)
 class ModelUsage:

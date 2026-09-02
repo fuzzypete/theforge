@@ -32,7 +32,12 @@ from coord_test_helpers import (
     patch_gate_shell,
 )
 
-from theforge.agent_types import FAILURE_ENDED_WITHOUT_RESULT, ModelUsage
+from theforge.agent_types import (
+    FAILURE_ENDED_WITHOUT_RESULT,
+    FAILURE_KILLED_BEFORE_OUTPUT,
+    KILLED_BEFORE_OUTPUT_MARKER,
+    ModelUsage,
+)
 from theforge.config.types import ModelProfile, PlanAgentReviewConfig, PlanConfig
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.agent_failure import (
@@ -103,6 +108,46 @@ def _ended_without_result_failure(profile_name: str = "dev") -> AgentResult:
         output="CLAUDE_STREAM_NO_TEXT: reason=missing_result_event",
         session_id=None,
         cost_usd=0.0,
+        exit_code=-9,
+        raw={},
+        profile_name=profile_name,
+        failure_code=FAILURE_ENDED_WITHOUT_RESULT,
+    )
+
+
+def _killed_before_output_failure(profile_name: str = "dev") -> AgentResult:
+    """The result `runner_claude` now returns for a #2832 invocation that never ran.
+
+    Kept faithful to what the runner actually builds — measured ``cost_usd=0.0``,
+    no session, empty ``raw`` — because the retry refund turns on exactly those
+    fields. ``tests/test_runner_claude.py`` proves a real subprocess produces
+    this shape; this fixture is how the coordinator half is exercised without one.
+    """
+    return AgentResult(
+        success=False,
+        output=KILLED_BEFORE_OUTPUT_MARKER,
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=-9,
+        raw={},
+        profile_name=profile_name,
+        failure_code=FAILURE_KILLED_BEFORE_OUTPUT,
+    )
+
+
+def _cost_unknown_no_result_failure(profile_name: str = "dev") -> AgentResult:
+    """The pre-#2832 shape for the same event: same exit, but spend unreadable.
+
+    This is what the runner used to return for a killed-before-anything
+    invocation. It is retained as a contrast case, not as history: an invocation
+    whose spend genuinely could not be read must keep consuming its retry slot,
+    because forge cannot show that nothing was billed.
+    """
+    return AgentResult(
+        success=False,
+        output="CLAUDE_STREAM_NO_TEXT: reason=missing_result_event",
+        session_id=None,
+        cost_usd=None,
         exit_code=-9,
         raw={},
         profile_name=profile_name,
@@ -350,6 +395,66 @@ class TestDevNoJudgment:
         assert mock_profiles.call_count == 0
 
     @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")
+    @patch("theforge.coordinator.dev_phase._worktree_changed_since_commit", return_value=False)
+    @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=True)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_engine_releases_the_reserved_slot_for_a_retry_that_never_ran(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        _mock_commits,
+        _mock_changed,
+        mock_profiles,
+        tmp_path,
+    ):
+        """End to end: the slot a never-run iteration reserved comes back (#2832).
+
+        ``_run_dev_phase`` only reports ``unused_dev_iteration``; the engine is
+        what acts on it. This drives the whole run so the reservation and the
+        release are made by the same budget object, which is the only way to see
+        that the story's allowance is actually intact afterwards.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=_PREFLIGHT_PROCEED, cost_usd=0.05
+        )
+        mock_dev.return_value = _killed_before_output_failure()
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
+        # Nothing was drawn down: the story is entitled to every dev iteration it
+        # started with, because none of them ran.
+        assert result.state.budget.total_count == 0
+        assert result.state.budget.consumption_log == []
+        assert result.state.budget.remaining() == config.retry.max_dev_iterations
+        # And nothing durable was taught about the story.
+        assert mock_profiles.call_count == 0
+
+        # The run record has to explain the released slot, so the code that
+        # released it is the code the audit carries (#2832's second criterion).
+        audit = generate_audit_log(config, task, result)
+        failure = audit["agent_invocation"]["infrastructure_failure"]
+        assert failure["failure_code"] == FAILURE_KILLED_BEFORE_OUTPUT
+        assert failure["category"] == "process"
+        assert audit["iterations"]["usage_summary"]["dev"]["used"] == 0
+
+    @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")
     @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -527,6 +632,99 @@ class TestDevNoJudgment:
         assert "left the preserved branch unchanged" in (result.message or "")
         assert result.state.dev_results == []
         assert result.state.dev_iteration_telemetry == []
+
+    def _dev_phase_after_a_committed_iteration(self, tmp_path, dev_result):
+        """Run one DEV phase in the #2832 position: a prior iteration committed.
+
+        This is the arrangement the observed run was actually in, and it is the
+        one the fix has to survive. Iteration 1 succeeded, cost $1.859 and
+        committed; VALIDATE then failed; iteration 2 was killed before it
+        produced anything. So the branch has commits ahead of base and is
+        unchanged since this iteration started — the second disjunct of
+        ``_left_no_observable_work``, not the no-commits-at-all first one.
+        """
+        _init_repo(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/test-task"], cwd=tmp_path, check=True)
+        (tmp_path / "feature.txt").write_text("what iteration 1 committed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "iteration 1"], cwd=tmp_path, check=True)
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.adaptive_dev_max = config.retry.max_dev_iterations
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        # The slot this iteration reserved. Whether it comes back is the test.
+        state.budget.consume(review_cycle=0)
+        reserved = state.budget.remaining()
+
+        with (
+            patch("theforge.coordinator.dev_phase.run_agent", return_value=dev_result),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch_gate_shell(side_effect=_shell_with_gate(tmp_path, "PASS")),
+        ):
+            result = _run_dev_phase(
+                state,
+                config,
+                task,
+                "# Test Spec\n",
+                tmp_path,
+                "feat/test-task",
+                notify=False,
+                logger=None,
+            )
+        return result, state, config, reserved
+
+    def test_killed_before_output_after_a_committed_iteration_refunds_the_retry(self, tmp_path):
+        """A retry that never executed is not charged to the story (#2832).
+
+        The third acceptance criterion, at the seam that decides it. The
+        invocation was killed before producing anything, so it is evidence about
+        the host and not about the story; spending an allowance on it converts an
+        infrastructure fault into an exhausted story.
+
+        Asserted through ``release_unused()`` on the real budget rather than on
+        the flag alone, because the flag is only a request — the engine is what
+        honours it, and ``test_engine_releases_the_reserved_slot_for_a_retry_that_never_ran``
+        covers that half.
+        """
+        result, state, config, reserved = self._dev_phase_after_a_committed_iteration(
+            tmp_path, _killed_before_output_failure()
+        )
+
+        assert result is not None
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
+        # A process fact, not "the agent ran and reported nothing".
+        assert result.state.infrastructure_failure["category"] == "process"
+        assert result.state.infrastructure_failure["failure_code"] == FAILURE_KILLED_BEFORE_OUTPUT
+        # The observed run reached this branch by the same clause.
+        assert "left the preserved branch unchanged" in (result.message or "")
+        # The attempt is rolled out of dev accounting entirely: it never ran, so
+        # it is not an iteration the story took.
+        assert result.state.dev_results == []
+        assert result.state.dev_iteration_telemetry == []
+
+        assert state.budget.release_unused() is True
+        assert state.budget.remaining() == reserved + 1 == config.retry.max_dev_iterations
+
+    def test_cost_unknown_invocation_still_spends_its_retry(self, tmp_path):
+        """The contrast case: unreadable spend is not proof that nothing was spent.
+
+        Same exit code, same empty output, same position in the run — and
+        deliberately the opposite outcome. The refund is earned by the runner
+        being able to *show* the invocation produced and cost nothing, not by
+        ``exit=-9`` on its own. Without this, #2832's fix would be a blanket
+        exemption for every signal-killed dev iteration.
+        """
+        result, state, _config, reserved = self._dev_phase_after_a_committed_iteration(
+            tmp_path, _cost_unknown_no_result_failure()
+        )
+
+        assert result is not None
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is False
+        assert state.budget.remaining() == reserved
 
     def test_preexisting_branch_work_with_model_output_is_not_reclassified_as_infrastructure(
         self, tmp_path

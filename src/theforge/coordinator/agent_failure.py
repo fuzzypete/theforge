@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from theforge.agent_types import FAILURE_KILLED_BEFORE_OUTPUT
+
 from .trust_status import CHECK_FAIL, make_trust_check
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -148,6 +150,10 @@ _NO_OUTPUT_MARKERS: tuple[str, ...] = (
     "claude_stream_no_text",
     "sandbox_capability_profile_unsupported",
     "cli not found",
+    # An invocation killed before it produced anything (#2832). Lower-cased here
+    # because every marker on this list is matched against normalised text; keep
+    # in sync with ``agent_types.KILLED_BEFORE_OUTPUT_MARKER``.
+    "killed_before_output:",
 )
 
 # ``failure_code`` values that are substrate statements by construction.
@@ -165,6 +171,15 @@ _MODEL_EXECUTION_FAILURE_CODES: frozenset[str] = frozenset(
         "max_iterations_reached",
         "no_submit_completion",
         "stuck_pattern",
+        # ``killed_before_output`` is deliberately NOT on this list, and the
+        # omission is load-bearing (#2832). Every code above means the model
+        # executed; that one means the process died on a signal having produced
+        # no stream event, no text and no usage — so it must leave
+        # ``produced_model_output`` False and ``zero_charge_no_model_artifacts``
+        # True, which is what releases the retry slot the attempt never used.
+        # Note ``timeout`` and ``stuck_pattern`` above are the endings that *did*
+        # let the agent run; the runners return those before ever classifying
+        # this one, so the two can never collide.
     }
 )
 
@@ -311,6 +326,12 @@ def classify_failure_category(result: Any) -> str:
         return CATEGORY_TIMEOUT
     if failure_code in _TRANSPORT_FAILURE_CODES:
         return CATEGORY_TRANSPORT
+    if failure_code == FAILURE_KILLED_BEFORE_OUTPUT:
+        # A process fact, and stated before the no-result check so the two
+        # endings stay distinguishable in the record: an agent that ran and
+        # reported nothing is CATEGORY_NO_RESULT, an invocation killed before it
+        # ran at all is CATEGORY_PROCESS (#2832).
+        return CATEGORY_PROCESS
     if failure_code == "agent_ended_without_result":
         return CATEGORY_NO_RESULT
     text = _text_of(result)

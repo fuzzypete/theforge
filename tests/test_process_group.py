@@ -939,6 +939,105 @@ class _RunnerGroupKillBase:
         monkeypatch.setattr(f"theforge.runners.{module}.build_workspace_env", _build)
 
 
+class TestCleanupCannotReachTheNextInvocation:
+    """One invocation's teardown must not signal the invocation that followed it.
+
+    The first acceptance criterion of #2832. That issue's occurrences were three
+    DEV invocations that each started within a second of a gate failure and died
+    ~11s later at ``exit=-9``, with a teardown line naming killed escapees right
+    beside the death — a sequence that reads as the previous iteration's cleanup
+    reaching into the next invocation.
+
+    Investigation established it was not: the kill came from the invocation's own
+    runner (see ``test_silent_stream_close_is_classified_as_never_ran``), and the
+    teardown line is that same invocation reporting its own escapees *after* the
+    fact. But nothing in the suite actually held the ownership predicate to that
+    claim, so a later change to the lease sweep could make the misreading true
+    without any test objecting. This does.
+    """
+
+    def _leased_sleeper(self, lease_env: dict[str, str]) -> subprocess.Popen:
+        """A long-lived process in its own session, carrying *lease_env*.
+
+        Its own session on purpose: that is what an escapee is, and it is the
+        only case the lease sweep exists to reach — a process still inside the
+        group would be caught by the group kill instead.
+        """
+        return subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            env=lease_env,
+            start_new_session=True,
+        )
+
+    @pytest.mark.skipif(
+        sys.platform not in ("darwin",) and not sys.platform.startswith("linux"),
+        reason="lease_holders can only read another process's environment on macOS/Linux",
+    )
+    def test_lease_sweep_for_one_invocation_spares_a_later_one(self, tmp_path: Path) -> None:
+        """A's escapee sweep kills A's leftovers and leaves B's process running.
+
+        B is started *after* A's lease is opened, so it sits squarely inside the
+        window ``_lease_candidates`` considers — that prune has a lower bound and
+        no upper one, and this is exactly the shape that would slip through if
+        candidacy were mistaken for ownership. What keeps them apart is the token:
+        ``open_process_lease`` mints a fresh one per spawn, so B's environment
+        carries B's token and never matches A's needle.
+        """
+        base = dict(os.environ)
+        env_a, lease_a = process_group.open_process_lease(base)
+        env_b, lease_b = process_group.open_process_lease(base)
+        assert lease_a.token != lease_b.token, "a lease token must be unique per spawn"
+
+        # A's leftover background work — the `make dev-check` the observed run's
+        # first iteration backgrounded and returned while it was still running.
+        proc_a = self._leased_sleeper(env_a)
+        # The next invocation, started immediately afterwards.
+        proc_b = self._leased_sleeper(env_b)
+        try:
+            assert _wait_until(lambda: process_group.lease_holders(lease_a) == [proc_a.pid]), (
+                f"A's own escapee was not found by its lease "
+                f"(holders={process_group.lease_holders(lease_a)}, want=[{proc_a.pid}])"
+            )
+            # The claim itself: B is never a candidate for A's cleanup.
+            assert proc_b.pid not in process_group.lease_holders(lease_a)
+
+            killed, all_gone = process_group.kill_escapees(lease=lease_a)
+
+            assert killed == (proc_a.pid,)
+            assert all_gone is True
+            # Reaped rather than probed with signal 0: these sleepers are this
+            # test's own children, and an unreaped zombie still answers
+            # ``kill(pid, 0)``. The wait is what proves it actually died.
+            assert proc_a.wait(timeout=5) == -signal.SIGKILL, "A's escapee survived A's own sweep"
+            assert proc_b.poll() is None, (
+                "the next invocation was signalled by the previous one's cleanup — "
+                "the #2832 misreading made real"
+            )
+        finally:
+            for proc in (proc_a, proc_b):
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except OSError:
+                    pass
+
+    def test_sequential_invocations_do_not_share_a_lease(self, tmp_path: Path) -> None:
+        """Every spawn gets its own token, so no sweep can be inherited by the next.
+
+        The cheap, platform-independent half of the claim above: the ownership
+        predicate is the token, and a token is never reused. Kept separate so the
+        invariant still has coverage on a host where reading another process's
+        environment is unavailable and the sweep is a documented dead end.
+        """
+        base = dict(os.environ)
+        tokens = set()
+        for _ in range(5):
+            env, lease = process_group.open_process_lease(base)
+            assert env[process_group.LEASE_ENV_VAR] == lease.token
+            tokens.add(lease.token)
+        assert len(tokens) == 5
+
+
 class TestClaudeGroupKill(_RunnerGroupKillBase):
     def test_timeout_kills_grandchild(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
