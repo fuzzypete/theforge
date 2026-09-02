@@ -36,8 +36,11 @@ from theforge.model_capabilities import (
 )
 from theforge.policy_provenance import load_policy_assertions
 from theforge.task.advisor_prompts import build_advisor_prompt
+from theforge.task.story import extract_acceptance_criteria
 
 from . import util as _cu
+from .agent_failure import classify_launch_failure
+from .baseline_checkout import prepare_baseline_checkout
 from .escalate_actions import available_escalate_actions
 
 if TYPE_CHECKING:
@@ -174,33 +177,10 @@ def _issue_ref(task: "TaskStory") -> str:
     return task.slug
 
 
-def _extract_acceptance_criteria(story_body: str) -> list[str]:
-    """Extract acceptance-criteria bullet lines from a story body.
-
-    Looks for an ``## Acceptance criteria`` (or ``### ...``) heading and collects
-    the bullet items beneath it until the next heading. Best-effort: returns an
-    empty list when no such section is present (the full body is still in the
-    packet).
-    """
-    lines = story_body.splitlines()
-    criteria: list[str] = []
-    in_section = False
-    for raw in lines:
-        line = raw.strip()
-        lowered = line.lower()
-        if lowered.startswith("#"):
-            heading = lowered.lstrip("#").strip()
-            if in_section:
-                # A new heading ends the AC section.
-                if heading.startswith("acceptance"):
-                    continue
-                break
-            if heading.startswith("acceptance"):
-                in_section = True
-            continue
-        if in_section and (line.startswith("- ") or line.startswith("* ")):
-            criteria.append(line[2:].strip())
-    return criteria
+#: Reading a story's acceptance criteria is story parsing, so it lives in
+#: ``task.story`` where every consumer can reach it. The local name is kept for
+#: this module's own call site and its tests.
+_extract_acceptance_criteria = extract_acceptance_criteria
 
 
 def _capture_dev_diff(workspace_path: "Path", base_branch: str) -> str:
@@ -302,23 +282,10 @@ def build_evidence_packet(
     )
 
 
-def _classify_advisor_launch_failure(result: object) -> str | None:
-    """Return a one-line launch reason when the advisor never started, else None.
-
-    Reads the runner's own launch signal (``startup_failure`` / a launch
-    ``failure_code``) rather than pattern-matching provider text — classification
-    of what a subprocess did belongs to the runner; the coordinator only decides
-    what the classification means for the escalation.
-    """
-    if not getattr(result, "startup_failure", False):
-        code = str(getattr(result, "failure_code", "") or "").lower()
-        if code != "cli_launch_failure":
-            return None
-    output = str(getattr(result, "output", "") or "")
-    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-    if lines:
-        return lines[-1][:500]
-    return str(getattr(result, "failure_code", "") or "") or "advisor process exited at launch"
+#: "Did this agent ever reach the model?" is the subject of ``agent_failure``,
+#: not of the advisor, so the classifier lives there and every advisory step
+#: shares one answer. The local name is kept for this module's own call site.
+_classify_advisor_launch_failure = classify_launch_failure
 
 
 def run_escalation_advisor(
@@ -365,12 +332,10 @@ def run_escalation_advisor(
     _log(f"  Profile: {profile.model}")
     _log(f"  Evidence: {len(packet.cycles)} cycle(s), issue {packet.issue_ref}")
 
-    from .preflight_flow import _prepare_preflight_working_dir  # noqa: PLC0415
-
     baseline_dir: "Path | None" = None
     cleanup = None
     try:
-        baseline_dir, cleanup = _prepare_preflight_working_dir(
+        baseline_dir, cleanup = prepare_baseline_checkout(
             config.project_root, config.workspace.base_branch
         )
     except Exception as exc:  # pragma: no cover - defensive

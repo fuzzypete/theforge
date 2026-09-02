@@ -70,6 +70,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from theforge.config import ForgeConfig
     from theforge.task import TaskStory
 
+    from . import preflight_decomposition_flow as _pdf
     from . import state as _cs
     from .logging import StructuredLogger
 
@@ -150,6 +151,41 @@ def _resolve_no_decision(config: "ForgeConfig") -> tuple[str, str | None]:
     )
 
 
+def _assessment_lines(state: "_cs.CoordinatorState") -> list[str]:
+    """The decomposition-assessment section of the pause, or its recorded absence.
+
+    Both branches are content. A story with no assessment gets an explicit
+    statement of that fact and why, because "nothing here" and "no assessment
+    was produced because the step judged it atomic" are different things to read
+    while deciding — and neither one changes what the pause accepts as an answer.
+    """
+    from theforge.decomposition_assessment import (  # noqa: PLC0415
+        NONE_NOT_ATTEMPTED,
+        CandidateSlice,
+        DecompositionAssessment,
+        render_assessment_lines,
+    )
+
+    payload = state.preflight_complexity_gate_assessment
+    if state.preflight_complexity_gate_assessment_generated and isinstance(payload, dict):
+        assessment = DecompositionAssessment(
+            slices=tuple(
+                CandidateSlice(
+                    slice_id=int(entry.get("id", index + 1)),
+                    title=str(entry.get("title", "")),
+                    scope=str(entry.get("scope", "")),
+                    depends_on=tuple(entry.get("depends_on") or ()),
+                    covers_criteria=tuple(entry.get("covers_criteria") or ()),
+                )
+                for index, entry in enumerate(payload.get("slices") or [])
+            ),
+            unsettled=tuple(payload.get("unsettled") or ()),
+        )
+        return ["", *render_assessment_lines(assessment)]
+    reason = state.preflight_complexity_gate_assessment_none_reason or NONE_NOT_ATTEMPTED
+    return ["", f"No decomposition assessment: {reason}."]
+
+
 def _render_reason(
     *,
     task: "TaskStory",
@@ -210,6 +246,7 @@ def _render_reason(
                 "should attempt.",
             ]
         )
+    lines.extend(_assessment_lines(state))
     return "\n".join(lines)
 
 
@@ -232,7 +269,76 @@ def _gate_payload(
         "no_decision_action": no_decision_action,
         "no_decision_fallback": no_decision_fallback,
         "default_action": PREFLIGHT_GATE_DECOMPOSE,
+        # The assessment as data, next to the same thing rendered as prose in
+        # ``reason``. Status and notification surfaces read this rather than
+        # parsing the text, and a run with no assessment carries the recorded
+        # reason here for exactly the same reason (#2686).
+        "assessment": state.preflight_complexity_gate_assessment,
+        "assessment_generated": bool(state.preflight_complexity_gate_assessment_generated),
+        "assessment_none_reason": state.preflight_complexity_gate_assessment_none_reason,
+        "assessment_cost_usd": state.preflight_complexity_gate_assessment_cost_usd,
     }
+
+
+def _has_recorded_assessment(state: "_cs.CoordinatorState") -> bool:
+    """Whether an assessment attempt for this story has already been recorded.
+
+    True for a produced artifact AND for a recorded absence: "the step ran and
+    found nothing to split" is an outcome that was paid for too, and re-running
+    it on resume would spend again to reach the answer already on the record.
+    """
+    return bool(
+        state.preflight_complexity_gate_assessment_generated
+        or state.preflight_complexity_gate_assessment_none_reason
+    )
+
+
+def _record_assessment(state: "_cs.CoordinatorState", attempt: "_pdf.AssessmentAttempt") -> None:
+    """Write one assessment attempt — artifact or recorded absence — onto the state."""
+    result = attempt.result
+    state.preflight_complexity_gate_assessment = (
+        result.assessment.to_dict() if result.assessment is not None else None
+    )
+    state.preflight_complexity_gate_assessment_generated = result.produced
+    state.preflight_complexity_gate_assessment_none_reason = (
+        None if result.produced else result.none_produced_reason
+    )
+    state.preflight_complexity_gate_assessment_errors = list(result.validation_errors)
+    state.preflight_complexity_gate_assessment_invoked = attempt.invoked
+    state.preflight_complexity_gate_assessment_cost_usd = attempt.cost_usd
+    state.preflight_complexity_gate_assessment_cost_provenance = attempt.cost_provenance
+    state.preflight_complexity_gate_assessment_duration_s = attempt.duration_s
+    state.preflight_complexity_gate_assessment_model = attempt.model
+    state.preflight_complexity_gate_assessment_profile = attempt.profile_name
+
+
+def _persist_gate_state(
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    task: "TaskStory",
+    *,
+    logger: "StructuredLogger | None",
+) -> None:
+    """Durably record what the gate has established so far.
+
+    Called twice: once with the assessment in hand and the operator not yet
+    asked, and again once they have answered. The preflight phase already saved
+    its record *before* this gate ran, so without these an interruption at the
+    pause — or a terminal decompose — would lose an artifact that was paid for,
+    and a resumed run would produce it again.
+    """
+    from .resume_persistence import save_resume_record  # noqa: PLC0415
+
+    try:
+        save_resume_record(
+            config.project_root,
+            state,
+            slug=task.slug,
+            story_content=state.story_content,
+            run_id=getattr(logger, "_run_id", None) or state.run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - persistence is best-effort, never a gate
+        _cu._log_verbose(f"  preflight gate resume-record save failed: {exc}")
 
 
 def _record(
@@ -343,6 +449,7 @@ def evaluate_preflight_complexity_gate(
         threshold=threshold,
         no_decision_action=no_decision_action,
         no_decision_fallback=no_decision_fallback,
+        logger=logger,
     )
     _record(
         state,
@@ -354,6 +461,9 @@ def evaluate_preflight_complexity_gate(
         waited_seconds=waited,
         decided_at=decided_at,
     )
+    # The operator's disposition of the assessment, durable before the decompose
+    # path returns terminally below.
+    _persist_gate_state(state, config, task, logger=logger)
     if logger:
         logger._safe_emit(
             "preflight_complexity_gate",
@@ -390,6 +500,7 @@ def _open_gate(
     threshold: int,
     no_decision_action: str,
     no_decision_fallback: str | None,
+    logger: "StructuredLogger | None" = None,
 ) -> tuple[str, str, float, str | None]:
     """Write, notify on, and poll one PREFLIGHT scope decision.
 
@@ -427,6 +538,39 @@ def _open_gate(
             f"  ⚠ retry.preflight_complexity_gate_no_decision {no_decision_fallback}; "
             f"applying {PREFLIGHT_GATE_DECOMPOSE} on expiry"
         )
+
+    # One assessment attempt, here: after the score has already opened the gate
+    # (so nothing is spent on a story that was never going to pause) and before
+    # the operator is asked (so the artifact is on the pause they read rather
+    # than arriving after they answered). Bounded well inside the wait window —
+    # the notification below is what a hung assessment would otherwise delay.
+    #
+    # A resume that already carries one — an attempt interrupted while the pause
+    # was open — re-asks the question but does not re-pay for the artifact.
+    if _has_recorded_assessment(state):
+        _cu._log(
+            "  ↺ PREFLIGHT gate  reusing the recorded decomposition assessment "
+            "(not regenerated on resume)"
+        )
+    else:
+        from .preflight_decomposition_flow import (  # noqa: PLC0415
+            generate_decomposition_assessment,
+        )
+
+        _record_assessment(
+            state,
+            generate_decomposition_assessment(
+                state,
+                config,
+                task,
+                gate_wait_seconds=timeout_seconds,
+                score_provenance_note=_score_provenance_note(state),
+            ),
+        )
+        # Durable before the operator is asked: an assessment was paid for, and
+        # an interruption at the pause must not lose it or make a resume pay
+        # again.
+        _persist_gate_state(state, config, task, logger=logger)
 
     reason = _render_reason(
         task=task,

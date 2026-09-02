@@ -18,9 +18,7 @@ Called from run_task(); returns (updated_config, result, already_done_loop):
 
 from __future__ import annotations
 
-import shutil
 import subprocess
-import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -55,6 +53,7 @@ from .agent_failure import (
 )
 from .audit import has_review_approve
 from .audit_render import build_invocation_ledger
+from .baseline_checkout import prepare_baseline_checkout
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
@@ -180,39 +179,10 @@ def _has_prior_execution_evidence(
         return False
 
 
-def _prepare_preflight_working_dir(
-    project_root: Path, base_branch: str
-) -> tuple[Path, Callable[[], None]]:
-    """Materialize a clean baseline checkout for deterministic preflight evaluation."""
-    temp_dir = Path(tempfile.mkdtemp(prefix="forge-preflight-"))
-    git_dir = project_root / ".git"
-    if not git_dir.exists():
-        return temp_dir, lambda: shutil.rmtree(temp_dir, ignore_errors=True)
-
-    try:
-        archive = subprocess.run(
-            ["git", "archive", base_branch],
-            cwd=project_root,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        subprocess.run(
-            ["tar", "-xmf", "-"],
-            cwd=temp_dir,
-            input=archive.stdout,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"Failed to archive baseline branch {base_branch!r}") from exc
-
-    def cleanup() -> None:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-    return temp_dir, cleanup
+#: Preflight's clean-checkout helper now lives in :mod:`baseline_checkout`, which
+#: every read-only invocation can reach without importing this phase module. The
+#: name is kept as the alias preflight's own call site (and its tests) use.
+_prepare_preflight_working_dir = prepare_baseline_checkout
 
 
 if TYPE_CHECKING:
