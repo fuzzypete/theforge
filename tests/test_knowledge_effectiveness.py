@@ -17,12 +17,14 @@ from theforge.knowledge_effectiveness import (
     METRIC_COST_PER_STORY,
     METRIC_DEV_ITERATIONS,
     METRIC_PLAN_REGENERATION,
-    METRIC_REVIEW_CYCLES,
     METRIC_REVIEW_RECURRENCE,
     METRIC_STORIES_PER_DOLLAR,
+    PRIMARY_VERDICT_METRIC,
     STATUS_INSUFFICIENT_DATA,
     STATUS_NO_OBSERVED_IMPROVEMENT,
     STATUS_OBSERVED_IMPROVEMENT,
+    MetricComparison,
+    _verdict,
     build_report,
 )
 
@@ -90,7 +92,6 @@ class TestMetricComputation:
 
         assert comparison.with_prior.value == 0.3333
         assert comparison.without_prior.value == 1.0
-        assert comparison.improved is True
 
     def test_review_recurrence_rate_pools_findings(self) -> None:
         records = cohorts(
@@ -103,7 +104,6 @@ class TestMetricComputation:
         assert comparison.with_prior.value == 0.25
         assert comparison.without_prior.value == 0.5
         assert comparison.with_prior.sample_size == 3
-        assert comparison.improved is True
 
     def test_runs_with_no_findings_leave_the_recurrence_denominator_empty(self) -> None:
         """Zero findings is no evidence about recurrence, not a 0% recurrence rate."""
@@ -123,26 +123,30 @@ class TestMetricComputation:
 
         assert report.comparison(METRIC_DEV_ITERATIONS).with_prior.value == 1.0
         assert report.comparison(METRIC_DEV_ITERATIONS).without_prior.value == 3.0
-        assert report.comparison(METRIC_REVIEW_CYCLES).improved is True
 
     def test_cost_per_completed_story_and_stories_per_dollar(self) -> None:
         records = cohorts({"cost": 2.0}, {"cost": 8.0})
         report = build_report(records)
+        with_cohort = report.cohort(COHORT_WITH)
 
         assert report.comparison(METRIC_COST_PER_STORY).with_prior.value == 2.0
         assert report.comparison(METRIC_COST_PER_STORY).without_prior.value == 8.0
-        assert report.comparison(METRIC_COST_PER_STORY).improved is True
         assert report.comparison(METRIC_STORIES_PER_DOLLAR).with_prior.value == 0.5
-        assert report.comparison(METRIC_STORIES_PER_DOLLAR).improved is True
+        assert with_cohort.measured_cost_run_count == 3
+        assert with_cohort.unmeasured_cost_run_count == 0
 
-    def test_failed_runs_are_excluded_from_cost_denominators(self) -> None:
+    def test_failed_runs_raise_cost_per_story_and_lower_stories_per_dollar(self) -> None:
         records = cohorts({"cost": 2.0}, {"cost": 8.0})
         records.append(record("with-failed", cohort="with", success=False, cost=50.0))
         report = build_report(records)
+        with_cost = report.comparison(METRIC_COST_PER_STORY).with_prior
+        with_velocity = report.comparison(METRIC_STORIES_PER_DOLLAR).with_prior
 
         assert report.cohort(COHORT_WITH).run_count == 4
-        assert report.comparison(METRIC_COST_PER_STORY).with_prior.sample_size == 3
-        assert report.comparison(METRIC_COST_PER_STORY).with_prior.value == 2.0
+        assert report.cohort(COHORT_WITH).measured_cost_run_count == 4
+        assert with_cost.sample_size == 3
+        assert with_cost.value == 18.6667
+        assert with_velocity.value == 0.0536
 
     def test_unmeasured_cost_is_not_coerced_to_zero(self) -> None:
         """A successful run with null cost is a delivery of unknown spend.
@@ -156,6 +160,8 @@ class TestMetricComputation:
 
         with_cohort = report.cohort(COHORT_WITH)
         assert with_cohort.run_count == 4
+        assert with_cohort.measured_cost_run_count == 3
+        assert with_cohort.unmeasured_cost_run_count == 1
         assert with_cohort.metric(METRIC_COST_PER_STORY).sample_size == 3
         assert with_cohort.metric(METRIC_COST_PER_STORY).value == 2.0
         assert with_cohort.metric(METRIC_STORIES_PER_DOLLAR).value == 0.5
@@ -173,6 +179,7 @@ class TestMetricComputation:
         with_cohort = report.cohort(COHORT_WITH)
 
         assert with_cohort.run_count == 3
+        assert with_cohort.measured_cost_run_count == 3
         assert with_cohort.metric(METRIC_COST_PER_STORY).value is None
         assert with_cohort.metric(METRIC_COST_PER_STORY).sample_size == 0
         assert with_cohort.metric(METRIC_STORIES_PER_DOLLAR).value is None
@@ -210,40 +217,65 @@ class TestMissingTelemetry:
 
 
 class TestStatusSemantics:
-    def test_thin_cohorts_are_insufficient_data_not_no_improvement(self) -> None:
+    def test_selector_outcome_cohorts_are_reported_as_unreachable(self) -> None:
         report = build_report(cohorts({"cost": 2.0}, {"cost": 8.0}, count=2))
 
         assert report.status == STATUS_INSUFFICIENT_DATA
-        assert "required before comparing" in report.status_reason
+        assert "descriptive only" in report.status_reason
+        assert "unreachable" in report.status_reason
 
-    def test_identical_cohorts_are_no_observed_improvement(self) -> None:
+    def test_build_report_never_emits_a_causal_verdict_for_current_cohorts(self) -> None:
         report = build_report(cohorts({}, {}))
 
-        assert report.status == STATUS_NO_OBSERVED_IMPROVEMENT
-        assert "none improved" in report.status_reason
+        assert report.status == STATUS_INSUFFICIENT_DATA
+        assert "causal with-prior vs without-prior verdict is unreachable" in report.status_reason
 
-    def test_worse_with_prior_is_no_observed_improvement(self) -> None:
+    def test_primary_metric_alone_drives_legitimate_future_verdicts(self) -> None:
         report = build_report(
-            cohorts({"dev_iterations": 4, "cost": 9.0}, {"dev_iterations": 1, "cost": 2.0})
+            cohorts({"dev_iterations": 4, "cost": 2.0}, {"dev_iterations": 1, "cost": 8.0})
+        )
+        with_metrics = report.cohort(COHORT_WITH)
+        without_metrics = report.cohort(COHORT_WITHOUT)
+        comparisons = tuple(
+            MetricComparison(
+                name=item.name,
+                lower_is_better=item.lower_is_better,
+                with_prior=item.with_prior,
+                without_prior=item.without_prior,
+                comparative_claim_supported=True,
+            )
+            for item in report.comparisons
         )
 
-        assert report.status == STATUS_NO_OBSERVED_IMPROVEMENT
+        status, reason = _verdict(with_metrics, without_metrics, comparisons)
 
-    def test_one_improved_metric_is_observed_improvement(self) -> None:
-        report = build_report(cohorts({"dev_iterations": 1}, {"dev_iterations": 3}))
+        assert status == STATUS_OBSERVED_IMPROVEMENT
+        assert PRIMARY_VERDICT_METRIC in reason
 
-        assert report.status == STATUS_OBSERVED_IMPROVEMENT
-        assert METRIC_DEV_ITERATIONS in report.status_reason
+    def test_legitimate_verdict_ignores_non_primary_improvement(self) -> None:
+        report = build_report(
+            cohorts({"dev_iterations": 1, "cost": 8.0}, {"dev_iterations": 3, "cost": 8.0})
+        )
+        with_metrics = report.cohort(COHORT_WITH)
+        without_metrics = report.cohort(COHORT_WITHOUT)
+        comparisons = tuple(
+            MetricComparison(
+                name=item.name,
+                lower_is_better=item.lower_is_better,
+                with_prior=item.with_prior,
+                without_prior=item.without_prior,
+                comparative_claim_supported=True,
+            )
+            for item in report.comparisons
+        )
 
-    def test_better_stories_per_dollar_alone_is_observed_improvement(self) -> None:
-        """The one higher-is-better metric must be read in its own direction."""
-        report = build_report(cohorts({"cost": 2.0}, {"cost": 8.0}))
+        status, reason = _verdict(with_metrics, without_metrics, comparisons)
 
-        assert report.status == STATUS_OBSERVED_IMPROVEMENT
-        assert METRIC_STORIES_PER_DOLLAR in report.status_reason
+        assert status == STATUS_NO_OBSERVED_IMPROVEMENT
+        assert PRIMARY_VERDICT_METRIC in reason
 
     def test_matched_runs_present_but_telemetry_absent_is_insufficient_data(self) -> None:
-        """Cohorts are big enough, but no metric has observations on both sides."""
+        """Legitimate comparisons still surface telemetry gaps as insufficient data."""
         records = cohorts({}, {})
         for entry in records:
             del entry["plan_review"]
@@ -252,12 +284,26 @@ class TestStatusSemantics:
             entry["iterations"]["review_cycles_total"] = None
             entry["cost"]["total_usd"] = None
         report = build_report(records)
+        with_metrics = report.cohort(COHORT_WITH)
+        without_metrics = report.cohort(COHORT_WITHOUT)
+        comparisons = tuple(
+            MetricComparison(
+                name=item.name,
+                lower_is_better=item.lower_is_better,
+                with_prior=item.with_prior,
+                without_prior=item.without_prior,
+                comparative_claim_supported=True,
+            )
+            for item in report.comparisons
+        )
 
-        assert report.status == STATUS_INSUFFICIENT_DATA
-        assert "telemetry is not recorded on both sides" in report.status_reason
+        status, reason = _verdict(with_metrics, without_metrics, comparisons)
+
+        assert status == STATUS_INSUFFICIENT_DATA
+        assert "telemetry is not recorded on both sides" in reason
 
     def test_unbucketed_runs_cannot_carry_the_verdict(self) -> None:
-        """Plenty of classified runs, none comparable — still insufficient data."""
+        """Plenty of classified runs, none comparable; the verdict stays descriptive-only."""
         records = cohorts({}, {})
         for entry in records:
             del entry["preflight"]
@@ -266,6 +312,7 @@ class TestStatusSemantics:
         assert report.cohort_counts[COHORT_WITH] == 3
         assert report.matched_buckets == ()
         assert report.status == STATUS_INSUFFICIENT_DATA
+        assert "descriptive only" in report.status_reason
 
 
 # ── Window metadata and trend ─────────────────────────────────────────
@@ -296,17 +343,33 @@ class TestWindowAndTrend:
         assert (earlier.label, earlier.stories_per_dollar) == ("earlier", 0.1)
         assert (later.label, later.stories_per_dollar) == ("later", 0.5)
         assert later.measured_cost_usd == 4.0
+        assert later.measured_cost_run_count == 2
 
-    def test_trend_excludes_unclassified_runs_and_unmeasured_spend(self) -> None:
+    def test_trend_counts_failed_spend_and_reports_unmeasured_exclusions(self) -> None:
         records = [
             record("early", cohort="with", cost=4.0, started_at="2026-08-01T00:00:00+00:00"),
             record(
                 "noise", cohort="unclassified", cost=99.0, started_at="2026-08-02T00:00:00+00:00"
             ),
-            record("late", cohort="with", cost=None, started_at="2026-08-03T00:00:00+00:00"),
+            record(
+                "late-failed",
+                cohort="with",
+                success=False,
+                cost=6.0,
+                started_at="2026-08-03T00:00:00+00:00",
+            ),
+            record(
+                "late-unmeasured",
+                cohort="with",
+                cost=None,
+                started_at="2026-08-04T00:00:00+00:00",
+            ),
         ]
         earlier, later = build_report(records).stories_per_dollar_trend
 
         assert earlier.measured_cost_usd == 4.0
+        assert earlier.unmeasured_cost_run_count == 0
         assert later.completed_stories == 0
+        assert later.measured_cost_usd == 6.0
+        assert later.unmeasured_cost_run_count == 1
         assert later.stories_per_dollar is None

@@ -18,10 +18,10 @@ Two ideas carry this half:
 2. **Each metric carries its own denominator.** A record with no ``plan_review``
    block does not mean "zero regenerations", and a successful run with
    ``cost.total_usd`` null is a delivery of unknown spend — counted in its
-   cohort, excluded from both cost denominators. A metric whose denominator is
-   too small reports ``insufficient_data`` rather than a number nobody should
-   act on, which is the distinction the whole report exists to make: "we cannot
-   tell yet" is not "it did not help".
+   cohort, excluded from both cost denominators with that exclusion stated. A
+   metric whose denominator is too small reports ``insufficient_data`` rather
+   than a number nobody should act on, which is the distinction the whole
+   report exists to make: "we cannot tell yet" is not "it did not help".
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ __all__ = [
     "METRIC_DIRECTION",
     "METRIC_NAMES",
     "METRIC_PLAN_REGENERATION",
+    "PRIMARY_VERDICT_METRIC",
     "METRIC_REVIEW_CYCLES",
     "METRIC_REVIEW_RECURRENCE",
     "METRIC_STORIES_PER_DOLLAR",
@@ -117,6 +118,8 @@ class CohortMetrics:
     cohort: str
     run_count: int
     metrics: tuple[Metric, ...]
+    measured_cost_run_count: int = 0
+    unmeasured_cost_run_count: int = 0
 
     def metric(self, name: str) -> Metric | None:
         for item in self.metrics:
@@ -131,6 +134,7 @@ METRIC_DEV_ITERATIONS = "avg_dev_iterations"
 METRIC_REVIEW_CYCLES = "avg_review_cycles"
 METRIC_COST_PER_STORY = "cost_per_completed_story"
 METRIC_STORIES_PER_DOLLAR = "stories_per_dollar"
+PRIMARY_VERDICT_METRIC = METRIC_COST_PER_STORY
 
 #: Ordered for rendering; also the set the status verdict reads. Direction is
 #: declared here so "improved" is never inferred from a metric's name.
@@ -164,11 +168,10 @@ def compute_cohort_metrics(cohort: str, runs: list[RunSignals]) -> CohortMetrics
     dev_iters = [run.dev_iterations for run in runs if run.dev_iterations is not None]
     review_cycles = [run.review_cycles for run in runs if run.review_cycles is not None]
 
-    # Completed stories with *measured* cost. A successful run whose cost is
-    # null is a real delivery with unknown spend: it stays in ``run_count`` and
-    # out of both cost denominators, so it can never understate cost per story.
-    delivered = [run for run in runs if run.success and run.cost_usd is not None]
-    spend = sum(run.cost_usd or 0.0 for run in delivered)
+    measured_cost_runs = [run for run in runs if run.cost_usd is not None]
+    successful_measured_cost_runs = [run for run in measured_cost_runs if run.success]
+    spend = sum(run.cost_usd or 0.0 for run in measured_cost_runs)
+    completed_story_count = len(successful_measured_cost_runs)
 
     values: dict[str, tuple[float | None, int]] = {
         METRIC_PLAN_REGENERATION: (
@@ -182,14 +185,16 @@ def compute_cohort_metrics(cohort: str, runs: list[RunSignals]) -> CohortMetrics
         METRIC_DEV_ITERATIONS: (_mean(dev_iters), len(dev_iters)),
         METRIC_REVIEW_CYCLES: (_mean(review_cycles), len(review_cycles)),
         METRIC_COST_PER_STORY: (
-            round(spend / len(delivered), 4) if delivered else None,
-            len(delivered),
+            round(spend / completed_story_count, 4) if completed_story_count else None,
+            completed_story_count,
         ),
-        # Zero measured spend across delivered stories is not an infinite
-        # velocity — it is an unusable denominator.
+        # Zero completed stories is not a measurable velocity, even if the
+        # cohort spent real money getting there.
         METRIC_STORIES_PER_DOLLAR: (
-            round(len(delivered) / spend, 4) if delivered and spend > 0 else None,
-            len(delivered),
+            round(completed_story_count / spend, 4)
+            if completed_story_count and spend > 0
+            else None,
+            completed_story_count,
         ),
     }
     return CohortMetrics(
@@ -204,6 +209,8 @@ def compute_cohort_metrics(cohort: str, runs: list[RunSignals]) -> CohortMetrics
             )
             for name in METRIC_NAMES
         ),
+        measured_cost_run_count=len(measured_cost_runs),
+        unmeasured_cost_run_count=sum(1 for run in runs if run.cost_usd is None),
     )
 
 
@@ -218,6 +225,8 @@ class MetricComparison:
     lower_is_better: bool
     with_prior: Metric
     without_prior: Metric
+    comparative_claim_supported: bool = True
+    comparison_note: str | None = None
 
     @property
     def comparable(self) -> bool:
@@ -225,7 +234,7 @@ class MetricComparison:
 
     @property
     def delta(self) -> float | None:
-        if not self.comparable:
+        if not self.comparative_claim_supported or not self.comparable:
             return None
         with_value = self.with_prior.value
         without_value = self.without_prior.value
@@ -263,6 +272,8 @@ class TrendPoint:
     stories_per_dollar: float | None
     completed_stories: int
     measured_cost_usd: float
+    measured_cost_run_count: int = 0
+    unmeasured_cost_run_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -325,7 +336,17 @@ def build_report(
         for name in (COHORT_WITH, COHORT_WITHOUT)
     )
     with_metrics, without_metrics = matched
-    comparisons = _compare(with_metrics, without_metrics)
+    comparison_note = (
+        "descriptive only: without_prior_summary forms only when enabled prior-run "
+        "selection included nothing, so this classifier cannot produce an "
+        "independently assigned control cohort"
+    )
+    comparisons = _compare(
+        with_metrics,
+        without_metrics,
+        comparative_claim_supported=False,
+        comparison_note=comparison_note,
+    )
     status, reason = _verdict(with_metrics, without_metrics, comparisons)
 
     return KnowledgeEffectivenessReport(
@@ -345,7 +366,11 @@ def build_report(
 
 
 def _compare(
-    with_metrics: CohortMetrics, without_metrics: CohortMetrics
+    with_metrics: CohortMetrics,
+    without_metrics: CohortMetrics,
+    *,
+    comparative_claim_supported: bool,
+    comparison_note: str | None,
 ) -> tuple[MetricComparison, ...]:
     """Hold every metric side by side. Both cohorts always carry all six."""
     comparisons: list[MetricComparison] = []
@@ -360,6 +385,8 @@ def _compare(
                 lower_is_better=METRIC_DIRECTION[name],
                 with_prior=with_metric,
                 without_prior=without_metric,
+                comparative_claim_supported=comparative_claim_supported,
+                comparison_note=comparison_note,
             )
         )
     return tuple(comparisons)
@@ -415,13 +442,20 @@ def _trend(classified: list[RunSignals]) -> tuple[TrendPoint, ...]:
 
 
 def _trend_point(label: str, runs: list[RunSignals]) -> TrendPoint:
-    delivered = [run for run in runs if run.success and run.cost_usd is not None]
-    spend = sum(run.cost_usd or 0.0 for run in delivered)
+    measured_cost_runs = [run for run in runs if run.cost_usd is not None]
+    successful_measured_cost_runs = [run for run in measured_cost_runs if run.success]
+    spend = sum(run.cost_usd or 0.0 for run in measured_cost_runs)
     return TrendPoint(
         label=label,
-        stories_per_dollar=(round(len(delivered) / spend, 4) if delivered and spend > 0 else None),
-        completed_stories=len(delivered),
+        stories_per_dollar=(
+            round(len(successful_measured_cost_runs) / spend, 4)
+            if successful_measured_cost_runs and spend > 0
+            else None
+        ),
+        completed_stories=len(successful_measured_cost_runs),
         measured_cost_usd=round(spend, 4),
+        measured_cost_run_count=len(measured_cost_runs),
+        unmeasured_cost_run_count=sum(1 for run in runs if run.cost_usd is None),
     )
 
 
@@ -431,6 +465,13 @@ def _verdict(
     comparisons: tuple[MetricComparison, ...],
 ) -> tuple[str, str]:
     """Separate "we cannot tell yet" from "we can tell, and it did not help"."""
+    if comparisons and not comparisons[0].comparative_claim_supported:
+        note = comparisons[0].comparison_note or "descriptive only comparison"
+        return (
+            STATUS_INSUFFICIENT_DATA,
+            f"{note}; a causal with-prior vs without-prior verdict is unreachable "
+            "under the current cohort classifier",
+        )
     if with_metrics.run_count < MIN_COHORT_RUNS or without_metrics.run_count < MIN_COHORT_RUNS:
         return (
             STATUS_INSUFFICIENT_DATA,
@@ -447,14 +488,23 @@ def _verdict(
             "the runs are matched but their telemetry is not recorded on both sides",
         )
 
-    improved = [item.name for item in comparable if item.improved]
-    if improved:
+    # build_report's shipped cohorts currently gate above as descriptive-only.
+    # This primary-metric branch remains for any future independently assigned
+    # comparison that reuses the report model.
+    primary = next((item for item in comparisons if item.name == PRIMARY_VERDICT_METRIC), None)
+    if primary is None or not primary.comparable:
+        return (
+            STATUS_INSUFFICIENT_DATA,
+            f"primary verdict metric {PRIMARY_VERDICT_METRIC} needs "
+            f"{MIN_METRIC_SAMPLES} observations in both cohorts before comparing",
+        )
+
+    if primary.improved:
         return (
             STATUS_OBSERVED_IMPROVEMENT,
-            f"{len(improved)} of {len(comparable)} comparable metric(s) improved "
-            f"with prior summaries: {', '.join(improved)}",
+            f"primary verdict metric {PRIMARY_VERDICT_METRIC} improved with prior summaries",
         )
     return (
         STATUS_NO_OBSERVED_IMPROVEMENT,
-        f"{len(comparable)} comparable metric(s) and none improved with prior summaries",
+        f"primary verdict metric {PRIMARY_VERDICT_METRIC} did not improve with prior summaries",
     )

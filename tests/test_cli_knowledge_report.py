@@ -97,7 +97,9 @@ class TestOutput:
 
         assert payload["cohorts"]["with_prior_summary"] == 3
         assert payload["cohorts"]["without_prior_summary"] == 3
-        assert payload["status"] == "no_observed_improvement"
+        assert payload["status"] == "insufficient_data"
+        assert payload["matched_comparison"][0]["comparative_claim_supported"] is False
+        assert "unreachable" in payload["status_reason"]
         assert payload["matched_buckets"][0]["with_prior_runs"] == 3
 
     def test_terminal_format_renders_the_verdict(self, tmp_path: Path, capsys) -> None:
