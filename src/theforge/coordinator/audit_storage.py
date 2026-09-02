@@ -2268,8 +2268,6 @@ def _migrate_v43_to_v44(record: dict) -> dict:
                     **item,
                     "rendered_size": {
                         "value": None,
-                        "unit": "tokens",
-                        "method": "cl100k_base",
                         "kind": "rendered_prompt_contribution",
                         "unavailable_reason": "unmeasured_legacy_record",
                     },

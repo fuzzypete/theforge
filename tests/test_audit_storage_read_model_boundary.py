@@ -404,8 +404,6 @@ class TestPriorRunRenderedSizeMigration:
             "rendered_size"
         ] == {
             "value": None,
-            "unit": "tokens",
-            "method": "cl100k_base",
             "kind": "rendered_prompt_contribution",
             "unavailable_reason": "unmeasured_legacy_record",
         }
