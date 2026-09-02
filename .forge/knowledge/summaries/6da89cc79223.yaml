@@ -1,0 +1,137 @@
+schema_version: 2
+run_id: 6da89cc79223
+authoritative_run_record: .forge/audits/runs/6da89cc79223.json
+generated_at: '2026-09-02T20:07:28.664944+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011025
+story:
+  slug: issue-2684
+  name: A review finding that repeats a claim already injected into the same run is
+    indistinguishable from a novel one, so the knowledge loop cannot be observed missing
+    its target
+  github_issue: 2684
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/cli-reference.md
+- docs/knowledge-uptake-labels.yaml
+- src/theforge/cli/knowledge_report.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/review_phase.py
+- src/theforge/coordinator/review_pool.py
+- src/theforge/coordinator/state.py
+- src/theforge/finding_classifier.py
+- src/theforge/knowledge_uptake.py
+- src/theforge/knowledge_uptake_render.py
+- src/theforge/sprint/audit.py
+- src/theforge/task/context_assembler.py
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- tests/fixtures/audit_record_schema_v45.json
+- tests/test_coord_claim_exposure_seam.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_knowledge_uptake.py
+- tests/test_knowledge_uptake_render.py
+- tests/test_prior_run_manifest.py
+what_changed:
+  description: This run added a knowledge-uptake reporting path that compares injected
+    prior-run claims with review findings using exposure, timing, eligibility, correspondence,
+    and reporting metadata. It also extended audit records and CLI/report rendering
+    so single-run missed-uptake observations can be recorded and displayed.
+  approach: The change threaded claim-level exposure provenance and finding timestamps
+    through coordinator and manifest/audit storage, then computed deterministic claim-to-finding
+    correspondence with explicit eligibility rules and method metadata, and finally
+    rendered the resulting uptake report through stored records and CLI surfaces.
+  files_modified: *id002
+what_was_learned:
+- claim: Run-level gating for claim/finding comparison is insufficient; eligibility
+    must be evaluated against each finding's author and timestamp, or post-finding
+    claim exposures will be misreported as compared-but-unmatched instead of ineligible.
+  evidence:
+  - type: review_finding
+    finding_id: 8327f10315a64f3b
+    description: The review found that a dev claim rendered only after a finding was
+      recorded still caused the run to count an eligible claim and classify the finding
+      as unmatched, demonstrating that eligibility cannot be decided once per run
+      and must account for per-finding temporal ordering.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 explicitly localized the defect to temporal eligibility being
+      counted at the run level before finding times were considered, showing the failure
+      mode future work must avoid.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 confirmed the fix by reporting that late-only dev claims
+      now produce no correspondence rather than compared-and-unmatched output, validating
+      the per-finding eligibility interpretation.
+  - type: file
+    path: src/theforge/knowledge_uptake.py
+    description: This is the correspondence engine named by the finding; its revision
+      is the mechanism by which eligibility moved from coarse run-level counting to
+      logic that can suppress correspondence when only post-finding claims exist.
+- claim: When introducing a derived report whose meaning depends on classifier behavior,
+    the record must carry method identity, version, and validation status so later
+    readers can interpret figures after the matching logic changes.
+  evidence:
+  - type: plan_step
+    step_id: '4'
+    description: The plan reserved a dedicated step for storing method metadata and
+      labelled agreement data, showing that interpretability across future method
+      revisions was treated as part of the feature rather than optional documentation.
+  - type: file
+    path: docs/knowledge-uptake-labels.yaml
+    description: A stored labelled example set was added specifically to anchor agreement
+      measurement for correspondences, non-correspondences, and excluded cases, demonstrating
+      that report outputs are tied to an explicit validation corpus.
+  - type: file
+    path: src/theforge/knowledge_uptake.py
+    description: The core uptake computation file is where correspondence decisions
+      and method provenance are assembled together, showing that report figures are
+      emitted with attached decision-method context rather than as standalone counts.
+learned_patterns:
+- per-finding-temporal-eligibility
+- report-method-provenance
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 8327f10315a64f3b
+    severity: P1
+    file: src/theforge/knowledge_uptake.py
+    description: When the only dev claim in a run was rendered after the review finding
+      was recorded, the uptake report still counted one eligible claim, entered status
+      compared, and classified the finding as not matched to an eligible injected
+      claim.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop surfaced a boundary error where eligibility was computed too coarsely
+    at run scope instead of at the finding-specific exposure/time scope.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 44.113744999999994
+  dominant_difficulty: Making correspondence claims depend only on recorded artifacts
+    required preserving enough phase/role/iteration/time provenance to decide who
+    could have acted on which claim when.
