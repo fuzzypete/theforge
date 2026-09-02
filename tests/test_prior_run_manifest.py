@@ -10,6 +10,7 @@ from theforge.task.prior_run_selector import (
     _RENDERED_SIZE_KIND,
     _RENDERED_SIZE_METHOD,
     _RENDERED_SIZE_UNIT,
+    _measure_rendered_summary,
     select_prior_runs,
 )
 
@@ -303,10 +304,10 @@ def test_manifest_marks_unmeasured_rendered_size_when_counting_is_unavailable(
 ) -> None:
     _corpus(tmp_path, [_entry("4f2a91c")])
 
-    def _missing(_name: str) -> object:
-        raise ImportError("missing")
+    def _broken(*_args, **_kwargs) -> list[str]:
+        raise RuntimeError("boom")
 
-    monkeypatch.setattr("theforge.task.prior_run_selector.import_module", _missing)
+    monkeypatch.setattr("theforge.task.prior_run_selector._estimated_token_count", _broken)
 
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="dev")
@@ -316,7 +317,24 @@ def test_manifest_marks_unmeasured_rendered_size_when_counting_is_unavailable(
         "unit": _RENDERED_SIZE_UNIT,
         "method": _RENDERED_SIZE_METHOD,
         "kind": _RENDERED_SIZE_KIND,
-        "unavailable_reason": "tiktoken_not_installed",
+        "unavailable_reason": "measurement_failed",
+    }
+
+
+def test_manifest_records_measured_rendered_size_from_selected_summary_text(
+    tmp_path: Path,
+) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="dev")
+
+    candidate = selection.candidates[0]
+    assert manifest["included"][0]["rendered_size"] == {
+        "value": _measure_rendered_summary(candidate.content).value,
+        "unit": _RENDERED_SIZE_UNIT,
+        "method": _RENDERED_SIZE_METHOD,
+        "kind": _RENDERED_SIZE_KIND,
     }
 
 

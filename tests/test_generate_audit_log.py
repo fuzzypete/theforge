@@ -930,7 +930,7 @@ def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path)
                     "rendered_size": {
                         "value": 42,
                         "unit": "tokens",
-                        "method": "cl100k_base",
+                        "method": "word_punctuation_estimate_v1",
                         "kind": "rendered_prompt_contribution",
                     },
                     "verdict": {"status": "admissible", "rank": "full"},

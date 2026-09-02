@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -78,7 +77,7 @@ _MAX_RENDERED_CLAIMS = 5
 _MAX_RENDERED_PATTERNS = 5
 _MAX_FIELD_CHARS = 400
 _RENDERED_SIZE_UNIT = "tokens"
-_RENDERED_SIZE_METHOD = "cl100k_base"
+_RENDERED_SIZE_METHOD = "word_punctuation_estimate_v1"
 _RENDERED_SIZE_KIND = "rendered_prompt_contribution"
 
 # Tokens that overlap between any two stories in this repository and therefore
@@ -765,15 +764,18 @@ def _measure_rendered_summary(content: str) -> RenderedSummarySize:
     if not content:
         return RenderedSummarySize(value=0)
     try:
-        tiktoken = import_module("tiktoken")
-    except ImportError:
-        return RenderedSummarySize(value=None, unavailable_reason="tiktoken_not_installed")
-
-    try:
-        encoding = tiktoken.get_encoding(_RENDERED_SIZE_METHOD)
-        return RenderedSummarySize(value=len(encoding.encode(content)))
+        return RenderedSummarySize(value=_estimated_token_count(content))
     except Exception:  # noqa: BLE001 - telemetry must degrade to unavailable, never fail selection
         return RenderedSummarySize(value=None, unavailable_reason="measurement_failed")
+
+
+def _estimated_token_count(content: str) -> int:
+    """Return a deterministic local estimate of prompt token contribution.
+
+    The selector runs on the prompt-assembly path, so counting must not depend
+    on optional packages or any first-use cache/network behavior.
+    """
+    return len(re.findall(r"\w+|[^\w\s]", content, flags=re.UNICODE))
 
 
 # ── Reason strings ────────────────────────────────────────────────────────────
