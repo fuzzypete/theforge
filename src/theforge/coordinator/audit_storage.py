@@ -45,7 +45,12 @@ from .agent_identity import (
     dev_model_identity_detail,
     invocation_identity_rows,
 )
-from .landing_evidence import LANDING_EVIDENCE_RELPATH
+from .landing_evidence import (
+    LANDING_EVIDENCE_RELPATH,
+    is_landing_assertion,
+    is_landing_attempt,
+    landing_evidence_read_dirs,
+)
 
 # The named interface between storage and the analytical read model.
 #
@@ -138,7 +143,24 @@ AuditConnection = sqlite3.Connection
 # rather than re-deriving it from raw proposal rows. Proposal-event writes also
 # now carry their richer snapshot only in ``raw_json``, so no re-index pass is
 # required for older rows.
-SUBSTRATE_SCHEMA_VERSION = 12
+#
+# Bumped to 13 by #2849: landing evidence was written one artifact per run under
+# ``.forge/audits/landing`` and never indexed, so every landed question the
+# substrate could answer was answered from ``audit_records.landing_status`` — a
+# completion-time snapshot taken before a queued pull request resolves.
+# ``landing_assertions`` and ``landing_attempts`` project those artifacts one row
+# per artifact, carrying each one's own ``observed_at``, so a landed query is
+# answered by the evidence that records the event and "no evidence yet" stays
+# distinguishable from "recorded as not landed".
+#
+# The projection is derived from files beside the substrate rather than from
+# fields inside ``audit_records.raw_json``, so it gets no re-index pass in the
+# ``_migrate_*`` sense. What the bump does instead is clear the projection
+# fingerprint (see :func:`_apply_schema`), which forces the next
+# :func:`sync_landing_evidence` on an older substrate to re-project from scratch
+# rather than trusting a fingerprint written by a schema that had nowhere to put
+# the rows.
+SUBSTRATE_SCHEMA_VERSION = 13
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -494,6 +516,55 @@ CREATE INDEX IF NOT EXISTS idx_triage_application_records_run
     ON triage_application_records(triage_run_id);
 CREATE INDEX IF NOT EXISTS idx_triage_application_records_status
     ON triage_application_records(status);
+CREATE TABLE IF NOT EXISTS landing_assertions (
+    run_id TEXT NOT NULL,
+    artifact_name TEXT NOT NULL,
+    slug TEXT,
+    landing_mode TEXT,
+    target_branch TEXT,
+    reviewed_commit TEXT,
+    gated_commit TEXT,
+    carrier_kind TEXT,
+    carrier_ref TEXT,
+    landed_commit TEXT,
+    pr_url TEXT,
+    observer TEXT,
+    observed_at TEXT,
+    source_path TEXT,
+    source_mtime REAL,
+    raw_json TEXT NOT NULL,
+    PRIMARY KEY (run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_landing_assertions_slug ON landing_assertions(slug);
+CREATE INDEX IF NOT EXISTS idx_landing_assertions_observed
+    ON landing_assertions(observed_at);
+CREATE INDEX IF NOT EXISTS idx_landing_assertions_target
+    ON landing_assertions(target_branch);
+CREATE INDEX IF NOT EXISTS idx_landing_assertions_mode
+    ON landing_assertions(landing_mode);
+CREATE INDEX IF NOT EXISTS idx_landing_assertions_observer
+    ON landing_assertions(observer);
+CREATE TABLE IF NOT EXISTS landing_attempts (
+    run_id TEXT NOT NULL,
+    artifact_name TEXT NOT NULL,
+    slug TEXT,
+    landing_mode TEXT,
+    target_branch TEXT,
+    outcome TEXT,
+    carrier_kind TEXT,
+    carrier_ref TEXT,
+    pr_url TEXT,
+    detail TEXT,
+    observer TEXT,
+    observed_at TEXT,
+    source_path TEXT,
+    source_mtime REAL,
+    raw_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, artifact_name)
+);
+CREATE INDEX IF NOT EXISTS idx_landing_attempts_run ON landing_attempts(run_id);
+CREATE INDEX IF NOT EXISTS idx_landing_attempts_outcome ON landing_attempts(outcome);
+CREATE INDEX IF NOT EXISTS idx_landing_attempts_observed ON landing_attempts(observed_at);
 """
 
 
@@ -581,6 +652,13 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         _reindex_dev_model_identity(conn)
         _reindex_invocation_identities(conn)
         _reindex_changed_files(conn)
+        # The landing projection (#2849) is derived from artifacts on disk, not
+        # from raw_json, so it cannot be re-derived here — this function has no
+        # project root. Dropping the fingerprint is the equivalent move: the
+        # next :func:`sync_landing_evidence` sees no match and re-projects the
+        # whole evidence tree, so an existing substrate upgrades on first open
+        # rather than waiting for an operator to run `forge audits rebuild`.
+        conn.execute("DELETE FROM meta WHERE key = ?", (LANDING_PROJECTION_FINGERPRINT_KEY,))
     conn.execute(
         "INSERT INTO meta(key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -883,6 +961,231 @@ def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
     return updated
 
 
+# ── Landing-evidence projection ──────────────────────────────────────────
+#
+# Landing evidence (#2598) is published one JSON artifact per observation under
+# ``.forge/audits/landing`` (and, between a memory publish and its pull request
+# merging, under ``.forge/memory-staging``). Each artifact carries its own
+# ``observed_at``, recorded by whichever observer saw the landing — which is
+# routinely long after the run record was written.
+#
+# This section indexes those artifacts, one row per artifact. It reads only what
+# the artifact records; it never consults ``audit_records.landing_status``, which
+# is a completion-time snapshot of a different question (#2849). The projection
+# is a *derived* view of files on disk, so it is rewritten wholesale whenever the
+# evidence tree changes rather than mutated in place — there is no incremental
+# state to get wrong, and a rebuilt-from-scratch substrate and an incrementally
+# maintained one converge by construction because both call the same function.
+
+# Meta keys recording the state of the projection. They are what a *read-only*
+# opening (:func:`open_readonly`, which may not write and therefore may not
+# sync) can report so an operator can tell "no landing evidence" from "this
+# index has not been refreshed since the evidence was written".
+LANDING_PROJECTION_FINGERPRINT_KEY = "landing_projection_fingerprint"
+LANDING_PROJECTION_SYNCED_AT_KEY = "landing_projection_synced_at"
+LANDING_PROJECTION_SOURCE_COUNT_KEY = "landing_projection_source_count"
+
+_LANDING_ASSERTION_COLUMNS = (
+    "run_id",
+    "artifact_name",
+    "slug",
+    "landing_mode",
+    "target_branch",
+    "reviewed_commit",
+    "gated_commit",
+    "carrier_kind",
+    "carrier_ref",
+    "landed_commit",
+    "pr_url",
+    "observer",
+    "observed_at",
+    "source_path",
+    "source_mtime",
+    "raw_json",
+)
+
+_LANDING_ATTEMPT_COLUMNS = (
+    "run_id",
+    "artifact_name",
+    "slug",
+    "landing_mode",
+    "target_branch",
+    "outcome",
+    "carrier_kind",
+    "carrier_ref",
+    "pr_url",
+    "detail",
+    "observer",
+    "observed_at",
+    "source_path",
+    "source_mtime",
+    "raw_json",
+)
+
+
+def _landing_evidence_sources(project_root: Path) -> list[tuple[Path, str, float]]:
+    """Every landing-evidence artifact on disk as ``(path, relpath, mtime)``.
+
+    Ordered by relative path, which puts the canonical
+    ``.forge/audits/landing`` tree ahead of ``.forge/memory-staging`` — the
+    ordering the ``INSERT OR IGNORE`` below relies on, so a run whose evidence
+    exists in both places is projected from the canonical copy.
+    """
+    sources: list[tuple[Path, str, float]] = []
+    for directory in landing_evidence_read_dirs(project_root):
+        if not directory.exists():
+            continue
+        for path in directory.glob("*.json"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            try:
+                relpath = str(path.relative_to(project_root))
+            except ValueError:
+                relpath = str(path)
+            sources.append((path, relpath, mtime))
+    return sorted(sources, key=lambda item: item[1])
+
+
+def _landing_projection_fingerprint(sources: list[tuple[Path, str, float]]) -> str:
+    """A digest over the evidence tree's (path, mtime) set.
+
+    Cheap enough to compute on every substrate open, which is what lets the
+    projection stay current without the destructive whole-database rebuild that
+    :func:`_native_rows_are_stale` triggers for run records. That rebuild drops
+    tables nothing on disk can reconstruct (readiness, shape-verdict and
+    inline-remediation events, triage rows); routing routine landing observation
+    through it would erase them on every landed story.
+    """
+    digest = hashlib.sha1()
+    for _path, relpath, mtime in sources:
+        digest.update(relpath.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(repr(float(mtime)).encode("ascii"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def _landing_evidence_payload(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _text_or_none(payload: dict, field_name: str) -> str | None:
+    """The artifact's recorded value for ``field_name``, verbatim.
+
+    Verbatim is the point (#2849 AC4): a landing mode, observer or target branch
+    this corpus has never seen before is stored exactly as recorded. There is no
+    allow-list here and none in the schema — projecting only known values would
+    make the projection a description of the past rather than of the artifact.
+    """
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _landing_assertion_row(payload: dict, artifact_name: str, relpath: str, mtime: float) -> tuple:
+    return (
+        str(payload["run_id"]),
+        artifact_name,
+        _text_or_none(payload, "slug"),
+        _text_or_none(payload, "landing_mode"),
+        _text_or_none(payload, "target_branch"),
+        _text_or_none(payload, "reviewed_commit"),
+        _text_or_none(payload, "gated_commit"),
+        _text_or_none(payload, "carrier_kind"),
+        _text_or_none(payload, "carrier_ref"),
+        _text_or_none(payload, "landed_commit"),
+        _text_or_none(payload, "pr_url"),
+        _text_or_none(payload, "observer"),
+        _text_or_none(payload, "observed_at"),
+        relpath,
+        float(mtime),
+        json.dumps(payload, sort_keys=True),
+    )
+
+
+def _landing_attempt_row(payload: dict, artifact_name: str, relpath: str, mtime: float) -> tuple:
+    return (
+        str(payload["run_id"]),
+        artifact_name,
+        _text_or_none(payload, "slug"),
+        _text_or_none(payload, "landing_mode"),
+        _text_or_none(payload, "target_branch"),
+        _text_or_none(payload, "outcome"),
+        _text_or_none(payload, "carrier_kind"),
+        _text_or_none(payload, "carrier_ref"),
+        _text_or_none(payload, "pr_url"),
+        _text_or_none(payload, "detail"),
+        _text_or_none(payload, "observer"),
+        _text_or_none(payload, "observed_at"),
+        relpath,
+        float(mtime),
+        json.dumps(payload, sort_keys=True),
+    )
+
+
+def sync_landing_evidence(
+    conn: sqlite3.Connection, project_root: Path, *, force: bool = False
+) -> int:
+    """Bring the landing projection in line with the evidence tree on disk.
+
+    Returns the number of artifacts projected (0 when the fingerprint matched
+    and nothing was rewritten). Malformed artifacts are skipped rather than
+    raising: a corrupt file must leave its run *unresolved*, which is exactly
+    what an absent row means, and must not take down every caller that opens the
+    substrate.
+
+    This is deliberately **not** wired into :func:`_native_rows_are_stale`. That
+    predicate's only remedy is :func:`rebuild_from_runs`, which drops the whole
+    database and can restore only what per-run JSON and its two snapshots can
+    reconstruct; a landing observation arriving on a healthy substrate must not
+    cost the readiness, shape-verdict, inline-remediation and triage rows nothing
+    else holds.
+    """
+    sources = _landing_evidence_sources(project_root)
+    fingerprint = _landing_projection_fingerprint(sources)
+    if not force and _meta_get(conn, LANDING_PROJECTION_FINGERPRINT_KEY) == fingerprint:
+        return 0
+    assertions: list[tuple] = []
+    attempts: list[tuple] = []
+    for path, relpath, mtime in sources:
+        payload = _landing_evidence_payload(path)
+        if payload is None:
+            continue
+        if is_landing_assertion(payload):
+            assertions.append(_landing_assertion_row(payload, path.name, relpath, mtime))
+        elif is_landing_attempt(payload):
+            attempts.append(_landing_attempt_row(payload, path.name, relpath, mtime))
+    conn.execute("DELETE FROM landing_assertions")
+    conn.execute("DELETE FROM landing_attempts")
+    if assertions:
+        columns = ", ".join(_LANDING_ASSERTION_COLUMNS)
+        placeholders = ", ".join("?" for _ in _LANDING_ASSERTION_COLUMNS)
+        conn.executemany(
+            f"INSERT OR IGNORE INTO landing_assertions ({columns}) VALUES ({placeholders})",
+            assertions,
+        )
+    if attempts:
+        columns = ", ".join(_LANDING_ATTEMPT_COLUMNS)
+        placeholders = ", ".join("?" for _ in _LANDING_ATTEMPT_COLUMNS)
+        conn.executemany(
+            f"INSERT OR IGNORE INTO landing_attempts ({columns}) VALUES ({placeholders})",
+            attempts,
+        )
+    _meta_set(conn, LANDING_PROJECTION_FINGERPRINT_KEY, fingerprint)
+    _meta_set(conn, LANDING_PROJECTION_SYNCED_AT_KEY, _now_iso())
+    _meta_set(conn, LANDING_PROJECTION_SOURCE_COUNT_KEY, str(len(sources)))
+    conn.commit()
+    return len(assertions) + len(attempts)
+
+
 # ── Connection management ────────────────────────────────────────────────
 
 
@@ -898,6 +1201,7 @@ def create_or_open(project_root: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     _apply_schema(conn)
+    sync_landing_evidence(conn, project_root)
     return conn
 
 
@@ -932,6 +1236,12 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
       - Substrate present but stale (native source files removed or
         mtime-mismatched) → rebuild from runs/*.json before returning.
       - Substrate present but corrupt → SubstrateCorruptError.
+      - Landing evidence written since the last open → the landing projection
+        is re-synced in place (#2849). This is a targeted refresh, *not* a
+        staleness rebuild: landing observations arrive routinely, and routing
+        them through :func:`rebuild_from_runs` would drop the readiness,
+        shape-verdict, inline-remediation and triage rows that no file on disk
+        can reconstruct, every time a story landed.
     """
     path = substrate_path(project_root)
     if not path.exists():
@@ -941,7 +1251,9 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
             )
         if runs_dir(project_root).exists() and any(runs_dir(project_root).glob("*.json")):
             rebuild_from_runs(project_root)
-            return _open_validated(path)
+            conn = _open_validated(path)
+            sync_landing_evidence(conn, project_root)
+            return conn
         # Only legacy history.jsonl present — refuse to silently import.
         raise SubstrateMissingError(
             f"audit substrate not found at {path} but legacy history.jsonl exists. "
@@ -954,6 +1266,7 @@ def require_substrate(project_root: Path) -> sqlite3.Connection:
         conn.close()
         rebuild_from_runs(project_root)
         conn = _open_validated(path)
+    sync_landing_evidence(conn, project_root)
     return conn
 
 
@@ -968,6 +1281,15 @@ def open_readonly(project_root: Path) -> sqlite3.Connection:
     a schema migration — is possible. Raises :class:`SubstrateMissingError`
     when the index file is absent, pointing the operator at
     ``forge audits rebuild`` rather than silently regenerating it.
+
+    Consequence for the landing projection (#2849): because this opening cannot
+    write, it cannot run :func:`sync_landing_evidence`, so it answers landing
+    questions from whatever was last indexed. That is a real answer, not a
+    silent one — the projection records when it was last synced and over how
+    many artifacts, and
+    :func:`~theforge.coordinator.audit_read_model.landing_projection_status`
+    reports both, so a reader can tell "no evidence" from "not re-indexed since
+    the evidence was written" and knows to run ``forge audits rebuild``.
     """
     path = substrate_path(project_root)
     if not path.exists():
@@ -2724,6 +3046,14 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     # Restore preserved shape-skip events. Re-applied verbatim (no history
     # recomputation) so counts/status match what was recorded at emit time.
     _restore_shape_skip_events(conn, skip_event_snapshot)
+    # Rebuild the landing projection from the canonical evidence artifacts
+    # (#2849). Forced rather than fingerprint-guarded: ``create_or_open`` above
+    # already projected into the fresh database, and the force makes the
+    # reconstruction unconditional so this path cannot come to depend on
+    # whatever a prior open happened to leave in ``meta``. A substrate rebuilt
+    # from scratch therefore answers landing queries identically to one kept
+    # current incrementally — both run this same function over the same files.
+    sync_landing_evidence(conn, project_root, force=True)
     if legacy_import_done is not None:
         _meta_set(conn, "legacy_import_done", legacy_import_done)
     _meta_set(conn, "last_rebuild_at", _now_iso())

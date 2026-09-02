@@ -84,6 +84,18 @@ LANDING_EVIDENCE_SCHEMA_VERSION = 1
 #   unknown  — the landing was attempted and its outcome could not be observed.
 ATTEMPT_OUTCOMES = frozenset({"queued", "refused", "failed", "timeout", "closed", "unknown"})
 
+# The partition of :data:`ATTEMPT_OUTCOMES` into "this landing has not resolved"
+# and "this landing resolved without landing". Named here, once, because the
+# substrate projection (#2849) has to draw the same line as :func:`landing_state`
+# does over the files, and two spellings of it would let a SQL reader and a
+# filesystem reader disagree about the same run.
+#
+# Anything outside ``RESOLVED_NON_LANDING_OUTCOMES`` reads as unresolved. That is
+# the fail-open direction the asymmetry demands: only an assertion may say
+# "landed", and only an enumerated resolved outcome may say "did not land".
+OPEN_ATTEMPT_OUTCOMES = frozenset({"queued", "unknown"})
+RESOLVED_NON_LANDING_OUTCOMES = ATTEMPT_OUTCOMES - OPEN_ATTEMPT_OUTCOMES
+
 # Carriers that can deliver a landing. ``pull_request`` names a PR (merged
 # through GitHub); ``merge`` names a merge performed directly against the base
 # checkout. Both are recorded with the reference that identifies them.
@@ -445,6 +457,6 @@ def landing_state(project_root: Path, run_id: str) -> str:
     if not attempts:
         return "unresolved"
     last = attempts[-1]["outcome"]
-    if last in {"queued", "unknown"}:
-        return "unresolved"
-    return "not_landed"
+    if last in RESOLVED_NON_LANDING_OUTCOMES:
+        return "not_landed"
+    return "unresolved"
