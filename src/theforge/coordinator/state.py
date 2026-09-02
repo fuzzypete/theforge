@@ -330,6 +330,61 @@ class GateLabel:
         return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class GateRunFacts:
+    """Wall-clock facts about one gate invocation that its verdict cannot carry.
+
+    ``run_gate_full`` reports a decision, an error string, and an output tail.
+    None of the three says whether the run was *killed at its budget* rather
+    than finishing badly, nor what that budget was — a caller that needs the
+    distinction has had to match the "Gate timed out after Ns" error text and
+    re-derive the budget from config (#2796). These are facts about the run, not
+    part of its verdict, so they travel in the same out-parameter shape as
+    ``selection_out`` and ``output_digest``: a caller that does not need them
+    passes nothing and is unaffected.
+    """
+
+    timed_out: bool
+    timeout_s: int
+    command: str
+    exit_code: int | None = None
+
+
+@dataclass(frozen=True)
+class EntryGateOutcome:
+    """A gate that ran *before* this coordinator run and decided where it enters.
+
+    Sprint resume triage runs a reuse gate on an existing worktree and routes the
+    story to DEV when it does not pass. A gate that timed out and a gate whose
+    tests failed are different conditions asking for different work, and the
+    distinction was previously lost at the triage boundary: only the human
+    readable triage reason carried it, and nothing downstream read that string
+    (#2796). This is the structured form the DEV phase and the audit both read.
+
+    ``timeout_s`` is the resolved budget the gate actually ran under, not the raw
+    config field, so a project on the default timeout reports the default rather
+    than ``None``. ``elapsed_s`` is measured around the gate call.
+    """
+
+    outcome: str  # "timeout" — the only condition carried today
+    command: str
+    timeout_s: int
+    elapsed_s: float
+    output_tail: str = ""
+    profile: str | None = None
+
+    def audit_payload(self) -> dict[str, Any]:
+        """Render as the audit record for the gate that decided this run's entry."""
+        return {
+            "outcome": self.outcome,
+            "command": self.command,
+            "timeout_s": self.timeout_s,
+            "elapsed_s": round(self.elapsed_s, 2),
+            "profile": self.profile,
+            "output_tail": self.output_tail,
+        }
+
+
 def short_sha(commit: str, length: int = 8) -> str:
     """Abbreviate a full hex SHA; any other ref (branch name, tag) is returned as-is."""
     text = commit.strip()
@@ -626,6 +681,16 @@ class CoordinatorState:
     # Sticky "the dev agent was told it inherited superseded work". Set when the
     # note is injected into a dev prompt, never cleared.
     workspace_inherited_work_surfaced_to_dev: bool = False
+    # Outcome of the gate that ran *before* this run and routed it to DEV — the
+    # sprint-resume reuse gate (#2796). None for every other entry path, which is
+    # the common case: it is set only when a pre-run gate produced a condition
+    # the DEV phase has to be told about. Written once at resume entry and never
+    # consumed, so the audit can report it whatever the dev phase did with it.
+    entry_gate_outcome: EntryGateOutcome | None = None
+    # Sticky "the dev agent was told the entry gate timed out". Set when the note
+    # is injected into a dev prompt, never cleared — distinct from the outcome
+    # above, because a run can carry an entry-gate outcome and never reach DEV.
+    entry_gate_surfaced_to_dev: bool = False
     # Immutable snapshot of the file set this run changed against its base ref
     # (#2347): ``{base_ref, head_ref, files: [{path, insertions, deletions,
     # binary}]}``. Captured by ``changed_files.capture_changed_files`` at the

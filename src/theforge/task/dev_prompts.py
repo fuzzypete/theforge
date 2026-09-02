@@ -370,6 +370,9 @@ def build_dev_prompt(
     iteration: int = 1,
     escalation_note: str | None = None,
     inherited_work_note: str | None = None,
+    # Why this run entered at DEV when a gate ran before it did (#2796). Absent
+    # for every run no pre-DEV gate decided, which is the default.
+    entry_gate_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     preflight_sufficiency: str | None = None,
     contract_change: bool = False,
@@ -451,6 +454,13 @@ def build_dev_prompt(
         feedback_section += (
             "\n## ⚠ Inherited Working Tree — Story Text Has Changed Since\n\n"
             f"{inherited_work_note}\n"
+        )
+
+    if entry_gate_note:
+        # Built without dedent() for the same reason as the note above: the text
+        # is prose whose own lines carry no indentation.
+        feedback_section += (
+            f"\n## ⚠ The Gate That Sent You Here Did Not Finish\n\n{entry_gate_note}\n"
         )
 
     if cycle_history:

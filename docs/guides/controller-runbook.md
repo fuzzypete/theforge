@@ -168,6 +168,34 @@ clarification; if you rewrote the diagnosis, remove the worktree
 re-running so the dev starts clean. `unknown` just means the tree predates the
 record — it is not a defect.
 
+### The reuse gate ran out of time, not out of correctness (issue #2796)
+
+Resume triage runs a gate on an existing worktree and routes the story to DEV
+when it does not pass. A gate that was **killed at its
+`validation.gate_timeout` budget** is now carried into that run as a condition
+of its own rather than as an unlabelled "gate fails". The sprint log names it:
+
+```
+reuse gate did not finish for issue-2681: killed at its 360s budget after 361.4s
+↻ RESUME     entry gate did not finish: `make gate` killed at its 360s budget after 361.4s
+```
+
+The dev agent's first prompt opens with the same fact — the gate did not
+finish, the configured budget, the measured elapsed time, and an explicit
+statement that **no test failed**, since a run that never reached a summary
+produces no failing tests to find. The ask is to make the gate complete in
+budget (or to report, with measurements, that the suite has outgrown it), not
+to hunt for a broken assertion.
+
+The run audit records `workspace.entry_gate` (`outcome`, `command`,
+`timeout_s`, `elapsed_s`, `profile`, `output_tail`) and
+`workspace.entry_gate_surfaced_to_dev`. `entry_gate: null` means no pre-run
+gate decided this run's entry point — the ordinary case.
+
+Operator call: if `elapsed_s` sits just over `timeout_s` on a suite that has
+been growing, the budget is the thing to look at; if it is far over, or the
+output tail stops in the same place across runs, something is hanging.
+
 ### Which attempt a resume proceeds from (issue #2351)
 
 The per-story resume record (`.forge/resume_state/<slug>.json`) keeps the
