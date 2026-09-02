@@ -1282,6 +1282,8 @@ def _run_dev_phase(
                 phase="dev",
                 story_text=story_content,
                 file_list=plan_file_list(state.plan_structured) or None,
+                agent_role="dev",
+                phase_iteration=state.dev_iteration + 1,
             )
             state.context_manifests.append({"phase": "dev", "manifest": dev_context})
             prompt = _dev_prompt_builder(task)(
@@ -1345,6 +1347,8 @@ def _run_dev_phase(
                 phase="dev",
                 story_text=story_content,
                 file_list=plan_file_list(state.plan_structured) or None,
+                agent_role="dev",
+                phase_iteration=state.dev_iteration + 1,
             )
             state.context_manifests.append({"phase": "dev", "manifest": dev_context})
             prompt = _dev_prompt_builder(task)(

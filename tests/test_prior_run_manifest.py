@@ -392,3 +392,127 @@ def test_note_reports_matches_that_lost_to_better_ranked_matches(tmp_path: Path)
     assert {item["reason"] for item in manifest["dropped"]} == {"below_selection_cap(3)"}
     assert "2 lower-ranked matches not offered" in manifest["note"]
     assert "admissibility" not in manifest["note"]
+
+
+# ── Claim-exposure capture (#2684) ───────────────────────────────────────────
+
+
+def _selection_for(tmp_path: Path, phase: str):
+    _corpus(tmp_path, [_entry("run0")])
+    return select_prior_runs(tmp_path, phase=phase, story_text=_STORY, file_list=_FILES)
+
+
+def test_recorded_claims_are_exactly_the_claims_the_prompt_contained(tmp_path: Path) -> None:
+    """The record must not drift from the prose an agent actually read.
+
+    Claim text is truncated inside the renderer; a record derived from the
+    summary artifact instead of from the render would list claims nobody saw,
+    and the indicator would then blame an author for ignoring them.
+    """
+    selection = _selection_for(tmp_path, "dev")
+    candidate = selection.candidates[0]
+    manifest = build_manifest(
+        selection,
+        included_run_ids={candidate.run_id},
+        phase="dev",
+        agent_role="dev",
+        phase_iteration=1,
+        rendered_at="2026-08-01T10:00:00+00:00",
+    )
+
+    recorded = [claim["claim"] for claim in manifest["included"][0]["claims"]]
+    assert recorded == list(candidate.claims)
+    for claim in recorded:
+        assert claim in candidate.content
+
+
+def test_each_recorded_claim_names_its_phase_role_iteration_and_render_time(
+    tmp_path: Path,
+) -> None:
+    selection = _selection_for(tmp_path, "dev")
+    manifest = build_manifest(
+        selection,
+        included_run_ids={selection.candidates[0].run_id},
+        phase="dev",
+        agent_role="dev",
+        phase_iteration=2,
+        rendered_at="2026-08-01T10:00:00+00:00",
+    )
+
+    claim = manifest["included"][0]["claims"][0]
+    assert claim["phase"] == "dev"
+    assert claim["agent_role"] == "dev"
+    assert claim["phase_iteration"] == 2
+    assert claim["rendered_at"] == "2026-08-01T10:00:00+00:00"
+    assert claim["run_id"] == "run0"
+    assert claim["claim_ref"].startswith("run0:")
+    assert claim["index"] == 1
+
+
+def test_claim_reference_is_stable_across_renderings_of_the_same_claim(
+    tmp_path: Path,
+) -> None:
+    dev = build_manifest(
+        _selection_for(tmp_path, "dev"),
+        included_run_ids={"run0"},
+        phase="dev",
+        agent_role="dev",
+        phase_iteration=1,
+        rendered_at="2026-08-01T10:00:00+00:00",
+    )
+    again = build_manifest(
+        _selection_for(tmp_path, "dev"),
+        included_run_ids={"run0"},
+        phase="dev",
+        agent_role="dev",
+        phase_iteration=5,
+        rendered_at="2026-08-01T18:00:00+00:00",
+    )
+
+    assert [c["claim_ref"] for c in dev["included"][0]["claims"]] == [
+        c["claim_ref"] for c in again["included"][0]["claims"]
+    ]
+
+
+def test_dropped_candidates_carry_no_claims(tmp_path: Path) -> None:
+    """A summary that lost to the budget rendered nothing into any prompt."""
+    selection = _selection_for(tmp_path, "dev")
+    manifest = build_manifest(
+        selection,
+        included_run_ids=set(),
+        phase="dev",
+        agent_role="dev",
+        phase_iteration=1,
+        rendered_at="2026-08-01T10:00:00+00:00",
+    )
+
+    assert manifest["included"] == []
+    assert all("claims" not in item for item in manifest["dropped"])
+
+
+def test_preflight_signal_rendering_records_zero_claims(tmp_path: Path) -> None:
+    """ADR-0002 clause 5: preflight receives signals, never claim prose."""
+    selection = _selection_for(tmp_path, "preflight")
+    manifest = build_manifest(
+        selection,
+        included_run_ids={c.run_id for c in selection.candidates},
+        phase="preflight",
+        agent_role="preflight",
+        phase_iteration=1,
+        rendered_at="2026-08-01T10:00:00+00:00",
+    )
+
+    assert manifest["included"], "preflight still receives a signal rendering"
+    assert all(item["claims"] == [] for item in manifest["included"])
+
+
+def test_disabled_manifest_still_records_that_exposure_was_captured() -> None:
+    from theforge.task.prior_run_manifest import disabled_manifest
+
+    manifest = disabled_manifest(
+        agent_role="dev", phase_iteration=1, rendered_at="2026-08-01T10:00:00+00:00"
+    )
+
+    # Captured-and-empty, not uncaptured: the run knows nothing was rendered.
+    assert manifest["claim_exposure"]["capture_version"] == 1
+    assert manifest["claim_exposure"]["agent_role"] == "dev"

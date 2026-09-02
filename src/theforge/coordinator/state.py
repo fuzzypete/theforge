@@ -201,6 +201,13 @@ class FindingRecord:
     description: str  # canonicalized description
     reporter: str  # profile name that raised it
     disposition: Disposition
+    # When this finding was first recorded (ISO-8601 UTC). Not decoration: the
+    # prior-run uptake comparison (#2684) may only weigh a claim against a
+    # finding the claim *preceded*, and without this the ordering is
+    # unrecoverable. None on records restored from a run that predates capture,
+    # which makes that finding's correspondence indeterminate rather than
+    # silently orderable.
+    recorded_at: str | None = None
 
 
 @dataclass

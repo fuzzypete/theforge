@@ -2560,6 +2560,8 @@ def _run_review_only_phase(
         phase="review",
         story_text=story_content,
         file_list=plan_file_list(state.plan_structured) or None,
+        agent_role="review",
+        phase_iteration=state.review_cycle,
     )
     state.context_manifests.append({"phase": "review", "manifest": review_context})
     review_prompt = build_review_prompt(

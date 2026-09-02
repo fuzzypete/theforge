@@ -927,6 +927,8 @@ def _run_plan_phase(
         phase="plan",
         story_text=story_content,
         file_list=state.preflight_likely_files,
+        agent_role="plan",
+        phase_iteration=state.plan_regen_count + 1,
     )
 
     state.context_manifests.append({"phase": "plan", "manifest": plan_context})

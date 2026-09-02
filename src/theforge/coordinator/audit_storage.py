@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 44
+CURRENT_RECORD_SCHEMA_VERSION = 45
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2289,6 +2289,54 @@ def _migrate_v43_to_v44(record: dict) -> dict:
     return {**record, "context_manifests": migrated_manifests}
 
 
+def _migrate_v44_to_v45(record: dict) -> dict:
+    """Mark pre-capture runs uncomparable for prior-run uptake (#2684).
+
+    v45 records which claims were rendered to which agent role, in which
+    iteration of which phase, and when — and compares the review's findings
+    against them. A v44 record captured none of that. The one thing this
+    migration must not do is let that silence read as a comparison that found
+    nothing: a run whose exposure was never recorded has findings that
+    correspond to *unknown*, not to zero claims.
+
+    So legacy records are lifted to an explicit ``uncomparable_pre_capture``
+    report with null counts, and their prior-run manifests are left exactly as
+    written (ADR-0002 refusal-to-forget) — absent ``claim_exposure`` is itself
+    the evidence that this run predates capture.
+    """
+    if isinstance(record.get("prior_run_uptake"), dict):
+        return record
+
+    findings = record.get("finding_registry")
+    finding_count = len(findings) if isinstance(findings, list) else 0
+    return {
+        **record,
+        "prior_run_uptake": {
+            "status": "uncomparable_pre_capture",
+            "method": {"name": "rendered-claim-overlap", "version": "v1"},
+            "author_role": "dev",
+            "validation": {
+                "status": "unvalidated",
+                "reason": "not_measured",
+                "agreement": None,
+                "n": 0,
+            },
+            "interpretation": (
+                "missed-uptake indicator only; contributes to no effectiveness verdict"
+            ),
+            "note": (
+                "this run predates claim-exposure capture; what each agent was shown "
+                "is not recorded, so its findings cannot be compared against injected claims"
+            ),
+            "claims_rendered": None,
+            "claims_eligible": None,
+            "review_findings": finding_count,
+            "counts": None,
+            "correspondences": None,
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2341,6 +2389,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     41: _migrate_v41_to_v42,
     42: _migrate_v42_to_v43,
     43: _migrate_v43_to_v44,
+    44: _migrate_v44_to_v45,
 }
 
 
