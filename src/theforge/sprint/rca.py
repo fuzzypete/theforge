@@ -129,6 +129,12 @@ _ENDED_WITHOUT_RESULT_CODE = "agent_ended_without_result"
 _ENDED_WITHOUT_RESULT_PHRASE = (
     "stopped producing output and its process ended without a result event"
 )
+# Its sibling, and the reason the two are separate classes (#2832): this one
+# names an invocation killed before it produced any output at all. There are no
+# last words to quote — that is the fact — so the class carries no phrase
+# fallback and is recognised only from the run's own telemetry. Keep in sync with
+# ``agent_types.FAILURE_KILLED_BEFORE_OUTPUT``.
+_KILLED_BEFORE_OUTPUT_CODE = "killed_before_output"
 # Marker the dev phase puts before the captured agent text inside that message.
 # The evidence excerpt is length-capped, so it leads with the agent's own words
 # and drops the sentence wrapped around them — the words are the whole reason
@@ -484,6 +490,17 @@ RULES: tuple[RcaRule, ...] = (
         ),
     ),
     RcaRule(
+        rule_id="dev_agent_killed_before_output",
+        failure_class="agent_killed_before_output",
+        role="primary",
+        description=(
+            "The dev invocation was killed before it produced any output — no "
+            "stream event, no text, no usage. Nothing about the story was "
+            "attempted, so this is a fact about the invocation rather than the "
+            "work."
+        ),
+    ),
+    RcaRule(
         rule_id="iteration_budget_exhausted",
         failure_class="iteration_exhaustion",
         role="primary",
@@ -620,6 +637,11 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     # they sit above iteration exhaustion — those name a constraint that persists
     # across attempts, while this names how one attempt stopped.
     "agent_ended_without_result",
+    # Above iteration exhaustion for a sharper version of the same reason
+    # (#2832): an invocation killed before it produced anything never attempted
+    # the story, so an iteration limit it presents as reaching describes
+    # attempts that did not happen.
+    "agent_killed_before_output",
     "iteration_exhaustion",
 )
 
@@ -1394,7 +1416,14 @@ def _ended_without_result_evidence(
     audit_source: str,
     outcome: str,
 ) -> tuple[str, str, str] | None:
-    """Return an ``agent_ended_without_result`` hit for a run that stated it (#2427).
+    """Return the hit for a dev invocation whose own record named how it ended.
+
+    Two endings, kept apart on purpose (#2427, #2832): an agent that *ran* and
+    stopped before its terminal result event (``agent_ended_without_result``,
+    which quotes the agent's last words), and an invocation killed before it
+    produced anything at all (``agent_killed_before_output``, which has none to
+    quote). Reporting the second as the first would describe a story that never
+    started as one whose agent went quiet.
 
     Two sources, preferred in order of authority:
 
@@ -1422,6 +1451,23 @@ def _ended_without_result_evidence(
     message = _nonempty(outcome_block.get("message")) if isinstance(outcome_block, dict) else None
     stated = error or message or f"outcome={outcome}"
 
+    if _infrastructure_failure_code(audit) == _KILLED_BEFORE_OUTPUT_CODE:
+        # Read from the invocation-failure record rather than the dev-iteration
+        # telemetry the sibling class below uses, because this shape has no such
+        # telemetry by construction: the attempt is rolled back out of ordinary
+        # dev accounting precisely because it never ran (#2832). No ``it last
+        # said`` clause either — the invocation produced nothing to quote, and a
+        # stand-in would blur the one distinction the class carries.
+        return (
+            "dev_agent_killed_before_output",
+            audit_source,
+            _truncate(
+                "the dev invocation was killed before it produced any output; "
+                "nothing about the story was attempted, so its retry allowance "
+                "was not spent on this attempt"
+            ),
+        )
+
     dev_entries = _dev_loop_entries(audit)
     if dev_entries:
         terminal = dev_entries[-1]
@@ -1447,6 +1493,19 @@ def _ended_without_result_evidence(
     if _ENDED_WITHOUT_RESULT_PHRASE in (message or "").lower():
         return ("dev_agent_ended_without_result", audit_source, _truncate(stated))
     return None
+
+
+def _infrastructure_failure_code(audit: dict) -> str | None:
+    """``failure_code`` from the run's infrastructure-abort record, if it has one.
+
+    ``agent_invocation.infrastructure_failure`` is written only when the run
+    ended because no agent judgment could be obtained, so it is the run's own
+    statement about its own execution — the same class of evidence as the
+    per-iteration telemetry, for a shape that has none (#2832).
+    """
+    block = audit.get("agent_invocation") if isinstance(audit, dict) else None
+    failure = block.get("infrastructure_failure") if isinstance(block, dict) else None
+    return _nonempty(failure.get("failure_code")) if isinstance(failure, dict) else None
 
 
 def _dev_loop_entries(audit: dict) -> list[dict]:
@@ -2599,6 +2658,15 @@ def _recommend_actions(
             "a result event, which the run recorded, so there is nothing here for a paid "
             "diagnosis to establish. Where the agent said it was waiting to be notified of "
             "something, that notification was never going to arrive on this transport"
+        ),
+        "agent_killed_before_output": (
+            f"re-sprint {ref} — its dev invocation was killed before it produced any "
+            "output, so nothing about the story was attempted and there is no agent "
+            "judgment here to diagnose. The measured shape (#2832) is the CLI's stream "
+            "closing without a single event, after which the runner kills it at the "
+            "post-stream exit grace; look at what else was loading the host at that "
+            "moment, such as a prior iteration's backgrounded work. The story's retry "
+            "allowance was not spent on this attempt"
         ),
         TAXONOMY_GAP_CLASS: _taxonomy_gap_action(
             ref, unclassified_code, skip_reason=unclassified_skip_reason

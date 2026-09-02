@@ -38,8 +38,11 @@ from theforge import process_group
 from theforge.agent_types import (
     COST_ESTIMATED,
     COST_UNKNOWN,
+    FAILURE_KILLED_BEFORE_OUTPUT,
+    KILLED_BEFORE_OUTPUT_MARKER,
     AgentResult,
     ModelUsage,
+    killed_before_output,
 )
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
@@ -785,6 +788,9 @@ def _run_codex(
                 output_text = content
         except OSError:
             pass
+        # Whether anything was produced at all, asked before the fallbacks below
+        # substitute a placeholder for it (#2832).
+        _produced_output = bool(output_text) or bool((proc.stdout or "").strip())
 
         if not output_text:
             # Under `--json` stdout is a JSONL event stream, so the old raw-stdout
@@ -806,6 +812,28 @@ def _run_codex(
                 )
             else:
                 output_text = raw_stdout or proc.stderr or "(no output)"
+
+        if killed_before_output(
+            exit_code=proc.returncode,
+            produced_output=_produced_output,
+        ):
+            _killed_output = KILLED_BEFORE_OUTPUT_MARKER
+            if (proc.stderr or "").strip():
+                _killed_output = f"{_killed_output}\n{proc.stderr.strip()}"
+            return AgentResult(
+                success=False,
+                output=_killed_output,
+                failure_code=FAILURE_KILLED_BEFORE_OUTPUT,
+                session_id=None,
+                # Measured $0.00: no turn began, so there is nothing to price
+                # and nothing that could have been billed.
+                cost_usd=0.0,
+                cost_provenance=COST_ESTIMATED,
+                exit_code=proc.returncode,
+                raw={},
+                profile_name=profile.name,
+                process_teardown=_teardown,
+            )
 
         # Try JSON parse for structured response
         result_json: dict[str, Any] = {}
