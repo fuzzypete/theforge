@@ -1369,6 +1369,11 @@ class TestTheLeaseSweepCostsWhatItShould:
         descendant), or the platform will not describe it to us at all (so its
         environment is not ours to read and no match was ever possible). Anything
         else dropped would be a leak the sweep stopped looking for.
+
+        "Older than the spawn" is asserted in whichever clock the prune actually
+        used — boot-relative where the platform offers one, wall-clock otherwise.
+        Restating it in the other clock would make this test itself a victim of
+        the drift #2689 was about, passing or failing on which clock was read.
         """
         _env, lease = process_group.open_process_lease(None)
         # The table is snapshotted *before* the candidate scan, so every pid
@@ -1376,7 +1381,9 @@ class TestTheLeaseSweepCostsWhatItShould:
         # would sweep up processes born in between and blame the prune for not
         # having seen the future.
         live = [pid for pid in process_tree.live_pids() if pid > 1]
-        candidates = set(process_group._lease_candidates(lease.started_at))
+        candidates = set(
+            process_group._lease_candidates(lease.started_at, lease.opened_since_boot)
+        )
         assert len(live) > 10, "sanity: this host should have a real process table"
 
         for pid in live:
@@ -1393,7 +1400,11 @@ class TestTheLeaseSweepCostsWhatItShould:
                     "the sweep dropped a process it could have matched"
                 )
                 continue
-            assert info.started_at is not None and info.started_at < lease.started_at, (
+            if lease.opened_since_boot is not None and info.started_since_boot is not None:
+                started, spawned = info.started_since_boot, lease.opened_since_boot
+            else:
+                started, spawned = info.started_at, lease.started_at
+            assert started is not None and started < spawned, (
                 f"pid {pid} was skipped without being older than the spawn"
             )
 
@@ -1407,7 +1418,7 @@ class TestTheLeaseSweepCostsWhatItShould:
         property of the bug.
         """
         _env, lease = process_group.open_process_lease(None)
-        candidates = process_group._lease_candidates(lease.started_at)
+        candidates = process_group._lease_candidates(lease.started_at, lease.opened_since_boot)
         live = [pid for pid in process_tree.live_pids() if pid > 1]
         assert len(live) > 10, "sanity: this host should have a real process table"
         assert len(candidates) < len(live) / 2, (
@@ -1453,6 +1464,105 @@ class TestTheLeaseSweepCostsWhatItShould:
         assert not missed, (
             f"an undated sweep dropped a live process it could have read: {sorted(missed)[:5]}"
         )
+
+    def test_an_undated_record_carries_no_boot_relative_moment_either(self) -> None:
+        """The undated sweep must stay undated in *both* clocks.
+
+        A sidecar's lease survives the process that opened it, so a boot-relative
+        moment recorded alongside it would either prune (defeating the "keep
+        everything" reading above) or, after a reboot, prune against a frame that
+        no longer exists. The reap therefore carries neither clock.
+        """
+        lease = process_group._recorded_lease({"lease": "sometoken"})
+
+        assert lease is not None
+        assert lease.started_at == 0.0
+        assert lease.opened_since_boot is None
+
+    def test_the_prune_orders_by_the_kernels_clock_not_a_drifting_wall_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wall clock that disagrees with the kernel changes neither verdict.
+
+        This is #2689 stated as a unit. On Linux a process's wall-clock start is
+        *composed* from a cached boot epoch, so it can drift arbitrarily far from
+        a freshly-read ``time.time()`` while the kernel's own boot-relative
+        numbers stay exact. Here the two clocks are made to contradict each other
+        outright — the live descendant looks 100s older than the spawn in wall
+        time, the pre-spawn process looks 100s newer — and the prune must follow
+        the kernel in both directions: keep what started after the spawn, drop
+        what started before it.
+        """
+        table = {
+            # Started after the spawn, but the wall clock says a minute before it.
+            101: process_tree.ProcessInfo(
+                101, 1, 101, "proc:1", started_at=4900.0, started_since_boot=1002.0
+            ),
+            # Started before the spawn — after this worker did, which is exactly
+            # the case a "when did *I* start" baseline would have kept — while
+            # the wall clock says it is newer than the spawn.
+            102: process_tree.ProcessInfo(
+                102, 1, 102, "proc:2", started_at=5100.0, started_since_boot=900.0
+            ),
+            # Describable but not datable in either clock: kept, as ever.
+            103: process_tree.ProcessInfo(103, 1, 103, "proc:3"),
+        }
+        monkeypatch.setattr(process_tree, "live_pids", lambda: list(table))
+        monkeypatch.setattr(process_tree, "process_info", table.get)
+
+        candidates = set(process_group._lease_candidates(5000.0, 1000.0))
+
+        assert 101 in candidates, (
+            "a descendant born after the spawn was pruned on a stale wall clock"
+        )
+        assert 102 not in candidates, "a process older than the spawn survived the prune"
+        assert 103 in candidates, "an undatable process must be kept, not dropped"
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="the composed-start path is Linux-only"
+    )
+    def test_a_stale_boot_epoch_cannot_hide_a_live_descendant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observed CI failure, forced rather than waited for (#2689).
+
+        ``process_tree`` caches ``/proc/stat``'s ``btime`` for the life of the
+        worker and never invalidates it, so on a long ``-n auto`` gate run the
+        cached boot epoch can fall out of the frame of a ``time.time()`` read
+        taken much later. Seeding the cache an hour stale reproduces that on
+        demand: the wall-clock comparison drops a descendant that is plainly
+        alive and does not recover, because neither reading changes on a retry.
+        The assertion is that the prune no longer consults that comparison.
+        """
+        real_btime = process_tree._boot_time_epoch()
+        assert real_btime is not None, "sanity: /proc/stat should report btime on Linux"
+        monkeypatch.setitem(process_tree._state, "btime", real_btime - 3600.0)
+
+        env, lease = process_group.open_process_lease(dict(os.environ))
+        assert lease.opened_since_boot is not None, "Linux must date a spawn against boot"
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=env,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            # Synchronise on the child being describable, not on elapsed time.
+            assert _wait_until(lambda: process_tree.process_info(proc.pid) is not None)
+            info = process_tree.process_info(proc.pid)
+            assert info is not None and info.started_at is not None
+            # The teeth: under the stale cache the wall clock genuinely misorders
+            # this child, and the old comparison genuinely dropped it.
+            assert info.started_at < lease.started_at - process_group._LEASE_AGE_SLACK_SECONDS
+            assert proc.pid not in process_group._lease_candidates(lease.started_at)
+
+            assert proc.pid in process_group._lease_candidates(
+                lease.started_at, lease.opened_since_boot
+            ), "the prune dropped a live descendant because a cached clock had drifted"
+        finally:
+            _reap(proc.pid)
+            proc.wait(timeout=5)
 
 
 def test_a_leaking_workspace_setup_command_is_recorded_and_named(tmp_path: Path) -> None:

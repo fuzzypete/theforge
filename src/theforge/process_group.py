@@ -156,13 +156,22 @@ LEASE_ENV_VAR = "FORGE_PROCESS_LEASE"
 class ProcessLease:
     """A per-spawn token that every descendant inherits and cannot shed.
 
-    ``started_at`` records when the spawn happened. Kept for the record rather
-    than for filtering: a sweep that skipped processes on age would depend on two
-    clocks agreeing, and the reads it saves are not what a pass costs.
+    ``started_at`` records when the spawn happened, in wall-clock seconds, for
+    the record and for hosts that can date a process no other way.
+
+    ``opened_since_boot`` records the same moment in the kernel's boot-relative
+    frame, which is the one Linux reports process start times in. The age prune
+    prefers it, because ordering a spawn against a process through wall time on
+    Linux means composing the process's start from a cached boot epoch — and if
+    that composition drifts, a live descendant reads as older than the spawn and
+    is pruned for the life of the lease (#2689). None where the platform has no
+    such frame (macOS reports a wall-clock start directly) or where the spawn
+    moment is not known at all.
     """
 
     token: str
     started_at: float
+    opened_since_boot: float | None = None
 
 
 def open_process_lease(env: dict[str, str] | None) -> tuple[dict[str, str], ProcessLease]:
@@ -173,7 +182,11 @@ def open_process_lease(env: dict[str, str] | None) -> tuple[dict[str, str], Proc
     inherit it. The token is fresh per spawn and never reused, which is what makes
     a later match proof of descent rather than a guess.
     """
-    lease = ProcessLease(token=os.urandom(12).hex(), started_at=time.time())
+    lease = ProcessLease(
+        token=os.urandom(12).hex(),
+        started_at=time.time(),
+        opened_since_boot=process_tree.boot_relative_now(),
+    )
     stamped = dict(os.environ if env is None else env)
     stamped[LEASE_ENV_VAR] = lease.token
     return stamped, lease
@@ -189,12 +202,19 @@ def _pid_holds_lease_linux(pid: int, needle: bytes) -> bool:
 
 # A descendant cannot predate the spawn that created it, so a process older than
 # the lease is not a candidate however its environment reads. A second of slack
-# absorbs clock granularity rather than a real ordering question.
+# absorbs clock granularity rather than a real ordering question — which is only
+# a true statement of what it absorbs when both times come from the same clock,
+# hence *since_boot* below.
 _LEASE_AGE_SLACK_SECONDS = 1.0
 
 
-def _lease_candidates(since: float) -> list[int]:
+def _lease_candidates(since: float, since_boot: float | None = None) -> list[int]:
     """Pids that could belong to a spawn opened at *since*.
+
+    *since* is the spawn's wall-clock moment; *since_boot* is the same moment in
+    the kernel's boot-relative frame, or None where it is unknown. When both it
+    and a process's own boot-relative start are available the comparison is made
+    there, in one clock, and the wall clock is not consulted at all.
 
     Reading a process's environment is the expensive part of the sweep — on macOS
     ``KERN_PROCARGS2`` copies a whole argv+environ blob per process, which across
@@ -230,8 +250,20 @@ def _lease_candidates(since: float) -> list[int]:
     it was added to remove (#2309, cycle 4). Reading start times one process at a
     time through the same interface the tracker already relies on has no such
     cliff: it either describes a process or tells us it will not.
+
+    There is a third way to be wrong, and it is the one that made this prune
+    drop live descendants on Linux CI (#2689): comparing two times that came
+    from *different* clocks. Linux reports a process's start as ticks since
+    boot; turning that into a wall-clock instant needs the boot epoch from
+    ``/proc/stat``, which `theforge.process_tree` caches for the life of the
+    worker. Bridged to a freshly-read ``time.time()`` by a fixed second of
+    slack, any disagreement larger than that second turns a descendant born
+    after the spawn into one that reads as older — and, since neither reading
+    changes, it stays pruned for as long as the lease lives, so the sweep never
+    recovers. Ordering the two in the kernel's own frame removes the bridge.
     """
     cutoff = since - _LEASE_AGE_SLACK_SECONDS
+    boot_cutoff = None if since_boot is None else since_boot - _LEASE_AGE_SLACK_SECONDS
     candidates: list[int] = []
     for pid in process_tree.live_pids():
         if pid <= 1:
@@ -239,7 +271,11 @@ def _lease_candidates(since: float) -> list[int]:
         info = process_tree.process_info(pid)
         if info is None:
             continue
-        if info.started_at is None or info.started_at >= cutoff:
+        if boot_cutoff is not None and info.started_since_boot is not None:
+            started, against = info.started_since_boot, boot_cutoff
+        else:
+            started, against = info.started_at, cutoff
+        if started is None or started >= against:
             candidates.append(pid)
     return candidates
 
@@ -265,7 +301,7 @@ def lease_holders(lease: ProcessLease) -> list[int]:
     is a dead end rather than a fallback, and it is the safe direction: the group
     kill still runs, and nothing is signalled on a guess.
     """
-    candidates = _lease_candidates(lease.started_at)
+    candidates = _lease_candidates(lease.started_at, lease.opened_since_boot)
     if not candidates:
         return []
     needle = f"{LEASE_ENV_VAR}={lease.token}".encode()
@@ -1490,14 +1526,17 @@ def _recorded_observed(data: dict[str, Any]) -> dict[int, str]:
 def _recorded_lease(data: dict[str, Any]) -> ProcessLease | None:
     """The ``lease`` token from a sidecar, or None for a record without one.
 
-    ``started_at`` is 0.0 rather than the spawn's real moment: the sweep must not
-    skip a descendant on age when it no longer knows when the spawn was, and a
-    reap is rare enough to afford the full scan.
+    ``started_at`` is 0.0 and ``opened_since_boot`` None rather than the spawn's
+    real moment: the sweep must not skip a descendant on age when it no longer
+    knows when the spawn was, and a reap is rare enough to afford the full scan.
+    Both are needed to say that — a boot-relative moment left behind by a spawn
+    from *this* boot would prune, and one from a previous boot would prune
+    wrongly, so a record that cannot date its spawn carries neither.
     """
     token = data.get("lease")
     if not isinstance(token, str) or not token:
         return None
-    return ProcessLease(token=token, started_at=0.0)
+    return ProcessLease(token=token, started_at=0.0, opened_since_boot=None)
 
 
 def _unlink(path: Path) -> None:
