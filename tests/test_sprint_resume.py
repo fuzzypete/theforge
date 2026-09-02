@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from landing_evidence_test_helpers import publish_landed
 from sprint_test_helpers import run_sprint_ctx
 
 import theforge.pending as pending
@@ -518,6 +519,9 @@ class TestReadPriorSprintCost:
         }
         record.setdefault("run_id", "sr-rec")
         audit_substrate.seed_records(tmp_path, [record])
+        # The landed answer comes from the published assertion since #2849; the
+        # flattened column above is the completion-time snapshot, not evidence.
+        publish_landed(tmp_path, "sr-rec", slug="feature-a")
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -641,6 +645,9 @@ class TestReadPriorSprintCost:
         }
         record.setdefault("run_id", "sr-rec")
         audit_substrate.seed_records(tmp_path, [record])
+        # The landed answer comes from the published assertion since #2849; the
+        # flattened column above is the completion-time snapshot, not evidence.
+        publish_landed(tmp_path, "sr-rec", slug="feature-a")
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
@@ -684,6 +691,7 @@ class TestReadPriorSprintCost:
         }
         record.setdefault("run_id", "sr-rec")
         audit_substrate.seed_records(tmp_path, [record])
+        publish_landed(tmp_path, "sr-rec", slug="issue-1071")
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()

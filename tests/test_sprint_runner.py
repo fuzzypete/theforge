@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from landing_evidence_test_helpers import publish_landed
 from sprint_test_helpers import run_sprint_ctx
 
 from theforge.agent_types import AgentResult, ModelUsage
@@ -1364,6 +1365,9 @@ def test_is_branch_merged_squash_merge_reads_real_audit_history(tmp_path: Path) 
             }
         ],
     )
+    # Since #2849 the landed query reads the published assertion, not the
+    # flattened column above.
+    publish_landed(tmp_path, "rec-landed", slug="story-a")
 
     def _mock_squash(cmd: list[str], **kwargs: object) -> MagicMock:
         m = MagicMock()

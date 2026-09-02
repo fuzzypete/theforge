@@ -392,6 +392,8 @@ Two seams were touched *because of* this work rather than by it:
 record's serialized shape is untouched — evidence is a *new artifact beside it*, not a new
 field in it — so neither the schema guard nor `rebuild_from_runs` has anything to migrate.
 An indexed projection of evidence into the substrate would need both, and is a follow-on.
+(Shipped since, as #2849: `SUBSTRATE_SCHEMA_VERSION` 13. `CURRENT_RECORD_SCHEMA_VERSION`
+stayed put — the projection is derived from the artifacts, not from a record field.)
 
 ## Testing
 
@@ -521,10 +523,21 @@ retried next sprint" rather than to lost records or a contaminated checkout.
 2. **`pr`-mode attempt at PR creation.** Emit a `queued` attempt in
    `coordinator/completion.py` when the PR is created, so a `pr`-mode run that never enters
    a landing step is still reconcilable. (Matrix gap, noted above.)
-3. **Evidence projection into the substrate.** An indexed view of assertions would let
-   `audit_read_model` answer landed queries from evidence rather than from the flattened
-   `landing_status` column. It needs a `SUBSTRATE_SCHEMA_VERSION` bump and a
-   `rebuild_from_runs` path, which is why it is not in this slice.
+3. **Evidence projection into the substrate.** *Shipped — #2849, `SUBSTRATE_SCHEMA_VERSION`
+   13.* `landing_assertions` and `landing_attempts` index the evidence tree one row per
+   artifact, refreshed in place by `audit_storage.sync_landing_evidence` on every writable
+   open and rebuilt from the same artifacts by `rebuild_from_runs`. The landed query
+   (`has_review_approve_in_substrate(require_landed=True)`) now filters on the projected
+   assertion, and `audit_read_model.landing_states` reports `landed` / `not_landed` /
+   `unresolved` with each assertion's own `observed_at`.
+
+   **Operator consequence.** A run that carries `landing_status='landed'` but no published
+   assertion now reads as *unresolved*, which is what the field always meant and could not
+   say. Resume merged-detection (`sprint/dag.py:_has_prior_review_approve`) is the consumer
+   that notices: a story whose landing predates evidence will not be recognised as merged
+   until reconciliation publishes an assertion for it. Reconciliation runs at sprint
+   startup, so this closes itself over a sprint; a repo with a long pre-evidence history
+   should expect one pass of it.
 4. **Re-point the flattened readers.** `cli/audits.py`, `cli/sprint_digest.py` and
    `coordinator/issue_cost.py` read `landing_status` directly. They keep working because the
    field keeps being populated; they should move to `landing_state` once (3) exists, so that
