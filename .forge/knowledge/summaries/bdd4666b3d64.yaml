@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: bdd4666b3d64
 authoritative_run_record: .forge/audits/runs/bdd4666b3d64.json
-generated_at: '2026-09-02T06:28:11.618735+00:00'
+generated_at: '2026-09-02T06:32:49.008661+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.0057825
+  cost_usd: 0.0037365000000000002
 story:
   slug: issue-2686
   name: The complexity pause carries a decomposition assessment instead of only asking
@@ -50,32 +50,31 @@ changed_files: &id002
 - tests/test_decomposition_assessment.py
 - tests/test_preflight_complexity_gate_seam.py
 what_changed:
-  description: The complexity pause was extended to optionally include a preflight
-    decomposition assessment artifact, including candidate slices, dependency relationships,
-    acceptance-criteria distribution, unresolved decisions, audit logging, and per-run
-    cost capture while preserving non-mutation behavior and the ability to pause without
-    an assessment.
-  approach: The run introduced a dedicated preflight decomposition flow and assessment
-    model/prompt layer, then threaded its outputs through the complexity gate, coordinator
-    state, resume/audit persistence, and operator-facing runbook/schema seams so the
-    pause can carry structured decomposition context without creating or editing issues.
+  description: The preflight complexity pause was extended to optionally emit a decomposition
+    assessment artifact with candidate slices, dependency edges, acceptance-criteria
+    distribution, unresolved decisions, audit recording, and per-run cost capture,
+    while preserving a no-mutation path and allowing pauses with no assessment when
+    decomposition is not possible.
+  approach: The run added a dedicated preflight decomposition flow and assessment
+    model/prompting path, then threaded its outputs through the complexity gate, coordinator
+    state, persistence, and audit schema so the pause can present and record the artifact
+    without creating or mutating issues.
   files_modified: *id002
 what_was_learned: []
 learned_patterns:
-- preflight-artifact-without-mutation
-- audit-schema-and-resume-threading
-- operator-pause-fallback-with-recorded-absence
+- preflight-artifact-before-spend
+- explicit-no-assessment-fallback
+- audit-schema-with-resume-threading
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - Review completed in a single approving cycle without surfacing recurring defects
-    or design reversals.
+  - Single-cycle review approved the coordinator flow as sound, with non-mutation
+    enforcement and acceptance-criteria handling landing without surfaced defects.
 complexity_signal:
   actual_iterations: 2
   review_cycles: 1
   plan_regenerations: false
   cost_usd: 29.1989786
-  dominant_difficulty: Threading a new preflight-only assessment artifact through
-    coordinator control flow, persistence, and audit boundaries while keeping the
-    pause non-mutating and resumable.
+  dominant_difficulty: Threading a new optional preflight artifact through pause,
+    audit, and resume paths without changing the story or issue state.
