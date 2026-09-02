@@ -26,6 +26,7 @@ makes a new analytical query and a new record migration independent changes.
 
 from __future__ import annotations
 
+import datetime
 import importlib
 import json
 import re
@@ -44,12 +45,25 @@ from .agent_identity import (
 )
 from .audit_storage import (
     _INVOCATION_IDENTITY_COLUMNS,
+    LANDING_PROJECTION_SOURCE_COUNT_KEY,
+    LANDING_PROJECTION_SYNCED_AT_KEY,
     AuditConnection,
     _load_migrated,
+    _meta_get,
     has_audit_inputs,
     require_substrate,
     substrate_path,
 )
+from .landing_evidence import RESOLVED_NON_LANDING_OUTCOMES
+
+# The three landing states, named once. ``LANDING_UNRESOLVED`` is the one the
+# flattened ``landing_status`` column could never express: it means nobody has
+# observed an outcome yet, which is a different fact from an observed failure to
+# land, and collapsing the two is what let a completion-time snapshot read as an
+# outcome (#2849).
+LANDING_LANDED = "landed"
+LANDING_NOT_LANDED = "not_landed"
+LANDING_UNRESOLVED = "unresolved"
 
 
 def verdict_outcome_counts(conn: AuditConnection) -> list[dict]:
@@ -235,6 +249,240 @@ def changed_file_coverage(conn: AuditConnection, *, since: str | None = None) ->
     }
 
 
+# ── Landing evidence projection ──────────────────────────────────────────
+#
+# Which reader reads what (#2849). Two questions look alike and are not:
+#
+# * **The landed query.** ``has_review_approve_in_substrate(require_landed=True)``
+#   and the ``landing_*`` readers below answer "did this actually land?" They
+#   read the projected assertion rows, because that is where the observation of
+#   the landing lives, with the ``observed_at`` the observer recorded.
+# * **The flattened-column readers.** ``latest_run_outcome_in_substrate`` and the
+#   merge-evidence resolution downstream of it read
+#   ``audit_records.landing_status`` and are deliberately untouched here. That
+#   column is the sprint scheduler's completion-time answer, and re-pointing its
+#   consumers is sequenced as its own follow-on. Do not "fix" it in passing: the
+#   two answers legitimately differ for a run whose pull request merged after the
+#   record was written, and the follow-on needs that difference observable.
+
+
+def _landing_state_from_rows(has_assertion: bool, last_outcome: str | None) -> str:
+    """The three-state landing answer for one run, from its projected rows.
+
+    Mirrors :func:`theforge.coordinator.landing_evidence.landing_state` over the
+    files, using the same shared outcome partition, so a SQL reader and a
+    filesystem reader cannot disagree about the same run.
+    """
+    if has_assertion:
+        return LANDING_LANDED
+    if last_outcome is not None and last_outcome in RESOLVED_NON_LANDING_OUTCOMES:
+        return LANDING_NOT_LANDED
+    return LANDING_UNRESOLVED
+
+
+# One row per run known to *either* side: every audit record, plus any run that
+# has landing evidence but no indexed record (evidence for a run whose record
+# was never published is still evidence). The attempt sub-select takes the last
+# artifact by name, which is the sequence order the writer assigns.
+_LANDING_STATE_SQL = """
+SELECT
+    ids.run_id                     AS run_id,
+    COALESCE(la.slug, att.slug, a.slug) AS slug,
+    a.started_at                   AS run_started_at,
+    a.finished_at                  AS run_finished_at,
+    a.landing_status               AS flattened_landing_status,
+    la.run_id IS NOT NULL          AS has_assertion,
+    la.observed_at                 AS observed_at,
+    la.landing_mode                AS landing_mode,
+    la.target_branch               AS target_branch,
+    la.observer                    AS observer,
+    la.carrier_kind                AS carrier_kind,
+    la.carrier_ref                 AS carrier_ref,
+    la.landed_commit               AS landed_commit,
+    att.outcome                    AS last_attempt_outcome,
+    att.observed_at                AS last_attempt_observed_at,
+    att.landing_mode               AS last_attempt_landing_mode,
+    att.target_branch              AS last_attempt_target_branch,
+    att.observer                   AS last_attempt_observer
+FROM (
+    SELECT run_id FROM audit_records
+    UNION SELECT run_id FROM landing_assertions
+    UNION SELECT run_id FROM landing_attempts
+) ids
+LEFT JOIN audit_records a ON a.run_id = ids.run_id
+LEFT JOIN landing_assertions la ON la.run_id = ids.run_id
+LEFT JOIN landing_attempts att ON att.run_id = ids.run_id AND att.artifact_name = (
+    SELECT MAX(inner_att.artifact_name) FROM landing_attempts inner_att
+    WHERE inner_att.run_id = ids.run_id
+)
+"""
+
+# Column order of ``_LANDING_STATE_SQL``, so a row from a connection without a
+# ``sqlite3.Row`` factory reads the same as one with it.
+_LANDING_STATE_COLUMNS = (
+    "run_id",
+    "slug",
+    "run_started_at",
+    "run_finished_at",
+    "flattened_landing_status",
+    "has_assertion",
+    "observed_at",
+    "landing_mode",
+    "target_branch",
+    "observer",
+    "carrier_kind",
+    "carrier_ref",
+    "landed_commit",
+    "last_attempt_outcome",
+    "last_attempt_observed_at",
+    "last_attempt_landing_mode",
+    "last_attempt_target_branch",
+    "last_attempt_observer",
+)
+
+
+def _parse_iso(value: object) -> datetime.datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def _landing_row(row: object) -> dict:
+    if isinstance(row, sqlite3.Row):
+        values = {name: row[name] for name in _LANDING_STATE_COLUMNS}
+    else:
+        values = dict(zip(_LANDING_STATE_COLUMNS, row))
+
+    def get(name: str):
+        return values.get(name)
+
+    state = _landing_state_from_rows(bool(get("has_assertion")), get("last_attempt_outcome"))
+    observed_at = get("observed_at")
+    finished_at = get("run_finished_at")
+    # AC2: the interval is derivable only when the run holds *both* endpoints.
+    # A missing endpoint is reported as such — never defaulted to now, to the
+    # run's start, or to a neighbouring run's timestamp, all of which would
+    # manufacture a latency nobody measured.
+    missing: list[str] = []
+    if finished_at is None:
+        missing.append("run_finished_at")
+    if observed_at is None:
+        missing.append("landing_observed_at")
+    seconds: float | None = None
+    if not missing:
+        start, end = _parse_iso(finished_at), _parse_iso(observed_at)
+        if start is None or end is None:
+            missing.append("unparseable_timestamp")
+        else:
+            seconds = (end - start).total_seconds()
+    interval = {
+        "state": LANDING_UNRESOLVED if missing else "resolved",
+        "seconds": seconds,
+        "missing_endpoints": missing,
+    }
+    return {
+        "run_id": get("run_id"),
+        "slug": get("slug"),
+        "landing_state": state,
+        "observed_at": observed_at,
+        "run_started_at": get("run_started_at"),
+        "run_finished_at": finished_at,
+        "landing_mode": get("landing_mode"),
+        "target_branch": get("target_branch"),
+        "observer": get("observer"),
+        "carrier_kind": get("carrier_kind"),
+        "carrier_ref": get("carrier_ref"),
+        "landed_commit": get("landed_commit"),
+        "last_attempt": (
+            None
+            if get("last_attempt_outcome") is None
+            else {
+                "outcome": get("last_attempt_outcome"),
+                "observed_at": get("last_attempt_observed_at"),
+                "landing_mode": get("last_attempt_landing_mode"),
+                "target_branch": get("last_attempt_target_branch"),
+                "observer": get("last_attempt_observer"),
+            }
+        ),
+        "landing_interval": interval,
+        "flattened_landing_status": get("flattened_landing_status"),
+    }
+
+
+def landing_state_for_run(conn: AuditConnection, run_id: str) -> dict | None:
+    """The projected landing state of one run, or ``None`` if it is unknown here.
+
+    ``None`` means the substrate has neither a record nor evidence for this run
+    — a different answer from a row reporting ``unresolved``, which means the run
+    is known and nobody has observed its landing yet.
+    """
+    row = conn.execute(f"{_LANDING_STATE_SQL} WHERE ids.run_id = ?", (run_id,)).fetchone()
+    if row is None:
+        return None
+    return _landing_row(row)
+
+
+def landing_states(conn: AuditConnection, *, slug: str | None = None) -> list[dict]:
+    """Every run's projected landing state, newest run first.
+
+    The row keeps ``landed`` / ``not_landed`` / ``unresolved`` distinct all the
+    way out: a run with no evidence is ``unresolved`` and a run whose last
+    attempt resolved without landing is ``not_landed``, and no caller can
+    collapse them by accident because they are different string values rather
+    than a nullable boolean.
+
+    Each row also carries the assertion's own ``observed_at`` alongside the
+    run's ``run_started_at`` / ``run_finished_at``, plus a ``landing_interval``
+    that is ``resolved`` with a measured ``seconds`` only when the run holds
+    both endpoints. That is what makes finished-to-landed latency answerable
+    from the substrate alone.
+
+    Note for read-only openings: :func:`theforge.coordinator.audit_storage.open_readonly`
+    cannot re-sync the projection, so it answers from the last-indexed state.
+    Pair this with :func:`landing_projection_status` when that matters.
+    """
+    sql = _LANDING_STATE_SQL
+    params: tuple = ()
+    if slug is not None:
+        sql += " WHERE COALESCE(la.slug, att.slug, a.slug) = ?"
+        params = (slug,)
+    sql += " ORDER BY COALESCE(a.started_at, la.observed_at, '') DESC, ids.run_id DESC"
+    return [_landing_row(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def landed_run_ids_in_substrate(conn: AuditConnection) -> set[str]:
+    """Run ids carrying a projected positive landing assertion."""
+    rows = conn.execute("SELECT run_id FROM landing_assertions").fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def landing_projection_status(conn: AuditConnection) -> dict:
+    """What the landing projection currently holds, and when it was last synced.
+
+    Exists so a read-only surface can say *why* it has no landed rows. Storage
+    syncs the projection on every writable open; a read-only opening cannot, so
+    ``synced_at`` older than the evidence an operator just watched being written
+    means "re-index", not "never landed".
+    """
+    assertions = conn.execute("SELECT COUNT(*) FROM landing_assertions").fetchone()
+    attempts = conn.execute("SELECT COUNT(*) FROM landing_attempts").fetchone()
+    raw_count = _meta_get(conn, LANDING_PROJECTION_SOURCE_COUNT_KEY)
+    try:
+        source_count = None if raw_count is None else int(raw_count)
+    except ValueError:
+        source_count = None
+    return {
+        "assertions": int(assertions[0]) if assertions else 0,
+        "attempts": int(attempts[0]) if attempts else 0,
+        "synced_at": _meta_get(conn, LANDING_PROJECTION_SYNCED_AT_KEY),
+        "source_artifacts": source_count,
+    }
+
+
 # ── Query helpers ────────────────────────────────────────────────────────
 
 
@@ -249,6 +497,14 @@ def has_review_approve_in_substrate(
     The caller is responsible for branch-staleness / unmerged-commits
     checks — those rely on git state and are not part of substrate
     semantics.
+
+    ``require_landed`` is *the* landed query (#2849), so it filters on the
+    projected landing assertion for the run rather than on
+    ``audit_records.landing_status``. The difference is the point: the flattened
+    column is written at story completion, before a queued pull request
+    resolves, so a run that landed an hour later reads as not landed there and
+    as landed here — and a run nobody has observed yields no row at all, which
+    is "unresolved", not "did not land".
     """
     sql = (
         "SELECT a.raw_json, a.record_schema_version FROM audit_records a "
@@ -257,7 +513,7 @@ def has_review_approve_in_substrate(
     )
     params: tuple = (slug,)
     if require_landed:
-        sql += " AND a.landing_status = 'landed'"
+        sql += " AND EXISTS (SELECT 1 FROM landing_assertions la WHERE la.run_id = a.run_id)"
     for row in conn.execute(sql, params):
         if isinstance(row, sqlite3.Row):
             raw, ver = row["raw_json"], row["record_schema_version"]
@@ -281,6 +537,14 @@ def latest_run_outcome_in_substrate(
 
     Ordering is by ``started_at`` descending with ``run_id`` as a deterministic
     tiebreak, so records written within the same timestamp resolve stably.
+
+    This is a **flattened-column reader** and stays one (#2849). It returns
+    ``landing_status`` exactly as ``audit_records`` stores it, even where the
+    landing projection disagrees because the work landed after the record was
+    written. Re-pointing this reader and the merge-evidence resolution
+    downstream of it is sequenced as its own follow-on; until then the two
+    answers differing is information, not a bug. For the evidence-backed answer
+    use :func:`landing_states` / :func:`landing_state_for_run`.
     """
     row = conn.execute(
         "SELECT outcome_success, verdict, landing_status FROM audit_records "
