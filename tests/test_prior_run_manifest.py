@@ -6,7 +6,13 @@ import pytest
 import yaml
 
 from theforge.task.prior_run_manifest import build_manifest
-from theforge.task.prior_run_selector import select_prior_runs
+from theforge.task.prior_run_selector import (
+    _RENDERED_SIZE_KIND,
+    _RENDERED_SIZE_METHOD,
+    _RENDERED_SIZE_UNIT,
+    _measure_rendered_summary,
+    select_prior_runs,
+)
 
 _STORY = "Refactor the sprint runner retry loop"
 _FILES = ["src/theforge/sprint/runner.py"]
@@ -142,6 +148,9 @@ def test_manifest_note_separates_admissibility_from_absence(tmp_path: Path) -> N
     assert [item["run_id"] for item in manifest["included"]] == ["4f2a91c"]
     assert manifest["included"][0]["phase"] == "dev"
     assert manifest["included"][0]["rendering_mode"] == "phase_summary"
+    assert manifest["included"][0]["rendered_size"]["method"] == _RENDERED_SIZE_METHOD
+    assert manifest["included"][0]["rendered_size"]["unit"] == _RENDERED_SIZE_UNIT
+    assert manifest["included"][0]["rendered_size"]["kind"] == _RENDERED_SIZE_KIND
     dropped = {item["run_id"]: item["reason"] for item in manifest["dropped"]}
     assert dropped["71bd334"] == "inadmissible(cited_source_deleted)"
     assert dropped["0ae5f92"] == "inadmissible(no_verdict)"
@@ -277,6 +286,56 @@ def test_manifest_surfaces_signal_only_preflight_rendering(tmp_path: Path) -> No
     assert manifest["included"][0]["phase"] == "preflight"
     assert manifest["included"][0]["rendering_mode"] == "signal_only"
     assert manifest["included"][0]["reason"].startswith("file_overlap(")
+
+
+def test_manifest_omits_rendered_size_when_summary_was_not_included(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["included"] == []
+    assert "rendered_size" not in manifest["dropped"][0]
+
+
+def test_manifest_marks_unmeasured_rendered_size_when_counting_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    def _broken(*_args, **_kwargs) -> list[str]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("theforge.task.prior_run_selector._estimated_token_count", _broken)
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="dev")
+
+    assert manifest["included"][0]["rendered_size"] == {
+        "value": None,
+        "unit": _RENDERED_SIZE_UNIT,
+        "method": _RENDERED_SIZE_METHOD,
+        "kind": _RENDERED_SIZE_KIND,
+        "unavailable_reason": "measurement_failed",
+    }
+
+
+def test_manifest_records_measured_rendered_size_from_selected_summary_text(
+    tmp_path: Path,
+) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="dev")
+
+    candidate = selection.candidates[0]
+    assert manifest["included"][0]["rendered_size"] == {
+        "value": _measure_rendered_summary(candidate.content).value,
+        "unit": _RENDERED_SIZE_UNIT,
+        "method": _RENDERED_SIZE_METHOD,
+        "kind": _RENDERED_SIZE_KIND,
+    }
 
 
 def test_note_does_not_claim_unrelated_inadmissible_summaries_as_withheld(

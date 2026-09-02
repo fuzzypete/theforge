@@ -55,7 +55,7 @@ def build_manifest(
             "verdict": candidate.verdict.to_dict(),
         }
         if candidate.run_id in included_run_ids:
-            included.append(record)
+            included.append({**record, "rendered_size": candidate.rendered_size.to_dict()})
         else:
             dropped.append({**record, "reason": "budget_pressure"})
 

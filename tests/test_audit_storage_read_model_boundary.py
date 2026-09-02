@@ -379,3 +379,51 @@ class TestRebuildStillWorksAcrossRecordVersions:
             assert sub.count_records(conn) == 1
         finally:
             conn.close()
+
+
+class TestPriorRunRenderedSizeMigration:
+    def test_legacy_included_prior_run_entries_are_marked_unmeasured(self) -> None:
+        record = {
+            "context_manifests": [
+                {
+                    "phase": "dev",
+                    "prior_run_context": {
+                        "enabled": True,
+                        "index_state": "ready",
+                        "included": [{"run_id": "prior-1", "reason": "file_overlap", "score": 14}],
+                        "dropped": [],
+                        "note": "1 prior summaries included",
+                    },
+                }
+            ]
+        }
+
+        migrated = audit_storage._migrate_v43_to_v44(record)
+
+        assert migrated["context_manifests"][0]["prior_run_context"]["included"][0][
+            "rendered_size"
+        ] == {
+            "value": None,
+            "kind": "rendered_prompt_contribution",
+            "unavailable_reason": "unmeasured_legacy_record",
+        }
+
+    def test_legacy_run_without_included_summaries_gains_no_rendered_size(self) -> None:
+        record = {
+            "context_manifests": [
+                {
+                    "phase": "dev",
+                    "prior_run_context": {
+                        "enabled": True,
+                        "index_state": "ready",
+                        "included": [],
+                        "dropped": [{"run_id": "prior-1", "reason": "budget_pressure"}],
+                        "note": "1 relevant summaries dropped under budget pressure",
+                    },
+                }
+            ]
+        }
+
+        migrated = audit_storage._migrate_v43_to_v44(record)
+
+        assert migrated == record

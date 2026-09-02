@@ -322,6 +322,7 @@ def test_prior_run_summary_is_included_when_enabled_and_relevant(tmp_path: Path)
     assert [item["run_id"] for item in manifest["included"]] == ["4f2a91c"]
     assert "file_overlap(src/theforge/sprint/runner.py)" in manifest["included"][0]["reason"]
     assert manifest["included"][0]["verdict"]["status"] == "admissible"
+    assert manifest["included"][0]["rendered_size"]["kind"] == "rendered_prompt_contribution"
 
 
 def test_prior_run_summary_is_disabled_by_default(tmp_path: Path) -> None:
@@ -402,6 +403,7 @@ def test_prior_run_summary_is_dropped_before_required_context(tmp_path: Path) ->
     assert manifest["dropped"][0]["reason"] == "budget_pressure"
     assert manifest["dropped"][0]["phase"] == "dev"
     assert manifest["dropped"][0]["rendering_mode"] == "phase_summary"
+    assert "rendered_size" not in manifest["dropped"][0]
     assert "dropped under budget pressure" in manifest["note"]
 
 
