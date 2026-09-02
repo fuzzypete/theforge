@@ -885,6 +885,7 @@ def _emit_all_skipped_audit(
             project_root=config.project_root,
             skipped_issues=skipped_issues,
             run_id=run_id,
+            story_state=story_state,
         )
         log_dir = config.project_root / ".forge" / "logs" / sprint_name
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -1183,6 +1184,16 @@ def _run_query_mode(
         issues_arg=issues_arg,
     )
 
+    # On the re-exec path, resolve the prior generation's recorded outcomes
+    # *before* resolution rather than after it. Resolution re-reads every issue
+    # from GitHub, and a story this sprint landed moments before the re-exec is
+    # already closed by then: without the prior record in hand, resolution
+    # classifies it as a pre-existing closed dependency and it is gone from
+    # ``slugs`` / ``canonical_refs_by_slug`` before any reconciliation can act on
+    # it (#2847). Best-effort — a miss degrades to today's behavior. Resolved
+    # once and reused for the launch locks below.
+    prior_outcomes = _resolve_prior_outcomes(config, sprint_name) if reexec else None
+
     # Build full ResolvedSprint (fetches individual issue bodies via gh)
     try:
         resolved = build_resolved_sprint(
@@ -1191,6 +1202,7 @@ def _run_query_mode(
             budget_usd=budget_usd,
             max_parallel=effective_max_parallel,
             project_root=config.project_root,
+            prior_outcomes=prior_outcomes,
         )
     except RuntimeError as exc:
         print(f"[forge] Failed to resolve sprint from {query_desc}: {exc}", file=sys.stderr)
@@ -1267,11 +1279,9 @@ def _run_query_mode(
     canonical_refs_by_slug = {
         task.slug: canonical_ref for task, _src, canonical_ref in resolved.stories
     }
-    # On the re-exec path, resolve the prior generation's recorded outcomes so
-    # the launch guard can reconcile already-completed worktrees instead of
-    # flattening them into fresh collisions. Best-effort — a miss degrades to
-    # today's behavior.
-    prior_outcomes = _resolve_prior_outcomes(config, resolved.name) if reexec else None
+    # ``prior_outcomes`` was resolved above, ahead of ``build_resolved_sprint``,
+    # and is reused here so the launch guard can reconcile already-completed
+    # worktrees instead of flattening them into fresh collisions.
     # Stories this same process still has live (or unresolved) agents for — see
     # manifest mode above for why unresolved is deferred rather than dropped.
     liveness = _resolve_story_liveness(config, slugs) if reexec else _NO_LIVENESS

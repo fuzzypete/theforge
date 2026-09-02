@@ -125,6 +125,64 @@ def _state_reported_cost(state: object) -> float | None:
     return _optional_cost(getattr(state, "total_cost", None))
 
 
+# Rounding slack for the sprint-total-vs-story-rows comparison. Both sides are
+# reported to four places, so anything at or under a cent is the arithmetic of
+# rounding rather than spend nothing accounts for.
+_COST_ACCOUNTING_TOLERANCE_USD = 0.01
+
+
+def build_cost_accounting_discrepancy(
+    measured_total_usd: float,
+    story_costs: "list[tuple[str | None, float | None]]",
+    *,
+    declared_non_story_usd: float = 0.0,
+) -> dict | None:
+    """Spend admitted into the sprint total that no per-story row explains.
+
+    The sprint total and the sum of the per-story rows are meant to be the same
+    money counted twice: every path that advances the ledger outside a story's
+    own coordinator state also attributes that spend to a slug, precisely so the
+    two stay equal. When they do not, some amount is in the total with nothing
+    accountable behind it — the shape of #2847, where a landed story was written
+    out of its own sprint's record while its $29.20 stayed in the total.
+
+    Returns the discrepancy block, or ``None`` when the rows explain the total.
+    Only an *excess* on the total's side is a discrepancy: rows summing higher
+    happens legitimately when a resume carries forward stories from earlier
+    generations whose spend the current ledger does not hold.
+
+    ``story_costs`` is ``(slug, cost_usd)`` per row, with ``cost_usd`` ``None``
+    for a row whose cost was never measured — those slugs are named in the block
+    because they are where an unexplained amount most plausibly belongs.
+
+    ``declared_non_story_usd`` is spend the sprint has already accounted for at
+    the sprint level because it belongs to no story of the sprint (intake
+    remediation on an issue that was never scheduled). It is explained — just
+    not by a story row — so it counts on the explained side.
+    """
+    measured = round(float(measured_total_usd or 0.0), 4)
+    non_story = round(float(declared_non_story_usd or 0.0), 4)
+    story_total = round(sum(cost for _slug, cost in story_costs if cost is not None), 4)
+    explained = round(story_total + non_story, 4)
+    unexplained = round(measured - explained, 4)
+    if unexplained <= _COST_ACCOUNTING_TOLERANCE_USD:
+        return None
+    return {
+        "sprint_measured_usd": measured,
+        "explained_story_usd": story_total,
+        "declared_non_story_usd": non_story,
+        "unexplained_usd": unexplained,
+        "stories_without_measured_cost": sorted(
+            slug for slug, cost in story_costs if cost is None and slug
+        ),
+        "detail": (
+            f"${unexplained:.2f} of measured sprint spend has no per-story record; "
+            "the sprint total is reported as unavailable rather than as a complete "
+            "figure assembled from an incomplete set of stories."
+        ),
+    }
+
+
 def _budget_cap_of(result: "SprintResult") -> float:
     """The cap *result* ran under, ``0.0`` when it carries none.
 
@@ -298,6 +356,118 @@ def _upsert_into_substrate(project_root: Path, record: dict) -> None:
             conn.close()
     except Exception as exc:  # noqa: BLE001
         _log(f"warning: failed to update audit substrate: {exc}")
+
+
+def _carried_story_record(
+    entry: dict,
+    *,
+    sprint_id: str | None,
+    sprint_name: str | None,
+) -> dict:
+    """A minimal story-shaped run record built from an accumulated story entry.
+
+    Only fields the entry already holds are used — nothing about the run is
+    inferred. The shape is the subset the substrate indexes on (``task.slug``,
+    ``timing``, ``outcome``, ``totals``) plus the landing fields when the entry
+    carries them, so the record answers ``forge audits show --slug <slug>`` the
+    same way a natively written one does. Optional fields are emitted as their
+    null representation rather than omitted, so a consumer reading the record
+    never has to distinguish "absent" from "not recorded".
+    """
+    outcome_name = str(entry.get("outcome") or "").upper() or None
+    cost = entry.get("cost_usd")
+    cost = None if isinstance(cost, bool) or not isinstance(cost, (int, float)) else float(cost)
+    issue = entry.get("github_issue")
+    if issue is None:
+        path = str(entry.get("path") or "")
+        if path.startswith("Issue #") and path[7:].strip().isdigit():
+            issue = int(path[7:].strip())
+    record: dict = {
+        "run_id": entry.get("story_run_id"),
+        "sprint_id": sprint_id,
+        "sprint_name": sprint_name,
+        "task": {
+            "slug": entry.get("slug"),
+            "path": entry.get("path"),
+            "github_issue": issue,
+        },
+        "timing": {
+            "started_at": entry.get("started_at"),
+            "finished_at": entry.get("finished_at"),
+        },
+        "outcome": {
+            "final_phase": outcome_name,
+            "success": outcome_name in ("DONE", "ALREADY_DONE"),
+            "cost_usd": cost,
+            "error_type": entry.get("error_type"),
+            "message": entry.get("error"),
+        },
+        "totals": {"cost_usd": cost},
+        "reviews": [],
+        # Named so a reader can tell this record was reconstructed from the
+        # sprint's accumulated state rather than flushed by the run itself.
+        "carried_from_accumulated_state": True,
+    }
+    for field_name in _LANDING_CLAIM_FIELDS:
+        if field_name in entry:
+            record[field_name] = entry[field_name]
+    return record
+
+
+def _ensure_carried_story_records(
+    project_root: Path,
+    entries: "list[dict]",
+    *,
+    sprint_id: str | None,
+    sprint_name: str | None,
+    sprint_run_id: str | None,
+) -> None:
+    """Give every carried story row a run record of its own, if it lacks one.
+
+    A story whose work happened in an earlier generation of the same sprint has
+    its spend counted in this sprint's total, so it must also be individually
+    addressable — otherwise the total is composed of an amount no queryable
+    record explains (#2847).
+
+    Deliberately conservative, and idempotent:
+
+    * a row with no ``slug`` or no ``story_run_id`` has no identity to write a
+      record under, so none is invented; the cost-accounting discrepancy block
+      is what reports it;
+    * a row whose ``story_run_id`` is the *sprint's* run id is skipped — that id
+      belongs to the sprint-level record, and writing a story record over it
+      would replace the sprint's own account of itself;
+    * a row that already has a canonical run record is left exactly as written.
+
+    Best-effort throughout: the sprint summary is canonical and
+    ``forge audits rebuild`` can recover, so a failure here never disturbs the
+    run it is only recording.
+    """
+    try:
+        from ..coordinator import audit_substrate  # noqa: PLC0415
+
+        runs_dir = audit_substrate.runs_dir(project_root)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            slug = entry.get("slug")
+            story_run_id = entry.get("story_run_id")
+            if not isinstance(slug, str) or not slug:
+                continue
+            if not isinstance(story_run_id, str) or not story_run_id:
+                continue
+            if sprint_run_id and story_run_id == sprint_run_id:
+                continue
+            run_file = runs_dir / f"{story_run_id}.json"
+            if _read_canonical_run_file(project_root, run_file) is not None:
+                continue
+            _write_native_story_record(
+                project_root,
+                _carried_story_record(entry, sprint_id=sprint_id, sprint_name=sprint_name),
+            )
+            _log(f"Carried story record written for {slug} (run {story_run_id})")
+    except Exception as exc:  # noqa: BLE001 — recording must never break the run
+        _log(f"warning: failed to write carried story records: {exc}")
 
 
 def _replace_canonical_run_file(run_file: Path, record: dict) -> None:
@@ -850,8 +1020,16 @@ def _write_sprint_audit(
     triage_actions_by_ref: "dict[str, str] | None" = None,
     run_id: str | None = None,
     live_telemetry_snapshots: "dict[str, dict] | None" = None,
+    story_state: "object | None" = None,
 ) -> None:
-    """Write sprint-audit.yaml to the project root."""
+    """Write sprint-audit.yaml to the project root.
+
+    ``story_state`` is the canonical ``SprintStoryState`` when the caller has
+    one. It is read only for the cost-accounting cross-check: the canonical
+    per-story costs are the post-attribution figures (they include cross-phase
+    spend such as intake remediation), so comparing the sprint total against
+    them is the comparison that does not fire on ordinary sprints.
+    """
     story_times = story_times or {}
     batch_assignments = batch_assignments or {}
     slug_map = slug_map or {}
@@ -864,6 +1042,11 @@ def _write_sprint_audit(
 
     # Build per-spec entries
     spec_entries = []
+    # The slug behind each emitted row, positionally aligned with
+    # ``spec_entries``. The rows themselves carry a display path rather than a
+    # slug, and the cost-accounting cross-check below has to name the stories it
+    # is accounting for (#2847).
+    spec_slugs: list[str | None] = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
     for canonical_ref in canonical_refs:
@@ -1051,6 +1234,40 @@ def _write_sprint_audit(
             if drop_reason:
                 entry["drop_reason"] = drop_reason
         spec_entries.append(entry)
+        spec_slugs.append(slug)
+
+    # A story the sprint holds in its canonical state but whose ref this
+    # process no longer resolves — the story that landed just before a re-exec
+    # and left the re-exec's issue query — still has its spend inside the
+    # sprint total. It is written into ``specs:`` here so the total is never a
+    # figure assembled from a set of stories that omits one of its own
+    # contributors (#2847). This mirrors the projection the sprint summary
+    # already performs; the two files must account for the same stories.
+    if story_state is not None and hasattr(story_state, "stories"):
+        _emitted = {s for s in spec_slugs if s}
+        for canonical_entry in story_state.stories():
+            if canonical_entry.slug in _emitted:
+                continue
+            spec_entries.append(
+                {
+                    "path": canonical_entry.path,
+                    "slug": canonical_entry.slug,
+                    "outcome": canonical_entry.outcome.name,
+                    "outcome_source": "carried_from_accumulated_state",
+                    "cost_usd": canonical_entry.cost_usd,
+                    "preflight": None,
+                    "error": canonical_entry.reason,
+                    "error_type": None,
+                    "outcome_code": canonical_entry.outcome.name.lower(),
+                    "merge": False,
+                    "reviews": [],
+                    "depends_on": list(canonical_entry.depends_on),
+                    "started_at": None,
+                    "finished_at": None,
+                    "batch": 0,
+                }
+            )
+            spec_slugs.append(canonical_entry.slug)
 
     usage_distribution = []
     for spec_str, res in result.results:
@@ -1065,6 +1282,41 @@ def _write_sprint_audit(
             }
         )
 
+    # Spend the sprint total admits that no per-story row explains (#2847).
+    # Skipped when the total is already declared incomplete: an unmeasured-spend
+    # sprint has stated that its figure is a lower bound, and restating it as a
+    # discrepancy would report the same gap twice.
+    _cost_complete = bool(getattr(result, "cost_complete", True))
+    _cost_discrepancy: dict | None = None
+    if _cost_complete:
+        # Only the rows this file actually publishes count as explanation. A
+        # story accounted for in canonical state but absent from ``specs:``
+        # explains nothing to a reader of this audit — which is why the
+        # projection above puts it in the rows first, and why the check reads
+        # the rows rather than the state (#2847).
+        #
+        # Canonical cost wins where the state holds one: those are the
+        # post-attribution figures (they include cross-phase spend such as
+        # intake remediation) and the sprint total is built from the same
+        # figures, so comparing against them is the comparison that does not
+        # fire on ordinary sprints.
+        _canonical_cost_by_slug: dict[str, float | None] = {}
+        if story_state is not None and hasattr(story_state, "stories"):
+            _canonical_cost_by_slug = {
+                e.slug: getattr(e, "cost_usd", None) for e in story_state.stories() if e.slug
+            }
+        _explained_costs = [
+            (slug, _canonical_cost_by_slug.get(slug, entry.get("cost_usd")))
+            for slug, entry in zip(spec_slugs, spec_entries)
+        ]
+        _cost_discrepancy = build_cost_accounting_discrepancy(
+            getattr(result, "total_cost_usd", 0.0) or 0.0,
+            _explained_costs,
+            declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+        )
+        if _cost_discrepancy is not None:
+            _cost_complete = False
+
     audit = {
         "sprint": {
             "name": manifest.name,
@@ -1075,11 +1327,14 @@ def _write_sprint_audit(
             # partially unpriced work is a different statement from a complete
             # one and must not render as a confident figure (#1992). The measured
             # lower bound stays available under ``total_cost_measured_usd``.
-            "total_cost_usd": (
-                round(result.total_cost_usd, 4) if getattr(result, "cost_complete", True) else None
-            ),
+            "total_cost_usd": (round(result.total_cost_usd, 4) if _cost_complete else None),
             "total_cost_measured_usd": round(result.total_cost_usd, 4),
-            "cost_complete": bool(getattr(result, "cost_complete", True)),
+            "cost_complete": _cost_complete,
+            # Present only when measured spend exceeds what the per-story rows
+            # account for. A total is never composed of amounts no record
+            # explains: where one cannot be produced, the gap is reported here
+            # rather than absorbed into a confident figure (#2847).
+            "cost_accounting_discrepancy": _cost_discrepancy,
             # Which work is unpriced, not merely that some is — the budget check
             # refuses on this list, so it must be traceable (#1992).
             "unmeasured_spend_sources": list(
@@ -1564,6 +1819,35 @@ def _write_sprint_summary(
     if _unmeasured_sources:
         effective_cost_complete = False
 
+    # The same cross-check the audit writer runs, against the rows this file
+    # actually publishes (#2847). The ledger's measured total is the figure the
+    # sprint spent; ``stories:`` is the account of where it went. When the first
+    # exceeds the second, the difference is spend with no addressable record and
+    # the total is withheld rather than rendered as complete.
+    _cost_discrepancy = None
+    if effective_cost_complete:
+        _cost_discrepancy = build_cost_accounting_discrepancy(
+            getattr(result, "total_cost_usd", 0.0) or 0.0,
+            [(e.get("slug"), e.get("cost_usd")) for e in spec_entries],
+            declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+        )
+        if _cost_discrepancy is not None:
+            effective_cost_complete = False
+
+    # Every row whose spend the total admits must be individually addressable
+    # (#2847). A story carried in from an earlier generation has no run record
+    # of its own in this process, so one is synthesised from the record the
+    # sprint already holds — never invented where the identity fields are
+    # missing, which the discrepancy block above reports instead.
+    if project_root is not None:
+        _ensure_carried_story_records(
+            project_root,
+            spec_entries,
+            sprint_id=sprint_id,
+            sprint_name=manifest.name,
+            sprint_run_id=run_id,
+        )
+
     summary = {
         "sprint": {
             "name": manifest.name,
@@ -1578,6 +1862,9 @@ def _write_sprint_summary(
             "total_cost_usd": effective_cost_usd if effective_cost_complete else None,
             "total_cost_measured_usd": effective_cost_usd,
             "cost_complete": effective_cost_complete,
+            # See the audit writer: measured spend the per-story rows do not
+            # account for, reported rather than absorbed (#2847).
+            "cost_accounting_discrepancy": _cost_discrepancy,
             "unmeasured_spend_sources": _unmeasured_sources,
             # See the audit writer: which unmeasured sources are still
             # unresolved, which were accepted with a recorded ceiling and
