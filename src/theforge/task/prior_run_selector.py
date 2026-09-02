@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -76,6 +77,9 @@ _MAX_REASON_DETAILS = 3
 _MAX_RENDERED_CLAIMS = 5
 _MAX_RENDERED_PATTERNS = 5
 _MAX_FIELD_CHARS = 400
+_RENDERED_SIZE_UNIT = "tokens"
+_RENDERED_SIZE_METHOD = "cl100k_base"
+_RENDERED_SIZE_KIND = "rendered_prompt_contribution"
 
 # Tokens that overlap between any two stories in this repository and therefore
 # carry no relevance signal. Kept deliberately small: this is noise reduction,
@@ -118,6 +122,28 @@ INDEX_STATE_STALE_SCHEMA = "stale_schema"
 
 
 @dataclass(frozen=True)
+class RenderedSummarySize:
+    """The measured prompt footprint of one rendered prior-run summary."""
+
+    value: int | None
+    unit: str = _RENDERED_SIZE_UNIT
+    method: str = _RENDERED_SIZE_METHOD
+    kind: str = _RENDERED_SIZE_KIND
+    unavailable_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "value": self.value,
+            "unit": self.unit,
+            "method": self.method,
+            "kind": self.kind,
+        }
+        if self.unavailable_reason:
+            payload["unavailable_reason"] = self.unavailable_reason
+        return payload
+
+
+@dataclass(frozen=True)
 class PriorRunCandidate:
     """One prior summary that is eligible to be offered to an agent."""
 
@@ -129,6 +155,7 @@ class PriorRunCandidate:
     content: str
     phase: str
     rendering_mode: str
+    rendered_size: RenderedSummarySize
 
     @property
     def source(self) -> str:
@@ -278,6 +305,7 @@ def select_prior_runs(
                 content=content,
                 phase=normalized_phase,
                 rendering_mode=rendering_mode,
+                rendered_size=_measure_rendered_summary(content),
             )
         )
 
@@ -730,6 +758,22 @@ def _rendering_mode_for_phase(phase: str) -> str:
     if phase in ELIGIBLE_PHASES:
         return "phase_summary"
     return ""
+
+
+def _measure_rendered_summary(content: str) -> RenderedSummarySize:
+    """Measure the rendered summary text alone, not any wider prompt assembly."""
+    if not content:
+        return RenderedSummarySize(value=0)
+    try:
+        tiktoken = import_module("tiktoken")
+    except ImportError:
+        return RenderedSummarySize(value=None, unavailable_reason="tiktoken_not_installed")
+
+    try:
+        encoding = tiktoken.get_encoding(_RENDERED_SIZE_METHOD)
+        return RenderedSummarySize(value=len(encoding.encode(content)))
+    except Exception:  # noqa: BLE001 - telemetry must degrade to unavailable, never fail selection
+        return RenderedSummarySize(value=None, unavailable_reason="measurement_failed")
 
 
 # ── Reason strings ────────────────────────────────────────────────────────────

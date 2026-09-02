@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 43
+CURRENT_RECORD_SCHEMA_VERSION = 44
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2226,6 +2226,71 @@ def _migrate_v42_to_v43(record: dict) -> dict:
     return record
 
 
+def _migrate_v43_to_v44(record: dict) -> dict:
+    """Backfill prior-run rendered-size telemetry as explicitly unmeasured (#2687).
+
+    v44 adds ``rendered_size`` to *included* prior-run summary manifest entries.
+    The field describes the rendered summary's prompt footprint and is
+    descriptive telemetry, not attributed spend. A v43 record predates that
+    capture entirely, so the reader must not let a missing key read as "zero
+    size". Legacy included entries are therefore lifted to an explicit
+    unmeasured payload; runs with no included summaries remain unchanged, which
+    preserves the distinction between "no summaries were injected" and
+    "summaries were injected but their rendered size was not measured".
+    """
+    manifests = record.get("context_manifests")
+    if not isinstance(manifests, list):
+        return record
+
+    migrated_manifests: list[object] = []
+    changed = False
+    for entry in manifests:
+        if not isinstance(entry, dict):
+            migrated_manifests.append(entry)
+            continue
+        prior = entry.get("prior_run_context")
+        if not isinstance(prior, dict):
+            migrated_manifests.append(entry)
+            continue
+        included = prior.get("included")
+        if not isinstance(included, list) or not included:
+            migrated_manifests.append(entry)
+            continue
+
+        migrated_included: list[object] = []
+        included_changed = False
+        for item in included:
+            if not isinstance(item, dict) or "rendered_size" in item:
+                migrated_included.append(item)
+                continue
+            migrated_included.append(
+                {
+                    **item,
+                    "rendered_size": {
+                        "value": None,
+                        "unit": "tokens",
+                        "method": "cl100k_base",
+                        "kind": "rendered_prompt_contribution",
+                        "unavailable_reason": "unmeasured_legacy_record",
+                    },
+                }
+            )
+            included_changed = True
+
+        if not included_changed:
+            migrated_manifests.append(entry)
+            continue
+
+        changed = True
+        migrated_manifests.append(
+            {**entry, "prior_run_context": {**prior, "included": migrated_included}}
+        )
+
+    if not changed:
+        return record
+    return {**record, "context_manifests": migrated_manifests}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2277,6 +2342,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     40: _migrate_v40_to_v41,
     41: _migrate_v41_to_v42,
     42: _migrate_v42_to_v43,
+    43: _migrate_v43_to_v44,
 }
 
 

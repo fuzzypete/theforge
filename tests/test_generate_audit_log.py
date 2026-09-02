@@ -927,6 +927,12 @@ def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path)
                     "run_id": "4f2a91c",
                     "reason": "file_overlap(sprint/runner.py), domain_match(sprint)",
                     "score": 16,
+                    "rendered_size": {
+                        "value": 42,
+                        "unit": "tokens",
+                        "method": "cl100k_base",
+                        "kind": "rendered_prompt_contribution",
+                    },
                     "verdict": {"status": "admissible", "rank": "full"},
                 }
             ],
@@ -955,6 +961,7 @@ def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path)
     prior = log["context_manifests"][0]["prior_run_context"]
     assert prior["enabled"] is True
     assert prior["included"][0]["run_id"] == "4f2a91c"
+    assert prior["included"][0]["rendered_size"]["value"] == 42
     assert prior["included"][0]["verdict"]["status"] == "admissible"
     dropped = {item["run_id"]: item for item in prior["dropped"]}
     assert dropped["9c11e0a"]["reason"] == "budget_pressure"
