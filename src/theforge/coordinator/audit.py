@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from theforge import __version__ as FORGE_VERSION
+from theforge import knowledge_uptake
 from theforge.config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig
 from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
@@ -706,6 +707,24 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         for entry in state.context_manifests
     ]
 
+    # Prior-run uptake (#2684): computed here, from the two artifacts this
+    # record already carries, so the comparison is reproducible from the record
+    # rather than from anything a model said about itself.
+    finding_records = [
+        {
+            "finding_id": r.finding_id,
+            "description": r.description,
+            "severity": r.severity,
+            "recorded_at": r.recorded_at,
+        }
+        for r in state.finding_registry
+    ]
+    prior_run_uptake = knowledge_uptake.build_uptake_report_for_project(
+        config.project_root,
+        context_manifests=context_manifests,
+        findings=finding_records,
+    )
+
     return {
         "forge_version": FORGE_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -1060,6 +1079,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             else None
         ),
         "context_manifests": context_manifests,
+        # Where a review finding restated a claim this run had already been
+        # shown. A missed-uptake indicator only: it contributes to no verdict
+        # about whether the knowledge loop earns its keep (#2684).
+        "prior_run_uptake": prior_run_uptake,
         "dev_handoffs": [
             {
                 "iteration": i + 1,
@@ -1302,6 +1325,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "description": r.description,
                 "reporter": r.reporter,
                 "disposition": r.disposition,
+                # When the finding was first recorded — the ordering the
+                # prior-run uptake comparison needs (#2684).
+                "recorded_at": r.recorded_at,
             }
             for r in state.finding_registry
         ],

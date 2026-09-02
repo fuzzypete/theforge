@@ -425,9 +425,14 @@ def _run_preflight_phase(
     if logger:
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
 
+    # Preflight rendering is signal-only (ADR-0002 clause 5), so this manifest
+    # contributes zero claims by construction — the role is recorded anyway so
+    # the entry reads as captured-and-empty rather than uncaptured (#2684).
     preflight_context = ContextAssembler.from_config(config).assemble(
         phase="preflight",
         story_text=story_content,
+        agent_role="preflight",
+        phase_iteration=1,
     )
     state.context_manifests.append({"phase": "preflight", "manifest": preflight_context})
     preflight_prompt = build_preflight_prompt(

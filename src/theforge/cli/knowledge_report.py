@@ -74,17 +74,49 @@ def cmd_knowledge_report(args: argparse.Namespace) -> int:
     )
 
     proof = build_invariant_proof_from_records(records)
+    uptake = _uptake_sections(records)
 
     if args.format == "terminal":
         print(render_terminal(report, proof), end="")
+        print(_render_uptake_sections(uptake), end="")
         return 0
 
     payload = report_payload(report, proof)
+    payload["prior_run_uptake"] = uptake
     if args.format == "json":
         print(json.dumps(payload, indent=2))
     else:
         print(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), end="")
     return 0
+
+
+def _uptake_sections(records: list[dict]) -> list[dict]:
+    """One prior-run uptake block per run in the window, newest last.
+
+    Kept out of the cohort report proper on purpose: the cohort metrics are an
+    effectiveness question and this is not one. A reader must not be able to
+    mistake a correspondence count for a contribution to that verdict (#2684).
+    """
+    sections = []
+    for record in records:
+        uptake = record.get("prior_run_uptake")
+        if isinstance(uptake, dict):
+            sections.append({"run_id": record.get("run_id"), **uptake})
+    return sections
+
+
+def _render_uptake_sections(sections: list[dict]) -> str:
+    from theforge.knowledge_uptake_render import render_run_uptake  # noqa: PLC0415
+
+    if not sections:
+        return ""
+    blocks = ["\n"]
+    for section in sections:
+        run_id = section.get("run_id") or "unknown run"
+        blocks.append(f"── run {run_id} ──\n")
+        blocks.append(render_run_uptake(section))
+        blocks.append("\n")
+    return "".join(blocks)
 
 
 def _load_records(

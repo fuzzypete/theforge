@@ -71,6 +71,30 @@ make v0.10.0 safe to build v0.11.0 on.
 
 ### Added
 
+- **A run can now show where its review restated something it had already been
+  told (#2684):** injected prior-run claims are recorded with which phase
+  received them, which agent role they were rendered to, which iteration of
+  that phase, and when — so what a given author could have acted on is
+  determinable from the record alone. Each run's audit record gains a
+  `prior_run_uptake` section comparing those claims against the review's own
+  findings, and `forge knowledge-report` renders it per run. A claim is weighed
+  against a finding only where it reached the author of the reviewed work
+  before that finding was recorded: a claim shown only to the reviewer is never
+  eligible to explain the reviewer's own finding, so the loop working does not
+  read as the loop failing. A claim rendered after every finding the run
+  recorded is excluded on the same footing rather than counted as eligible and
+  then reported unmatched, so a run holding only late claims reports no
+  correspondence instead of asserting a comparison it never made. Unmatched
+  findings are reported as *not matched to
+  an eligible injected claim*, never as novel; findings the comparison cannot
+  decide are counted as indeterminate beside the totals; and runs predating this
+  capture are reported uncomparable rather than as findings that corresponded to
+  nothing. The matcher records its name and version and reports its agreement
+  against a stored labelled set (`docs/knowledge-uptake-labels.yaml`), marking
+  its figures unvalidated when that agreement has not been measured. This is a
+  missed-uptake indicator only — it contributes to no verdict about whether
+  knowledge pays for itself.
+
 - **The complexity pause carries a decomposition assessment (#2686):** when the
   preflight complexity gate opens, it no longer shows only the question. One
   bounded, read-only agent invocation now produces an assessment from evidence
