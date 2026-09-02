@@ -2215,6 +2215,7 @@ PRIOR_GENERATION_WORK_KEYS = (
     "cost",
     "preflight",
     "context_manifests",
+    "prior_run_uptake",
     "dev_handoffs",
     "dev_prompt_injections",
     "reviews",

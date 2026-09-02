@@ -437,8 +437,38 @@ class TestRecordMigration:
         assert prior_review["index_state"] is None
         assert migrated["knowledge_summary"]["index_rebuild"] is None
 
+    def test_v44_record_reads_as_uncomparable_not_as_matching_nothing(self) -> None:
+        """A run that never recorded exposure has findings that match *unknown*.
+
+        Reading it as a comparison that found no correspondence would invent a
+        measurement the run never made, and every aggregate over history would
+        inherit it (#2684).
+        """
+        record = {
+            "schema_version": 44,
+            "finding_registry": [{"finding_id": "a"}, {"finding_id": "b"}],
+            "context_manifests": [
+                {"phase": "dev", "prior_run_context": {"enabled": True, "included": []}}
+            ],
+        }
+
+        migrated = audit_storage._migrate_v44_to_v45(record)
+        uptake = migrated["prior_run_uptake"]
+
+        assert uptake["status"] == "uncomparable_pre_capture"
+        assert uptake["claims_rendered"] is None
+        assert uptake["counts"] is None
+        assert uptake["review_findings"] == 2
+        # The manifest itself is left exactly as written (ADR-0002).
+        assert "claim_exposure" not in migrated["context_manifests"][0]["prior_run_context"]
+
+    def test_v44_migration_does_not_overwrite_a_record_that_already_compared(self) -> None:
+        record = {"schema_version": 44, "prior_run_uptake": {"status": "compared"}}
+        assert audit_storage._migrate_v44_to_v45(record) is record
+
     def test_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 44
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 45
+        assert audit_storage.MIGRATION_HELPERS[44] is audit_storage._migrate_v44_to_v45
         assert audit_storage.MIGRATION_HELPERS[43] is audit_storage._migrate_v43_to_v44
         assert audit_storage.MIGRATION_HELPERS[42] is audit_storage._migrate_v42_to_v43
         assert audit_storage.MIGRATION_HELPERS[41] is audit_storage._migrate_v41_to_v42
