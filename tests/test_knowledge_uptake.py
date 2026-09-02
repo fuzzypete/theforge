@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 from theforge import knowledge_uptake as ku
-from theforge.knowledge_uptake_render import render_run_uptake
 
 _GATE_CLAIM = (
     "A coordinator-owned gate result is not derivable from an agent handoff "
@@ -296,9 +294,9 @@ def test_unmeasured_agreement_reports_figures_as_unvalidated_not_omitted() -> No
     report = _report([_claim(_GATE_CLAIM)], [_finding(_GATE_FINDING)], validation=None)
 
     assert report["validation"]["status"] == ku.VALIDATION_UNVALIDATED
+    assert report["validation"]["agreement"] is None
     # The figures are still there: an unvalidated number is still a number.
     assert report["counts"][ku.OUTCOME_MATCHED] == 1
-    assert "UNVALIDATED" in render_run_uptake(report)
 
 
 def test_agreement_is_measured_against_the_stored_labelled_set() -> None:
@@ -348,50 +346,7 @@ def test_missing_labelled_set_reports_unvalidated(tmp_path: Path) -> None:
     assert validation["agreement"] is None
 
 
-# ── Reporting wording ────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "report",
-    [
-        _report([_claim(_GATE_CLAIM)], [_finding(_GATE_FINDING)]),
-        _report([_claim(_GATE_CLAIM)], []),
-        ku.build_uptake_report(context_manifests=[_manifest([])], findings=[_finding("x y z q")]),
-        ku.build_uptake_report(
-            context_manifests=[_manifest([], captured=False)], findings=[_finding("x y z q")]
-        ),
-    ],
-)
-def test_every_rendering_carries_the_missed_uptake_framing(report: dict) -> None:
-    text = render_run_uptake(report)
-    assert ku.INTERPRETATION_NOTE in text
-
-
-@pytest.mark.parametrize("word", ["novel", "new finding", "helped", "failed to help"])
-def test_report_never_frames_findings_as_novel_or_knowledge_as_helping(word: str) -> None:
-    report = _report(
-        [_claim(_GATE_CLAIM)],
-        [
-            _finding(_GATE_FINDING, finding_id="a"),
-            _finding(
-                "The changelog omits the operator action required for the template",
-                finding_id="b",
-            ),
-        ],
-    )
-    text = render_run_uptake(report).lower()
-
-    assert word not in text
-    assert "not matched to an eligible injected claim" in text
-
-
-def test_uncomparable_rendering_does_not_present_findings_as_matching_nothing() -> None:
-    report = ku.build_uptake_report(
-        context_manifests=[_manifest([], captured=False)],
-        findings=[_finding(_GATE_FINDING)],
-    )
-    text = render_run_uptake(report)
-
-    assert "uncomparable" in text
-    assert "predates claim-exposure capture" in text
-    assert "not matched to an eligible injected claim" not in text
+# The required report *wording* — unmatched never reading as novel, the
+# missed-uptake framing on every status, nothing-to-compare not rendering like
+# compared-and-matched-nothing — is a property of the renderer and is covered in
+# tests/test_knowledge_uptake_render.py.
