@@ -1,0 +1,74 @@
+schema_version: 2
+run_id: e4e1977e6649
+authoritative_run_record: .forge/audits/runs/e4e1977e6649.json
+generated_at: '2026-09-02T07:00:50.540246+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00622875
+story:
+  slug: issue-2796
+  name: A gate that times out is handed to the dev agent as a gate failure with no
+    failing tests, so the agent searches for a broken test instead of a slow one
+  github_issue: 2796
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/controller-runbook.md
+- src/theforge/cli/run.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/gate.py
+- src/theforge/coordinator/state.py
+- src/theforge/sprint/dag.py
+- src/theforge/sprint/runner.py
+- src/theforge/task/dev_prompts.py
+- tests/fixtures/audit_record_schema_v43.json
+- tests/test_coord_entry_gate_timeout.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_sprint_resume.py
+what_changed:
+  description: The run preserved reuse-gate timeout outcomes as structured context
+    from sprint triage into coordinator resume and DEV prompt construction, so a timed-out
+    gate is surfaced as a timeout rather than as an unexplained gate failure with
+    no failed tests. It also recorded the timeout handoff in coordinator audit/state
+    paths and updated operator-facing documentation for the new outcome reporting.
+  approach: The change threaded a distinct gate-timeout handoff value across the sprint/coordinator
+    boundary, persisted it in coordinator state and audit-visible records, and used
+    that structured outcome when constructing the first DEV-phase prompt after resume
+    instead of inferring context only from failed-test extraction.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- preserve-classified-outcomes-across-handoffs
+- structured-timeout-context-beats-empty-failure-lists
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the end-to-end plumbing from triage through resume, prompting,
+    and audit without surfacing additional issues.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 16.380014799999994
+  dominant_difficulty: Carrying a non-test gate outcome intact across multiple orchestration
+    boundaries so the resumed DEV phase receives the original classified condition
+    instead of a lossy generic failure signal.

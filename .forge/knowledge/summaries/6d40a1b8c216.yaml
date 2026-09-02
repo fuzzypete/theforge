@@ -1,0 +1,113 @@
+schema_version: 2
+run_id: 6d40a1b8c216
+authoritative_run_record: .forge/audits/runs/6d40a1b8c216.json
+generated_at: '2026-09-02T03:43:01.066811+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008695
+story:
+  slug: issue-2681
+  name: A high preflight complexity score buys accommodation but never prompts a scope
+    decision, so an over-broad story is planned at full cost
+  github_issue: 2681
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 9
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- config
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/controller-runbook.md
+- docs/guides/inputs-reference.md
+- src/theforge/cli/run.py
+- src/theforge/cli/sprint_status.py
+- src/theforge/cli/status.py
+- src/theforge/config/__init__.py
+- src/theforge/config/defaults.py
+- src/theforge/config/load.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/preflight.py
+- src/theforge/coordinator/preflight_complexity_gate.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/resume_persistence.py
+- src/theforge/coordinator/state.py
+- src/theforge/sprint/rca.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/status_reader.py
+- src/theforge/sprint/story_state.py
+- tests/coord_test_helpers.py
+- tests/fixtures/audit_record_schema_v41.json
+- tests/test_complexity_timeouts.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_coord_preflight_verdict.py
+- tests/test_preflight_complexity_gate_seam.py
+- tests/test_preflight_work_type.py
+- tests/test_sprint_parallel.py
+- tests/test_sprint_pipeline_smoke.py
+what_changed:
+  description: This run added a preflight complexity approval gate that pauses a story
+    immediately after preflight when a configurable complexity threshold is met and
+    the verdict is PROCEED, then records whether the operator approved the scope or
+    returned it for decomposition. It also threaded that state through config loading,
+    coordinator persistence, audit records, runner/status surfaces, and operator-facing
+    documentation.
+  approach: The change was implemented as a coordinator-stage gate anchored at the
+    end of preflight, with explicit persisted decision/state handling and audit logging
+    so runs can pause, resume, report status, and exit for decomposition without being
+    treated as failures.
+  files_modified: *id002
+what_was_learned:
+- claim: When a new gate depends on a nuanced trigger condition, documentation must
+    be checked against the exact runtime predicate after any cleanup, because drift
+    can survive an otherwise correct implementation and review will surface it late.
+  evidence:
+  - type: review_finding
+    finding_id: 0a86a63fed4ae01e
+    description: Review flagged that release notes and the controller runbook described
+      a narrower trigger than the runtime gate actually used, showing that operator-facing
+      text can silently diverge from the implemented predicate even when the code
+      path itself is accepted.
+  - type: review_finding
+    finding_id: eaba4b144ecc61a4
+    description: A second finding on the same mismatch in CHANGELOG wording versus
+      gate behavior shows the failure mode was not isolated wording but an exact-trigger
+      documentation drift that needed explicit reconciliation.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that the foundedness cleanup now matches the
+      runtime trigger, demonstrating that the critical late-stage work was aligning
+      trigger semantics across representations rather than changing the accepted gate
+      shape.
+learned_patterns:
+- trigger-doc-parity
+- preflight-gated-pause
+- persisted-operator-decision
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly concentrated on whether operator-facing text described the same
+    trigger semantics the runtime gate enforced.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 15.6915005
+  dominant_difficulty: Threading a new story-scoped pause/decision state consistently
+    across preflight, persistence, audit, status, resume, and documentation without
+    semantic drift in the gate trigger.
