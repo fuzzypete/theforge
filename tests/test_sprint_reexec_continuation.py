@@ -39,6 +39,7 @@ from theforge.config import (
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.workspace import sweep_orphan_worktrees
+from theforge.process_group import group_has_running_members
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.launch_guard import (
     REASON_ACTIVE_WORKTREE,
@@ -240,15 +241,26 @@ def test_await_inherited_agents_treats_an_unreaped_zombie_as_finished(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    pgid = os.getpgid(proc.pid)
     sidecar = _write_agent_sidecar(
         tmp_path,
         owner_pid=os.getpid(),
-        pgid=os.getpgid(proc.pid),
+        pgid=pgid,
         sandbox_dir=worktrees / "issue-1945",
     )
     logs: list[str] = []
     try:
         os.kill(proc.pid, signal.SIGKILL)
+        # SIGKILL is asynchronous: the kernel may leave the child running for a
+        # short while after the call returns, and under a loaded gate that window
+        # outlasts the first liveness probe. Establish the condition this test is
+        # about — an inherited group whose only member is an unreaped corpse —
+        # before asserting on how it is treated. Deliberately no proc.wait() here:
+        # reaping the child would remove the zombie the assertion depends on.
+        deadline = time.monotonic() + 10
+        while group_has_running_members(pgid):
+            assert time.monotonic() < deadline, "killed child never stopped running"
+            time.sleep(0.01)
         started = time.monotonic()
 
         quiesced = await_inherited_agents(
