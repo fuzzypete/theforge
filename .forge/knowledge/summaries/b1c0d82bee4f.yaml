@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: b1c0d82bee4f
 authoritative_run_record: .forge/audits/runs/b1c0d82bee4f.json
-generated_at: '2026-09-02T15:50:12.274415+00:00'
+generated_at: '2026-09-02T15:57:03.578868+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.00986375
+  cost_usd: 0.00811775
 story:
   slug: issue-2689
   name: Two process-lease tests return different gate verdicts for the same commit,
@@ -32,72 +32,74 @@ changed_files: &id002
 - src/theforge/process_tree.py
 - tests/test_process_teardown_lifecycle.py
 what_changed:
-  description: The run removed the lease-prune path that compared process observations
-    across mismatched time bases and updated the process-tree/lease logic so descendant
-    matching is evaluated on a consistent boot-relative basis. It also adjusted the
-    lifecycle tests around the reported failure mode so the stale-epoch case is exercised
-    directly.
-  approach: 'The fix was made in the production process-group and process-tree code
-    rather than by loosening timing-sensitive assertions: the implementation was narrowed
-    to a single clock basis for lease scans, and focused test changes were used to
-    drive and verify that path.'
+  description: The run changed process-lease descendant matching and pruning so production
+    scans compare processes on a consistent boot-relative basis instead of relying
+    on a cross-clock path that could misclassify real descendants. It also updated
+    the lifecycle tests around the reported Linux flake to exercise the stale-boot-epoch
+    failure mode deterministically.
+  approach: The fix aligned the process-tree and process-group lease logic around
+    a single comparison model for process identity and ancestry, then verified that
+    model with focused test cases covering the nondeterministic descendant-loss scenario.
   files_modified: *id002
 what_was_learned:
-- claim: When process-descendant detection depends on OS-reported process timing,
-    future fixes should first check for mixed clock or epoch comparisons before treating
-    the issue as a wait/polling flake.
+- claim: When process ancestry is inferred from OS-observed metadata collected at
+    different moments, future work should avoid comparisons that mix clock/epoch domains
+    and instead normalize identities into one monotonic frame before pruning or matching
+    descendants.
   evidence:
   - type: review_cycle
     cycle: '1'
-    description: The approving review summarizes the resolved issue as removal of
-      a 'cross-clock lease prune path' and routing scans through a 'boot-relative
-      comparison', showing that the decisive failure mechanism was inconsistent time
-      bases rather than insufficient waiting.
+    description: The approval explicitly calls out removal of the cross-clock lease
+      prune path and routing scans through a boot-relative comparison, showing the
+      flake source was not generic timing but comparing process observations across
+      inconsistent time bases.
   - type: diff
     ref: 5ac9e807f7cee1edbd603c11105b891dc24aeb9e
-    description: 'This diff is the code-change evidence for the bug fix path cited
-      in review: it demonstrates that the repair targeted lease pruning semantics
-      in implementation code, which supports the lesson that cross-epoch comparisons
-      are a primary diagnostic branch for similar failures.'
+    description: This diff is cited by the run as part of the accepted fix set; paired
+      with the review note, it demonstrates that descendant-loss was addressed by
+      eliminating the mixed-clock pruning path rather than by relaxing assertions
+      or extending waits.
   - type: file
     path: src/theforge/process_tree.py
-    description: The process-tree implementation is one of the files changed to resolve
-      the issue, showing that the failure source lived in process identity/timing
-      interpretation rather than only in test harness timing.
-- claim: For nondeterministic failures in real-process lifecycle tests, future runs
-    should preserve detection strength and move the synchronization or identity logic
-    into the production invariant being checked, instead of resolving the symptom
-    by broad timeout expansion.
+    description: The process-tree implementation is one of the inspected and changed
+      loci, which is where descendant identity and ancestry comparisons are resolved;
+      its inclusion supports that the correction lives in the normalization/comparison
+      layer, not only in test harness timing.
+- claim: For process-lease flakes, future verification should target the pruning/matching
+    invariant directly in production code paths rather than treating failures as test-synchronization
+    noise, because the same symptom can come from descendant classification logic
+    dropping real processes.
   evidence:
   - type: review_cycle
     cycle: '1'
-    description: The review approved a production-path change and explicitly tied
-      correctness to the stale-boot-epoch failure mode, which shows the run succeeded
-      by fixing the invariant the tests were exposing rather than by weakening the
-      tests.
+    description: The review approved the change because it resolved a specific stale-boot-epoch
+      failure mode in production lease scans, demonstrating that the observed nondeterminism
+      was rooted in lease logic itself, not solely in how tests waited for processes
+      to appear.
   - type: file
     path: src/theforge/process_group.py
-    description: Changes in process_group.py show the resolution required behavior
-      changes in lease scanning itself, demonstrating that the flaky verdict came
-      from the checked mechanism and not just from superficial test timing.
+    description: This file's participation shows the run changed the production lease
+      scan path, which is evidence that the failing behavior had to be corrected where
+      lease sweeps are orchestrated, not only at the test boundary.
   - type: file
     path: tests/test_process_teardown_lifecycle.py
-    description: This test file changed alongside production code, indicating the
-      tests were retained as signal-bearing checks while being aligned to the corrected
-      invariant instead of merely relaxed.
+    description: The lifecycle test file was updated alongside the production files,
+      indicating the verification strategy exercised the descendant-pruning invariant
+      against the real failure mode instead of masking it with broader timing tolerances.
 learned_patterns:
 - single-clock-process-identity
-- fix-invariant-not-timeout
+- verify-production-prune-invariant
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - Review centered on eliminating the cross-clock lease-prune path and confirming
-    lease scans use one boot-relative comparison model.
+  - Review centered on eliminating the cross-clock prune path and confirming lease
+    scans use one boot-relative comparison model.
 complexity_signal:
   actual_iterations: 1
   review_cycles: 1
   plan_regenerations: false
   cost_usd: 3.5878831999999994
-  dominant_difficulty: Diagnosing a CI-only process-lifecycle flake as a time-base
-    mismatch in descendant pruning rather than a generic scheduling delay.
+  dominant_difficulty: Diagnosing a nondeterministic process-tree failure that came
+    from time-base mismatches inside descendant classification rather than from obvious
+    waiting or retry behavior.
