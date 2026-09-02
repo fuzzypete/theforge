@@ -623,6 +623,55 @@ def _retry_review_findings_for_dev_prompt(state: CoordinatorState) -> str | None
     )
 
 
+def _entry_gate_note_for_dev_prompt(state: CoordinatorState) -> str | None:
+    """Return the dev-prompt note for a gate that ran *before* this run, if any.
+
+    Only a gate that did not finish produces one. A gate that failed outright is
+    already described by the ordinary retry channels, and a gate that passed did
+    not route the story here. The distinction matters because the two conditions
+    ask for different work: a failing test asks the agent to make the change
+    correct, a gate that never finished asks whether the work can complete in
+    budget — and an agent given the first framing for the second condition
+    searches for a broken test in a suite where nothing is broken (#2796).
+
+    Returns None once the note has already reached a prompt: it describes the
+    run's entry, not the current iteration, so a later retry must not re-read it
+    as a fresh event.
+    """
+    outcome = state.entry_gate_outcome
+    if outcome is None or outcome.outcome != "timeout" or state.entry_gate_surfaced_to_dev:
+        return None
+
+    parts = [
+        f"The gate (`{outcome.command}`) was run on this branch before you were invoked, and"
+        f" **it did not finish**: it was killed at its {outcome.timeout_s}s time budget after"
+        f" {outcome.elapsed_s:.1f}s. That is why you are running now."
+        "\n\n"
+        "**No test failed.** The run never reached a summary, so there is no failing test to"
+        " find and no list of failures to work from. Do not go looking for a broken assertion —"
+        " the branch's own suite is not known to be red.",
+        f"Configured gate_timeout: {outcome.timeout_s}s",
+        f"Elapsed before the gate was killed: {outcome.elapsed_s:.1f}s",
+    ]
+    if outcome.profile:
+        parts.append(f"Validation profile: {outcome.profile}")
+    parts.append(
+        "Your job is to make the gate finish inside that budget. RCA which test or product-code"
+        " path is hanging or has become slow enough to exhaust it, and fix the underlying cause."
+        " Do not raise the timeout or delete coverage as the first move — the wall-clock guard is"
+        " intentional. If the suite has genuinely outgrown its budget with no single culprit, say"
+        " so explicitly in your handoff, with the measurements that support it, rather than"
+        " reporting that you found nothing wrong."
+    )
+    tail = (outcome.output_tail or "").strip()
+    parts.append(
+        f"Gate output tail (truncated at the kill boundary, so it ends mid-run):\n{tail}"
+        if tail
+        else "The gate produced no captured output before it was killed."
+    )
+    return "\n\n".join(parts)
+
+
 def _gate_output_fingerprint(
     gate_output_digest: str | None, gate_result: str | None
 ) -> str | None:
@@ -1286,6 +1335,12 @@ def _run_dev_phase(
             # whether or not its session survived the pause. A continuation
             # prompt would carry the answer only when the session was reusable,
             # and lose it exactly when the agent has the least context (#2122).
+            #
+            # This is also the branch a sprint-resume entry lands on, so it is
+            # where a gate that ran before the run and did not finish has to be
+            # named. Read before the prompt is built and marked as surfaced
+            # after, so the fact reaches exactly one prompt (#2796).
+            _entry_gate_note = _entry_gate_note_for_dev_prompt(state)
             dev_context = ContextAssembler.from_config(config).assemble(
                 phase="dev",
                 story_text=story_content,
@@ -1324,6 +1379,9 @@ def _run_dev_phase(
                 # iterations, which are looking at their own work, do not
                 # re-read the warning as though it were about them (#2288).
                 inherited_work_note=state.workspace_inherited_work_note,
+                # Why this run entered at DEV at all, when the gate that decided
+                # it did not finish. One-shot for the same reason (#2796).
+                entry_gate_note=_entry_gate_note,
                 **_verification_prompt_kwargs,
                 **_spec_gap_prompt_kwargs,
             )
@@ -1334,6 +1392,11 @@ def _run_dev_phase(
                 # the note itself is cleared on the next line.
                 state.workspace_inherited_work_surfaced_to_dev = True
             state.workspace_inherited_work_note = None  # consumed
+            if _entry_gate_note is not None:
+                # Sticky record that the entry gate's outcome reached an agent.
+                # The outcome itself stays on the state for the audit; this is
+                # what stops a later iteration re-reading it.
+                state.entry_gate_surfaced_to_dev = True
         case _:
             raise ValueError(f"Unrecognized retry_reason: {state.retry_reason!r}")
     state.retry_reason = None  # consumed
