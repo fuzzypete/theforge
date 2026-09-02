@@ -1270,6 +1270,56 @@ the shipped with/without-prior cohorts, the report explains that
 causal with-prior vs without-prior verdict is structurally unreachable under
 that classifier.
 
+### Prior-run uptake (per run)
+
+Below the cohort report, each run in the window renders its **prior-run uptake**
+block — a separate question from the cohort metrics above, and deliberately not
+folded into them. It compares the claims the selector rendered into that run's
+prompts against the findings that run's review recorded, and reports where the
+two correspond:
+
+```text
+Prior-run uptake
+  claims rendered         9   (7 to dev iter 1, 2 to review iter 1)
+  claims eligible         7   (excluded: 2 rendered_to_review_only_not_author)
+  review findings         4
+    corresponding to an eligible claim   1
+      -> claim 3, ref 27bb13e86070:a1b2c3d4e5f6, run 27bb13e86070, dev iteration 1
+    not matched to an eligible injected claim   3
+    indeterminate   0
+
+  method: rendered-claim-overlap v1 — agreement with labelled set 0.909 (n=11)
+  missed-uptake indicator only; contributes to no effectiveness verdict
+```
+
+A claim is weighed against a finding only where it **reached the author of the
+reviewed work before that finding was recorded**. A claim rendered only into the
+reviewer's own prompt is never eligible to explain that reviewer's finding — the
+reviewer raising it is the claim working, not the development agent ignoring it.
+Preflight renders signals rather than claim prose (ADR-0002 clause 5) and
+contributes no claims.
+
+Read the categories exactly as written:
+
+| Reported as | Means |
+|---|---|
+| `corresponding to an eligible claim` | The finding restates a claim the author had been shown. **Not** proof guidance was ignored — the claim may have been irrelevant, ambiguous, or superseded. |
+| `not matched to an eligible injected claim` | No correspondence was found. This is **not** a novelty claim; failing to match establishes only the absence of a match. |
+| `indeterminate` | The comparison could not decide — too little finding text, or a matching claim that could not be ordered against the finding in time. |
+| `no eligible claims` / `no review findings` | Nothing to compare. Distinct from a run that was compared and matched nothing. |
+| `uncomparable — run predates claim-exposure capture` | The run never recorded what its agents were shown, so its findings correspond to *unknown*, not to zero. |
+
+The method name and version are recorded with every figure. Agreement is
+measured against the stored labelled examples in
+`docs/knowledge-uptake-labels.yaml`, which cover correspondences,
+non-correspondences and eligibility exclusions; when agreement cannot be
+measured — the set is missing, or was labelled against a different method
+version — the figures are still shown but marked `UNVALIDATED`.
+
+This is an indicator of missed uptake and nothing more. It contributes to no
+verdict about whether knowledge helped or failed to help; that question needs
+the randomized comparison the cohort report above is accumulating.
+
 ---
 
 ## `forge audits`

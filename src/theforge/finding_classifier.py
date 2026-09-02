@@ -20,6 +20,7 @@ JACCARD_THRESHOLD = 0.5
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import re
 import subprocess
@@ -382,6 +383,7 @@ def update_finding_registry(
                 description=first_finding.description,
                 reporter=first_reviewer,
                 disposition=disposition,  # type: ignore[arg-type]
+                recorded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             )
             state.finding_registry.append(record)
             classified_this_cycle.append(record)

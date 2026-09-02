@@ -1,0 +1,251 @@
+# Labelled examples for the prior-run uptake matcher (#2684).
+#
+# Each example is a human judgment about ONE review finding against the claims
+# that were injected before it. The matcher is scored by running each example
+# through the full production path in theforge.knowledge_uptake — eligibility
+# filtering included — so this set covers what the matcher can get wrong, not
+# just how it compares two strings.
+#
+# `method` / `method_version` name the matcher these labels were made against.
+# When the matcher's version moves ahead of this file, agreement is reported as
+# UNVALIDATED rather than carried over: labels made against a different decision
+# procedure are not evidence about this one. Re-label, then bump.
+#
+# Categories present, as the acceptance criteria require:
+#   correspondence        — the finding restates a claim the author was shown
+#   non_correspondence    — the finding is about something else
+#   eligibility_excluded  — a claim exists on the subject, but never reached the
+#                           author (review-only, or rendered after the finding)
+#
+# A label is a judgment about the CORRESPONDENCE, never about whether the
+# knowledge loop helped. "matched" means the texts are about the same thing and
+# the author had been shown it; it does not mean guidance was ignored.
+
+version: 1
+method: rendered-claim-overlap
+method_version: v1
+
+examples:
+  # ── correspondences ──────────────────────────────────────────────────────
+  - id: gate-result-derivable
+    category: correspondence
+    label: matched
+    finding:
+      finding_id: f-gate
+      description: >-
+        A coordinator-owned gate result is not derivable from the agent's own
+        handoff report; the coordinator must record the gate result itself.
+      recorded_at: "2026-08-01T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-a:aaaaaaaaaaaa"
+        index: 1
+        claim: >-
+          A coordinator-owned gate result is not derivable from an agent's
+          handoff report, so the coordinator has to record the gate result.
+        run_id: run-a
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-01T10:00:00+00:00"
+
+  - id: migration-helper-required
+    category: correspondence
+    label: matched
+    finding:
+      finding_id: f-migration
+      description: >-
+        Bumping the record schema version without adding a reader-side
+        migration helper leaves older stored records unreadable.
+      recorded_at: "2026-08-02T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-b:bbbbbbbbbbbb"
+        index: 1
+        claim: >-
+          Bumping the record schema version requires a reader-side migration
+          helper in the same change, or older stored records become unreadable.
+        run_id: run-b
+        phase: dev
+        agent_role: dev
+        phase_iteration: 2
+        rendered_at: "2026-08-02T09:30:00+00:00"
+
+  - id: batch-diff-grounding
+    category: correspondence
+    label: matched
+    finding:
+      finding_id: f-batch
+      description: >-
+        Batch member grounding is computed from a shared combined worktree diff
+        rather than the member story's own diff, so sibling stories count as
+        evidence.
+      recorded_at: "2026-08-03T15:00:00+00:00"
+    claims:
+      - claim_ref: "run-c:cccccccccccc"
+        index: 2
+        claim: >-
+          Batch-member grounding has to be computed from the member story's own
+          diff rather than a shared combined worktree diff, otherwise sibling
+          stories count as relevant evidence.
+        run_id: run-c
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-03T11:00:00+00:00"
+
+  # ── non-correspondences ──────────────────────────────────────────────────
+  - id: unrelated-subject
+    category: non_correspondence
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-unrelated
+      description: >-
+        The changelog entry omits the operator action required to enable the
+        new template, so an operator discovers it by failure mode.
+      recorded_at: "2026-08-04T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-d:dddddddddddd"
+        index: 1
+        claim: >-
+          A coordinator-owned gate result is not derivable from an agent's
+          handoff report, so the coordinator has to record the gate result.
+        run_id: run-d
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-04T09:00:00+00:00"
+
+  - id: shared-vocabulary-only
+    category: non_correspondence
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-vocab
+      description: >-
+        The review phase writes its manifest entry after constructing the
+        prompt, so a failed prompt build leaves no manifest behind.
+      recorded_at: "2026-08-05T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-e:eeeeeeeeeeee"
+        index: 1
+        claim: >-
+          The plan phase should record which acceptance criterion each step
+          serves so a reviewer can trace coverage.
+        run_id: run-e
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-05T08:00:00+00:00"
+
+  - id: no-claims-at-all
+    category: non_correspondence
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-noclaims
+      description: >-
+        The retry budget decrements the cycle counter twice on an escalated
+        path, so the cap is reached one iteration early.
+      recorded_at: "2026-08-06T12:00:00+00:00"
+    claims: []
+
+  # ── eligibility exclusions ───────────────────────────────────────────────
+  - id: review-only-claim
+    category: eligibility_excluded
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-staleness
+      description: >-
+        The branch is stale against the base branch and the run does not check
+        staleness before arming auto-merge.
+      recorded_at: "2026-08-07T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-f:ffffffffffff"
+        index: 1
+        claim: >-
+          The branch is stale against the base branch and staleness is not
+          checked before auto-merge is armed.
+        run_id: run-f
+        phase: review
+        agent_role: review
+        phase_iteration: 1
+        rendered_at: "2026-08-07T10:00:00+00:00"
+
+  - id: plan-only-claim
+    category: eligibility_excluded
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-planonly
+      description: >-
+        Schema validation is relaxed to accept malformed runner output instead
+        of surfacing the malformed output.
+      recorded_at: "2026-08-08T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-g:gggggggggggg"
+        index: 1
+        claim: >-
+          Schema validation is relaxed to accept malformed runner output
+          instead of surfacing the malformed output.
+        run_id: run-g
+        phase: plan
+        agent_role: plan
+        phase_iteration: 1
+        rendered_at: "2026-08-08T09:00:00+00:00"
+
+  - id: claim-rendered-after-finding
+    category: eligibility_excluded
+    label: not_matched_to_eligible_claim
+    finding:
+      finding_id: f-later
+      description: >-
+        The workspace helper continues past an invalid repository state instead
+        of failing closed on the invalid repository.
+      recorded_at: "2026-08-09T10:00:00+00:00"
+    claims:
+      - claim_ref: "run-h:hhhhhhhhhhhh"
+        index: 1
+        claim: >-
+          The workspace helper continues past an invalid repository state
+          instead of failing closed on the invalid repository.
+        run_id: run-h
+        phase: dev
+        agent_role: dev
+        phase_iteration: 3
+        rendered_at: "2026-08-09T14:00:00+00:00"
+
+  # ── indeterminate ────────────────────────────────────────────────────────
+  - id: partial-overlap-ambiguous
+    category: non_correspondence
+    label: indeterminate
+    finding:
+      finding_id: f-ambiguous
+      description: >-
+        Coordinator-owned gate handling should record the teardown of leaked
+        gate workers.
+      recorded_at: "2026-08-10T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-i:iiiiiiiiiiii"
+        index: 1
+        claim: >-
+          Coordinator-owned gate handling should record the gate teardown.
+        run_id: run-i
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-10T09:00:00+00:00"
+
+  - id: finding-text-too-short
+    category: non_correspondence
+    label: indeterminate
+    finding:
+      finding_id: f-short
+      description: "Fix it"
+      recorded_at: "2026-08-11T12:00:00+00:00"
+    claims:
+      - claim_ref: "run-j:jjjjjjjjjjjj"
+        index: 1
+        claim: >-
+          A coordinator-owned gate result is not derivable from an agent's
+          handoff report, so the coordinator has to record the gate result.
+        run_id: run-j
+        phase: dev
+        agent_role: dev
+        phase_iteration: 1
+        rendered_at: "2026-08-11T09:00:00+00:00"

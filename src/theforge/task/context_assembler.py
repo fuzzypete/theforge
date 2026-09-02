@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -133,8 +134,20 @@ class ContextAssembler:
         story_text: str,
         file_list: list[str] | None = None,
         budget: int | None = None,
+        agent_role: str = "",
+        phase_iteration: int | None = None,
     ) -> ContextPack:
+        """Assemble one phase's context pack.
+
+        ``agent_role`` and ``phase_iteration`` describe *who* is about to read
+        this pack and *which* pass of their phase it is. They do not influence
+        selection or prompt text; they are recorded so a later reader can tell
+        what a given author could actually have acted on (#2684). Callers that
+        omit them still assemble normally — the exposure record then names an
+        unattributed recipient rather than silently claiming one.
+        """
         normalized_phase = phase.lower()
+        rendered_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         effective_budget = (
             budget if budget is not None else self.default_budget_for_phase(normalized_phase)
         )
@@ -278,9 +291,16 @@ class ContextAssembler:
                     prior_selection,
                     included_run_ids=_included_ids(included_items, PRIOR_RUN_KIND),
                     phase=normalized_phase,
+                    agent_role=agent_role,
+                    phase_iteration=phase_iteration,
+                    rendered_at=rendered_at,
                 )
                 if prior_selection is not None
-                else prior_run_manifest.disabled_manifest()
+                else prior_run_manifest.disabled_manifest(
+                    agent_role=agent_role,
+                    phase_iteration=phase_iteration,
+                    rendered_at=rendered_at,
+                )
             ),
             invariant_context=(
                 invariant_manifest.build_manifest(

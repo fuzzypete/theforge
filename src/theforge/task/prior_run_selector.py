@@ -144,7 +144,14 @@ class RenderedSummarySize:
 
 @dataclass(frozen=True)
 class PriorRunCandidate:
-    """One prior summary that is eligible to be offered to an agent."""
+    """One prior summary that is eligible to be offered to an agent.
+
+    ``claims`` is the *exact* claim list that survived rendering — same helpers,
+    same ``_MAX_RENDERED_CLAIMS`` truncation, produced in the same pass that
+    built ``content``. It is carried structurally rather than re-derived because
+    a recorded claim has to be a claim the agent actually saw; re-deriving it
+    downstream would let the record drift from the prompt (#2684).
+    """
 
     run_id: str
     summary_path: str
@@ -155,6 +162,7 @@ class PriorRunCandidate:
     phase: str
     rendering_mode: str
     rendered_size: RenderedSummarySize
+    claims: tuple[str, ...] = ()
 
     @property
     def source(self) -> str:
@@ -278,7 +286,7 @@ def select_prior_runs(
             score -= _PENALTY_REDUCED_RANK
             reasons.append("reduced_rank")
 
-        content = _render_summary(
+        content, rendered_claims = _render_summary(
             Path(project_root),
             entry,
             run_id=run_id,
@@ -305,6 +313,7 @@ def select_prior_runs(
                 phase=normalized_phase,
                 rendering_mode=rendering_mode,
                 rendered_size=_measure_rendered_summary(content),
+                claims=tuple(rendered_claims),
             )
         )
 
@@ -473,17 +482,22 @@ def _render_summary(
     rendering_mode: str,
     touched_files: set[str],
     touched_dirs: set[str],
-) -> str:
-    """Render bounded advisory prose from the referenced summary artifact."""
+) -> tuple[str, list[str]]:
+    """Render bounded advisory prose, and the claim list that prose contains.
+
+    Returns ``(content, claims)``. ``claims`` is what an agent reading
+    ``content`` was actually shown, so the two can never disagree about what
+    was injected.
+    """
     rel_path = _text(entry.get("summary_path"))
     if not rel_path:
-        return ""
+        return ("", [])
     try:
         summary = yaml.safe_load((project_root / rel_path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return ""
+        return ("", [])
     if not isinstance(summary, Mapping):
-        return ""
+        return ("", [])
 
     lines = [
         f"## Prior run {run_id} (advisory — {verdict.status})",
@@ -494,7 +508,7 @@ def _render_summary(
         ),
         "",
     ]
-    phase_lines = _phase_lines(
+    phase_lines, claims = _phase_lines(
         phase,
         summary=summary,
         entry=entry,
@@ -507,7 +521,7 @@ def _render_summary(
     if verdict.reasons:
         lines.append(f"- Verdict caveats: {', '.join(verdict.reasons)}")
 
-    return "\n".join(lines).strip()
+    return ("\n".join(lines).strip(), claims)
 
 
 def _phase_lines(
@@ -518,9 +532,15 @@ def _phase_lines(
     rendering_mode: str,
     touched_files: set[str],
     touched_dirs: set[str],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
+    """Return ``(prose lines, rendered claims)`` for one summary in one phase.
+
+    Signal-only (preflight) rendering carries **no** claims by construction:
+    ADR-0002 clause 5 keeps summary prose out of preflight entirely, so there
+    is nothing an agent could have been told there.
+    """
     if rendering_mode == "signal_only":
-        return _render_preflight_signals(summary)
+        return (_render_preflight_signals(summary), [])
     if phase == "plan":
         return _render_plan_summary(summary)
     if phase == "dev":
@@ -532,7 +552,7 @@ def _phase_lines(
         )
     if phase == "review":
         return _render_review_summary(summary)
-    return []
+    return ([], [])
 
 
 def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
@@ -576,18 +596,18 @@ def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _render_plan_summary(summary: Mapping[str, Any]) -> list[str]:
+def _render_plan_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     lines: list[str] = []
     what_changed = summary.get("what_changed")
     if isinstance(what_changed, Mapping):
         approach = _text(what_changed.get("approach"), limit=_MAX_FIELD_CHARS)
         if approach:
             lines.append(f"- Prior approach: {approach}")
-    claims = _evidenced_claims(summary)
-    if claims:
+    rendered = _evidenced_claims(summary)[:_MAX_RENDERED_CLAIMS]
+    if rendered:
         lines.append("- Lessons with resolved evidence:")
-        lines.extend(f"  - {claim}" for claim in claims[:_MAX_RENDERED_CLAIMS])
-    return lines
+        lines.extend(f"  - {claim}" for claim in rendered)
+    return (lines, rendered)
 
 
 def _render_dev_summary(
@@ -596,7 +616,7 @@ def _render_dev_summary(
     entry: Mapping[str, Any],
     touched_files: set[str],
     touched_dirs: set[str],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     lines: list[str] = []
     changed_files = _string_list(summary.get("changed_files")) or _string_list(
         entry.get("changed_files")
@@ -606,32 +626,38 @@ def _render_dev_summary(
             f"- Related changed files: {', '.join(changed_files[:_MAX_RENDERED_PATTERNS])}"
         )
 
-    claims = _dev_grounded_claims(summary, touched_files=touched_files, touched_dirs=touched_dirs)
-    if claims:
+    rendered = _dev_grounded_claims(
+        summary, touched_files=touched_files, touched_dirs=touched_dirs
+    )[:_MAX_RENDERED_CLAIMS]
+    if rendered:
         lines.append("- Evidence-backed implementation patterns:")
-        lines.extend(f"  - {claim}" for claim in claims[:_MAX_RENDERED_CLAIMS])
-    return lines
+        lines.extend(f"  - {claim}" for claim in rendered)
+    return (lines, rendered)
 
 
-def _render_review_summary(summary: Mapping[str, Any]) -> list[str]:
+def _render_review_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     lines: list[str] = []
+    rendered: list[str] = []
     insights = summary.get("review_insights")
     if isinstance(insights, Mapping):
-        recurring = _finding_descriptions(insights.get("recurring_findings"))
-        resolved = _finding_descriptions(insights.get("resolved_findings"))
+        recurring = _finding_descriptions(insights.get("recurring_findings"))[
+            :_MAX_RENDERED_CLAIMS
+        ]
+        resolved = _finding_descriptions(insights.get("resolved_findings"))[:_MAX_RENDERED_CLAIMS]
         observations = [
             _text(item, limit=_MAX_FIELD_CHARS)
             for item in _string_list(insights.get("observations"))
-        ]
+        ][:_MAX_RENDERED_CLAIMS]
         if recurring:
             lines.append("- Recurring findings to re-check:")
-            lines.extend(f"  - {item}" for item in recurring[:_MAX_RENDERED_CLAIMS])
+            lines.extend(f"  - {item}" for item in recurring)
         if resolved:
             lines.append("- Resolved findings worth verifying stayed fixed:")
-            lines.extend(f"  - {item}" for item in resolved[:_MAX_RENDERED_CLAIMS])
+            lines.extend(f"  - {item}" for item in resolved)
         if observations:
             lines.append("- Verification concerns:")
-            lines.extend(f"  - {item}" for item in observations[:_MAX_RENDERED_CLAIMS])
+            lines.extend(f"  - {item}" for item in observations)
+        rendered = [*recurring, *resolved, *observations]
 
     complexity = summary.get("complexity_signal")
     if isinstance(complexity, Mapping):
@@ -642,7 +668,7 @@ def _render_review_summary(summary: Mapping[str, Any]) -> list[str]:
                 metrics.append(f"{key}={value}")
         if metrics:
             lines.append(f"- Review-cycle signals: {', '.join(metrics)}")
-    return lines
+    return (lines, rendered)
 
 
 def _evidenced_claims(summary: Mapping[str, Any]) -> list[str]:

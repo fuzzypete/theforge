@@ -8,6 +8,8 @@ selector never asks: was nothing known, or was something known and withheld?
 
 from __future__ import annotations
 
+import hashlib
+
 from .prior_run_selector import (
     INDEX_STATE_MISSING,
     INDEX_STATE_STALE_SCHEMA,
@@ -16,9 +18,50 @@ from .prior_run_selector import (
     PriorRunSelection,
 )
 
+#: Version of the claim-exposure capture shape (#2684). Its *presence* on a
+#: manifest is what makes a run comparable at all: a record written before this
+#: capture existed cannot say what any agent was shown, and must be reported as
+#: uncomparable rather than as a run whose claims corresponded to nothing.
+CLAIM_EXPOSURE_VERSION = 1
 
-def disabled_manifest() -> dict:
-    """The manifest payload for a run whose ``knowledge.prior_run_context`` is off."""
+
+def claim_reference(run_id: str, claim: str) -> str:
+    """A stable, content-addressed handle for one rendered claim.
+
+    Derived from the source run plus the claim text so the same claim rendered
+    into two phases of the same run resolves to the same reference, and a
+    reference stays resolvable after the fact without re-reading the summary.
+    """
+    digest = hashlib.sha256(claim.strip().encode("utf-8")).hexdigest()[:12]
+    return f"{run_id}:{digest}"
+
+
+def _claim_exposure(
+    *,
+    agent_role: str,
+    phase_iteration: int | None,
+    rendered_at: str | None,
+) -> dict:
+    return {
+        "capture_version": CLAIM_EXPOSURE_VERSION,
+        "agent_role": agent_role,
+        "phase_iteration": phase_iteration,
+        "rendered_at": rendered_at,
+    }
+
+
+def disabled_manifest(
+    *,
+    agent_role: str = "",
+    phase_iteration: int | None = None,
+    rendered_at: str | None = None,
+) -> dict:
+    """The manifest payload for a run whose ``knowledge.prior_run_context`` is off.
+
+    It still carries a ``claim_exposure`` block: the run *did* capture exposure,
+    and what it captured is that nothing was rendered. That is a different fact
+    from a record that predates capture entirely.
+    """
     return {
         "enabled": False,
         "phase": "",
@@ -26,6 +69,11 @@ def disabled_manifest() -> dict:
         "index_state": None,
         "included": [],
         "dropped": [],
+        "claim_exposure": _claim_exposure(
+            agent_role=agent_role,
+            phase_iteration=phase_iteration,
+            rendered_at=rendered_at,
+        ),
         "note": "prior-run context disabled (knowledge.prior_run_context)",
     }
 
@@ -35,12 +83,20 @@ def build_manifest(
     *,
     included_run_ids: set[str],
     phase: str,
+    agent_role: str = "",
+    phase_iteration: int | None = None,
+    rendered_at: str | None = None,
 ) -> dict:
     """Render the audit-visible record of what prior knowledge a run was offered.
 
     Candidates absent from ``included_run_ids`` lost to the context budget, so
     they are reported as ``budget_pressure`` — distinct from the admissibility
     and relevance exclusions the selector already decided.
+
+    Included candidates additionally carry their rendered ``claims``, each
+    self-describing: which phase received it, which agent role it was rendered
+    to, which iteration of that phase, and when. A dropped candidate rendered
+    nothing into any prompt, so it carries no claims (#2684).
     """
     included: list[dict] = []
     dropped: list[dict] = []
@@ -55,7 +111,25 @@ def build_manifest(
             "verdict": candidate.verdict.to_dict(),
         }
         if candidate.run_id in included_run_ids:
-            included.append({**record, "rendered_size": candidate.rendered_size.to_dict()})
+            included.append(
+                {
+                    **record,
+                    "rendered_size": candidate.rendered_size.to_dict(),
+                    "claims": [
+                        {
+                            "claim_ref": claim_reference(candidate.run_id, claim),
+                            "index": position,
+                            "claim": claim,
+                            "run_id": candidate.run_id,
+                            "phase": candidate.phase,
+                            "agent_role": agent_role,
+                            "phase_iteration": phase_iteration,
+                            "rendered_at": rendered_at,
+                        }
+                        for position, claim in enumerate(candidate.claims, start=1)
+                    ],
+                }
+            )
         else:
             dropped.append({**record, "reason": "budget_pressure"})
 
@@ -77,6 +151,11 @@ def build_manifest(
         "index_state": selection.index_state,
         "included": included,
         "dropped": dropped,
+        "claim_exposure": _claim_exposure(
+            agent_role=agent_role,
+            phase_iteration=phase_iteration,
+            rendered_at=rendered_at,
+        ),
         "note": _build_note(
             selection,
             included_count=len(included),
