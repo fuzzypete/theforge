@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 45
+CURRENT_RECORD_SCHEMA_VERSION = 46
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2659,6 +2659,43 @@ def _migrate_v44_to_v45(record: dict) -> dict:
     }
 
 
+def _migrate_v45_to_v46(record: dict) -> dict:
+    """Mark pre-instrument runs uncomparable for knowledge receipts (#2866).
+
+    v46 records what each phase said it did with the prior-run claims it was
+    shown. A v45 record has no such field — and the one reading this migration
+    must not permit is the silent one: a run whose agents were never *asked*
+    for a debrief would otherwise be indistinguishable from a run that received
+    claims and returned nothing, and the second is a finding about the loop
+    while the first is a fact about the software's age.
+
+    So legacy records are lifted to an explicit ``uncomparable_pre_capture``
+    block with null counts, and nothing else about them is touched.
+    """
+    if isinstance(record.get("knowledge_receipts"), dict):
+        return record
+    return {
+        **record,
+        "knowledge_receipts": {
+            "capture_version": 1,
+            "status": "uncomparable_pre_capture",
+            "interpretation": (
+                "receipt distribution only; corroboration establishes that a cited "
+                "consequence exists, not that the injected claim caused it — no "
+                "effectiveness or ROI conclusion follows"
+            ),
+            "note": (
+                "this run predates prior-run knowledge receipts; no phase was asked "
+                "for a debrief, so its silence is not an undebriefed phase"
+            ),
+            "phases": [],
+            "entries": [],
+            "unaddressed": [],
+            "counts": None,
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2712,6 +2749,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     42: _migrate_v42_to_v43,
     43: _migrate_v43_to_v44,
     44: _migrate_v44_to_v45,
+    45: _migrate_v45_to_v46,
 }
 
 

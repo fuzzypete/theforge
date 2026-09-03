@@ -5,6 +5,7 @@ from theforge.coordinator.state import CycleHistory
 
 from .context_assembler import ContextPack
 from .conventions import render_conventions_block
+from .debrief_prompts import STYLE_HANDOFF, render_debrief_section
 from .plan_parser import PlanData
 from .story import BatchMember, TaskStory
 
@@ -576,6 +577,9 @@ def build_dev_prompt(
 
             {assembled_context.content}
         """)
+    # Audit-only receipt on the injected prior-run claims (#2866). Empty unless
+    # this pack actually carried claims.
+    debrief_section = render_debrief_section(assembled_context, style=STYLE_HANDOFF)
 
     policy_section = _render_dev_p2_policy_section(p2_policy)
 
@@ -685,7 +689,8 @@ def build_dev_prompt(
             design decisions.
         """)
 
-    return dedent(f"""\
+    return (
+        dedent(f"""\
         You are implementing **{task.name}**.
 
         ## Working Directory
@@ -711,8 +716,8 @@ def build_dev_prompt(
 
         {story_content}
         {feedback_section}{preflight_section}{context_section}{policy_section}{spec_gap_section}{
-        test_section
-    }{verification_section}{render_conventions_block(conventions)}
+            test_section
+        }{verification_section}{render_conventions_block(conventions)}
         {webfetch_section}
         ## Workflow
 
@@ -768,3 +773,5 @@ def build_dev_prompt(
         - If you cannot finish, commit what you have and list blockers in
           `deferred_items`.
     """)
+        + debrief_section
+    )

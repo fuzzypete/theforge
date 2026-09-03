@@ -5,6 +5,7 @@ from theforge.domains import taxonomy_prompt_lines
 
 from .context_assembler import ContextPack
 from .conventions import render_conventions_block
+from .debrief_prompts import STYLE_YAML_BLOCK, render_debrief_section
 from .plan_parser import PlanData
 from .story import TaskStory
 
@@ -705,8 +706,13 @@ def build_plan_prompt(
 
             {assembled_context.content}
         """)
+    # Audit-only receipt on the injected prior-run claims (#2866). Empty unless
+    # this pack actually carried claims, so a phase is never asked to account
+    # for knowledge it did not receive.
+    debrief_section = render_debrief_section(assembled_context, style=STYLE_YAML_BLOCK)
 
-    return dedent(f"""\
+    return (
+        dedent(f"""\
         You are a planning agent for **{task.name}**.
 
         ## Your Role
@@ -791,4 +797,7 @@ def build_plan_prompt(
           against the actual codebase before relying on it.
         - If something in the spec is ambiguous or contradictory, say so
           explicitly in risks rather than guessing.
-    """) + render_conventions_block(conventions)
+    """)
+        + render_conventions_block(conventions)
+        + debrief_section
+    )

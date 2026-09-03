@@ -8,32 +8,25 @@ selector never asks: was nothing known, or was something known and withheld?
 
 from __future__ import annotations
 
-import hashlib
-
 from .prior_run_selector import (
     INDEX_STATE_MISSING,
     INDEX_STATE_STALE_SCHEMA,
     INDEX_STATE_UNREADABLE,
     SUPPORTED_PHASES,
     PriorRunSelection,
+    claim_reference,
 )
+
+#: Re-exported: the reference now has to be produced by the renderer that shows
+#: it to the agent, so the definition moved to ``prior_run_selector`` (#2866).
+#: Importers of this module keep working.
+__all__ = ["CLAIM_EXPOSURE_VERSION", "build_manifest", "claim_reference", "disabled_manifest"]
 
 #: Version of the claim-exposure capture shape (#2684). Its *presence* on a
 #: manifest is what makes a run comparable at all: a record written before this
 #: capture existed cannot say what any agent was shown, and must be reported as
 #: uncomparable rather than as a run whose claims corresponded to nothing.
 CLAIM_EXPOSURE_VERSION = 1
-
-
-def claim_reference(run_id: str, claim: str) -> str:
-    """A stable, content-addressed handle for one rendered claim.
-
-    Derived from the source run plus the claim text so the same claim rendered
-    into two phases of the same run resolves to the same reference, and a
-    reference stays resolvable after the fact without re-reading the summary.
-    """
-    digest = hashlib.sha256(claim.strip().encode("utf-8")).hexdigest()[:12]
-    return f"{run_id}:{digest}"
 
 
 def _claim_exposure(

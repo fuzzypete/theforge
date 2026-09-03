@@ -1375,6 +1375,61 @@ This is an indicator of missed uptake and nothing more. It contributes to no
 verdict about whether knowledge helped or failed to help; that question needs
 the randomized comparison the cohort report above is accumulating.
 
+### Prior-run knowledge receipts (distribution over the window)
+
+The uptake block above records the negative case. The **receipt** section records
+the positive one: at the end of each phase that received injected knowledge, the
+agent names every claim it was given, selects one disposition from a closed set,
+and — only for the dispositions asserting the claim influenced the work — points
+at an observable consequence. The coordinator then checks each citation against
+that phase's recorded exposure and resolves each pointer against the run's own
+artifacts.
+
+```text
+Prior-run knowledge receipts
+
+  phases with injected knowledge     41
+    debriefed                        38     undebriefed  3
+    nothing to debrief               12
+  claims injected                   112
+    corroborated use claims          19
+    uncorroborated use claims         7
+    confirmed existing approach      24
+    already known                    31
+    irrelevant                       18
+    stale or wrong                    6
+    unaddressed                       5
+    unmatched citations               2
+    unrecognised dispositions         0
+
+  Corroborated uptake claims: 19 of 112 exposed claims. No effectiveness or ROI
+  conclusion follows.
+```
+
+Read the categories exactly as written:
+
+| Reported as | Means |
+|---|---|
+| `corroborated use claims` | The agent asserted the claim influenced the work and every pointer it gave resolves to something the run's artifacts contain. Corroboration establishes that the cited consequence **exists** — never that the injected claim caused it, and never that the use was verified, confirmed, or effective. |
+| `uncorroborated use claims` | The same assertion with an absent or unresolvable pointer. A separate population; **no readout sums the two.** |
+| `confirmed existing approach` / `already known` / `irrelevant` / `stale or wrong` | The four non-use dispositions, reported under their own names. There is no "unused" bucket. |
+| `unaddressed` | The claim was injected into that phase and no debrief named it. Distinct from every disposition the agent could have chosen. |
+| `unmatched citations` | A debrief named a claim that phase was never shown. Excluded from every count of use. |
+| `unrecognised dispositions` | A word outside the closed set. Recorded and excluded — never mapped onto a nearby one. |
+| `nothing to debrief` | The phase received no claims, so it produced no debrief. Never reported as unused. |
+| `undebriefed` | The phase received claims and returned no readable debrief. |
+
+The debrief schema has no field for usefulness, satisfaction, confidence, or a
+counterfactual — an agent asked whether context was useful agrees at a rate that
+carries no information. Free text is limited to `did`, which describes what was
+done and contributes to no count.
+
+The instrument is **audit-only**. Nothing in routing, selection, readiness, or
+landing reads a debrief; it changes what an operator can see and nothing the
+system decides. Runs written before the instrument existed carry
+`uncomparable_pre_capture` and are excluded from the distribution rather than
+counted as zero — no phase in them was ever asked.
+
 ---
 
 ## `forge audits`

@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 <!-- v0.11.0 development (main) -->
+### Added
+
+- **A run can now show whether an agent acted on the knowledge it was given
+  (#2866):** the loop recorded what was injected and recorded the negative case
+  — a reviewer restating a claim the developer already had — but nothing
+  recorded the positive one, so the question the loop exists to answer could not
+  be asked of the artifacts. Each phase that receives injected prior-run claims
+  is now asked for a **receipt**: it names every claim it was given, selects one
+  disposition from a closed set (`changed_decision`, `prompted_verification`,
+  `confirmed_approach`, `already_known`, `irrelevant`, `stale_or_wrong`), and
+  for the two dispositions that assert influence, points at an observable
+  consequence in that run's own artifacts. The coordinator matches every
+  citation against the phase's recorded exposure and resolves every pointer,
+  writing the result to a new `knowledge_receipts` block on the audit record
+  (record schema v46) that `forge knowledge-report` renders as a distribution.
+
+  It is not a satisfaction survey: the schema has no field for usefulness,
+  confidence, or a counterfactual, and free text contributes to no count. It
+  reports a **corroborated** use claim separately from an **uncorroborated** one
+  and sums the two nowhere — corroboration establishes that the cited consequence
+  exists, not that the injected claim caused it, and no readout calls it
+  verified, confirmed, or effective use. A cited claim that was never injected is
+  an unmatched citation; an injected claim no debrief named is unaddressed; a
+  phase given nothing had nothing to debrief; a phase given claims that returned
+  nothing is undebriefed. None of those four is ever reported as "unused". The
+  instrument is audit-only — nothing in routing, selection, readiness, or landing
+  reads it.
+
 ### Changed
 
 - **Assignment history is now a derived view (#793):** completed stories no

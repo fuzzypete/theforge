@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from theforge import __version__ as FORGE_VERSION
-from theforge import knowledge_uptake
+from theforge import knowledge_receipts, knowledge_uptake
 from theforge.config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig
 from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
@@ -725,6 +725,26 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         findings=finding_records,
     )
 
+    # Prior-run knowledge receipts (#2866): what each phase said it did with the
+    # claims it was given, checked against the exposure this record already
+    # carries and against this run's own artifacts. Audit-only — nothing in
+    # routing, selection, readiness or landing reads it.
+    _receipt_artifacts = knowledge_receipts.artifacts_from_record(
+        {
+            "changed_files": resolve_changed_files(state, config),
+            "dev_handoffs": [
+                {"handoff": snap.get("handoff") if isinstance(snap, dict) else snap}
+                for snap in state.dev_handoff_snapshots
+            ],
+            "phases": {"plan": {"plan_structured": state.plan_structured}},
+        }
+    )
+    knowledge_receipt_block = knowledge_receipts.build_receipt_report(
+        context_manifests=context_manifests,
+        debriefs=list(state.knowledge_debriefs),
+        artifacts=_receipt_artifacts,
+    )
+
     return {
         "forge_version": FORGE_VERSION,
         "schema_version": SCHEMA_VERSION,
@@ -1083,6 +1103,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # shown. A missed-uptake indicator only: it contributes to no verdict
         # about whether the knowledge loop earns its keep (#2684).
         "prior_run_uptake": prior_run_uptake,
+        # What each phase reported doing with the claims it was shown, verified
+        # against the recorded exposure and this run's artifacts (#2866). A
+        # distribution for an operator to read; it settles nothing and no
+        # component consumes it.
+        "knowledge_receipts": knowledge_receipt_block,
         "dev_handoffs": [
             {
                 "iteration": i + 1,
