@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: 09992ae2fa64
 authoritative_run_record: .forge/audits/runs/09992ae2fa64.json
-generated_at: '2026-09-03T18:20:49.279350+00:00'
+generated_at: '2026-09-03T18:29:45.525073+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.011592499999999999
+  cost_usd: 0.009374500000000001
 story:
   slug: issue-2685
   name: Semantic evaluation runs as an audit-only instrument, so its usefulness is
@@ -43,61 +43,71 @@ changed_files: &id002
 - tests/test_cli_semantic_eval.py
 - tests/test_semantic_eval.py
 what_changed:
-  description: Added a manual, audit-only semantic evaluation path that reads a story
-    issue, produces structured findings or terminal audit outcomes, and records run
-    identity, outcome, timing, and cost without affecting readiness or mutating the
-    source document. The run also added corpus reporting and baseline-freezing support
-    so evaluator output can be measured against a human baseline.
-  approach: The change was split into CLI entrypoints, input/prompt/parser/type plumbing,
-    a runner and storage layer keyed by serialized input digest plus model and prompt
-    version, and reporting logic that aggregates recorded runs into measurement metrics
-    while preserving the evaluator's non-blocking, non-authoritative role.
+  description: Added a manual, audit-only semantic evaluation flow that reads an issue,
+    produces structured outcomes or failure states, records run identity and metrics,
+    and reports corpus-level measurement data without affecting readiness or mutating
+    the document.
+  approach: 'The change was built as a separate evaluator pipeline: canonicalized
+    semantic input and prompt contract, parsed model output into typed result states,
+    persisted records keyed by digest/model/prompt version, exposed operator CLI entrypoints,
+    and generated reports from the stored audit history.'
   files_modified: *id002
 what_was_learned:
-- claim: When reusing prior evaluation results by identity, cache hits must exclude
-    failure records and must not be bypassable through normal repeat-run controls,
-    or the audit record stops meaning 'same identity, same outcome' and starts mixing
-    retry policy into correctness.
+- claim: When caching evaluation results by identity, failed attempts must be excluded
+    from satisfying the cache; otherwise a transient transport or parse failure becomes
+    a sticky terminal outcome for that identity and suppresses later successful evaluation.
   evidence:
   - type: review_finding
     finding_id: 9d470b979549cf0c
-    description: Review found that serving the most recent record without filtering
-      status let an EVALUATION_FAILED result permanently shadow later default invocations
-      for the same identity, showing that failure records cannot participate in outcome
-      reuse the same way successful parsed outcomes do.
-  - type: review_finding
-    finding_id: ad903e01c041fb46
-    description: Review found that --no-cache forced a fresh model call even when
-      digest, model id, and prompt version matched an existing record, demonstrating
-      that allowing operators to bypass same-identity reuse breaks the required 'recorded
-      identity returns recorded outcome' invariant.
+    description: The review found that identity lookup returned the most recent record
+      without filtering on status, which caused later invocations for the same digest/model/prompt
+      triple to reuse EVALUATION_FAILED instead of attempting evaluation again; this
+      demonstrates that cache eligibility must distinguish successful outcomes from
+      failed runs.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 approval explicitly called out both cache P1s as resolved,
-      confirming that identity-reuse semantics were a central correctness constraint
-      rather than an incidental implementation detail.
-- claim: If a workflow freezes a human baseline before revealing machine output, operator-supplied
-    baseline data must either be reconciled visibly or rejected explicitly; silently
-    preferring stored state hides disagreements that matter to the audit.
+    description: Cycle 2 explicitly records that the prior P1 was resolved by excluding
+      failed records from identity lookup, confirming that this status filter was
+      necessary to preserve correct rerun behavior.
+- claim: Operator-facing cache bypasses can violate behavioral contracts even when
+    storage keys are correct; repeat-run semantics need to be enforced at the command
+    path as well as in persistence.
+  evidence:
+  - type: review_finding
+    finding_id: ad903e01c041fb46
+    description: The review found that --no-cache let an operator force a fresh model
+      call for an already-recorded digest/model/prompt identity, directly breaking
+      the contract that exact-identity repeats return the stored outcome; this shows
+      contract enforcement must include CLI control flow, not just backend keying.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that same-identity bypass was fixed, showing the issue
+      was not with identity definition itself but with an alternate invocation path
+      escaping the intended repeat-run rule.
+- claim: Freezing a human baseline before reveal is not enough by itself; invocation
+    paths also need explicit mismatch handling so operator-supplied baseline inputs
+    cannot be silently discarded before consistency checks run.
   evidence:
   - type: review_finding
     finding_id: dc639598f7f5d121
-    description: Review found that invocation-supplied defect ids were discarded when
-      a frozen baseline already existed, which prevented operators from seeing that
-      their provided baseline disagreed with the stored one and bypassed the intended
-      mismatch guard.
-- claim: Metrics design can invalidate itself if normal operator flow eliminates the
-    repeated live cases a report expects to count, so reporting logic has to be aligned
-    with the actual execution model rather than with pre-cache assumptions.
+    description: The review found that when a frozen baseline already existed, invocation-supplied
+      defect ids were dropped without any message and the store-level mismatch guard
+      was never reached, demonstrating that baseline integrity depends on surfacing
+      disagreements at the first point they can be observed.
+- claim: Metrics that rely on independent repeated live evaluations can be invalidated
+    by deduplication semantics that serve same-identity repeats from storage, so report
+    design must align stability measurements with the actual execution model.
   evidence:
   - type: review_finding
     finding_id: 27dd70223834a851
-    description: Review found that once same-identity repeats were always served from
-      storage, normal use could no longer produce multiple live records for the same
-      identity, causing the independent repeat-stability counters to remain zero and
-      exposing a mismatch between metric definition and system behavior.
+    description: The review found that once same-identity repeats are always served
+      from the record store, two live records with the same digest/model/prompt triple
+      no longer arise in normal use, leaving repeat-stability counters at zero; this
+      demonstrates that measurement logic must account for how caching constrains
+      observable repeats.
 learned_patterns:
-- identity-cache-excludes-failures
+- status-aware-identity-cache
+- cli-path-contract-enforcement
 - baseline-mismatch-must-surface
 - metrics-must-match-execution-model
 review_insights:
@@ -124,13 +134,14 @@ review_insights:
     cycles_seen: 1
     disposition: fixed
   observations:
-  - The review loop concentrated on identity semantics around reruns and on whether
-    reporting/baseline flows still meant what the audit slice claimed they measured.
+  - 'The review loop repeatedly surfaced contract breaks at execution edges: cache
+    eligibility, cache bypass paths, baseline consistency handling, and report assumptions
+    about what the runtime can actually produce.'
 complexity_signal:
   actual_iterations: 3
   review_cycles: 3
   plan_regenerations: false
   cost_usd: 15.3657409
-  dominant_difficulty: Preserving audit-only semantics while making cached reruns,
-    failure handling, baseline freezing, and corpus metrics all agree on what constitutes
-    the same evaluation run.
+  dominant_difficulty: Preserving audit-only semantics while making identity, caching,
+    failure handling, and measurement behavior all agree across CLI, storage, runner,
+    and reporting paths.
