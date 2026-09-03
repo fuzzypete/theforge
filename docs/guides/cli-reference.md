@@ -331,6 +331,53 @@ forge eval-preflight [flags]
 
 ---
 
+## `forge review-semantic`
+
+Run the audit-only semantic evaluator for one GitHub issue.
+
+```bash
+forge review-semantic ISSUE [flags]
+```
+
+**Use this when:** Recording or replaying a manual semantic-review audit for a
+single issue. Exact repeats are keyed by input digest, model identity, and
+prompt contract version; to record an independent rerun, change the prompt
+contract version.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `issue` (positional) | GitHub issue number to review |
+| `--profile <name>` | Configured `ModelProfile` name to use |
+| `--prompt-contract-version <version>` | Override the semantic prompt contract version |
+| `--baseline-defect-id <id>` | Freeze the human baseline with a defect id (repeatable) |
+| `--freeze-empty-baseline` | Freeze an empty human baseline before revealing output |
+| `--config <path>` | Path to `forge.yaml` |
+
+---
+
+## `forge semantic-report`
+
+Report corpus metrics from recorded semantic-review audits.
+
+```bash
+forge semantic-report PATH [flags]
+```
+
+**Use this when:** Measuring semantic-review recovery, precision, rejection,
+stability, and cost against a named annotated corpus.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `corpus` (positional) | Path to the semantic corpus YAML file |
+| `--output-format <text|json>` | Report format |
+| `--config <path>` | Path to `forge.yaml` |
+
+---
+
 ## `forge telemetry`
 
 Show historical per-phase cost and duration from `.forge/audits/history.jsonl`.
