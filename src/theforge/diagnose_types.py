@@ -485,6 +485,7 @@ class DiagnoseState:
     # 0.0, which means a genuinely free run. Never coerce one into the other.
     agent_cost_usd: float | None = 0.0
     agent_duration_s: float = 0.0
+    agent_reported_success: bool = False
     artifact: DiagnosisArtifact | None = None
     landing_destination: str | None = None
     landed_location: str | None = None  # URL / path / comment id

@@ -910,6 +910,7 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
         "final_phase": state.phase.name,
         "phase_transitions": [{"phase": name, "at": ts} for name, ts in state.phase_transitions],
         "agent": {
+            "reported_success": state.agent_reported_success,
             "cost_usd": (
                 round(state.agent_cost_usd, 6) if state.agent_cost_usd is not None else None
             ),
@@ -1219,14 +1220,21 @@ def _resolve_output_destination(
     return "comment"
 
 
-def _declared_diagnosis_verdict(artifact: DiagnosisArtifact, section: str) -> ShapeVerdict:
+def _declared_diagnosis_verdict(
+    artifact: DiagnosisArtifact,
+    section: str,
+    *,
+    issue_requires_categorical_scope: bool,
+) -> ShapeVerdict:
     """The lifecycle state the landed Diagnosis section is meant to produce.
 
     Read off the artifact and its own rendered section — not off the merged
     issue body the validator then evaluates — so a landing that moves the issue
     somewhere else is a mismatch rather than a restatement of the answer.
     """
-    if artifact.partial:
+    if artifact.lifecycle_blocking_missing_fields(
+        issue_requires_categorical_scope=issue_requires_categorical_scope
+    ):
         return ShapeVerdict.NEEDS_DIAGNOSIS
     if _diagnosis_cause_unknown(section):
         return ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
@@ -1326,7 +1334,11 @@ def _land_artifact(
             title=state.issue_title,
             body=new_body,
             labels=list(issue_labels or []),
-            declared=_declared_diagnosis_verdict(artifact, section),
+            declared=_declared_diagnosis_verdict(
+                artifact,
+                section,
+                issue_requires_categorical_scope=state.issue_scope_is_categorical,
+            ),
             previous_body=state.issue_body,
         )
         _gh_edit_body(state.issue_number, new_body, project_root)
@@ -1830,6 +1842,7 @@ def _run_diagnose_flow_body(
 
     state.agent_duration_s = time.monotonic() - t0
     state.agent_output = getattr(agent_result, "output", "") or ""
+    state.agent_reported_success = bool(getattr(agent_result, "success", False))
     # Capture the runner's machine-readable failure identifier (e.g. "timeout")
     # so terminal messaging and the audit trail can distinguish a timeout from a
     # budget breach or an empty completion. Normalize to str|None so a
@@ -1846,7 +1859,7 @@ def _run_diagnose_flow_body(
     # Treat failure as "possibly partial" rather than abandon — per AC, a
     # diagnosis that can't be confirmed within bounds returns the partial
     # work for operator review rather than guessing.
-    partial = not bool(getattr(agent_result, "success", False))
+    partial = not state.agent_reported_success
 
     # Budget guard — if the agent cost exceeded the configured budget, mark
     # the result as partial regardless of whether the agent reported success.
@@ -2036,7 +2049,10 @@ def _run_diagnose_flow_body(
     state.missing_metadata_fields = artifact.missing_verification_metadata_fields(
         issue_requires_categorical_scope=state.issue_scope_is_categorical
     )
-    if lifecycle_blocking_fields or partial:
+    partial_requires_partial_landing = (
+        budget_exceeded or state.agent_failure_code == "timeout" or bool(lifecycle_blocking_fields)
+    )
+    if partial_requires_partial_landing:
         if budget_exceeded:
             partial_phase = DiagnosePhase.BUDGET_EXCEEDED
             partial_reason = DiagnosePartialReason.BUDGET_EXCEEDED
@@ -2110,6 +2126,14 @@ def _run_diagnose_flow_body(
             state=state,
             message=f"Partial diagnosis landed ({cause_label}) — operator review required",
         )
+
+    if artifact.partial:
+        artifact = dataclasses.replace(
+            artifact,
+            partial=False,
+            partial_reason=DiagnosePartialReason.UNCLASSIFIED,
+        )
+        state.artifact = artifact
 
     # ── LAND ──────────────────────────────────────────────────────────
     emit_phase(DiagnosePhase.LAND)
