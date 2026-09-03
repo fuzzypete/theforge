@@ -123,6 +123,7 @@ def evaluate_budget(
     unmeasured_spend: Sequence[str],
     accepted_unmeasured_ceiling_usd: float = 0.0,
     source_details: Mapping[str, str] | None = None,
+    acceptable_unmeasured_spend_sources: Sequence[str] | None = None,
 ) -> BudgetBlock | None:
     """Return the reason to stop dispatching, or ``None`` to proceed.
 
@@ -139,6 +140,10 @@ def evaluate_budget(
     ``source_details`` maps a source id to a one-line description of its origin
     and bound, so a refusal names the amount and where it came from rather than
     reporting an opaque condition.
+
+    ``acceptable_unmeasured_spend_sources`` lists the unresolved sources whose
+    ceilings are derivable, so the refusal can name the exact flags that would
+    let an operator accept those ceilings on the next launch.
 
     Exhaustion is checked first: when the verification figure already meets the
     cap, that is a definite answer, whether or not other spend is unresolved.
@@ -175,6 +180,9 @@ def evaluate_budget(
         rendered = describe_source_origins(unmeasured_spend, source_details)
         if rendered:
             detail = f"{detail}; {rendered}"
+        remedy = describe_unmeasured_spend_acceptance(acceptable_unmeasured_spend_sources)
+        if remedy:
+            detail = f"{detail}; {remedy}"
         return BudgetBlock(kind="unverifiable", detail=detail)
     return None
 
@@ -223,3 +231,11 @@ def describe_source_origins(
     if not lines:
         return ""
     return "unresolved: " + "; ".join(lines)
+
+
+def describe_unmeasured_spend_acceptance(sources: Sequence[str] | None) -> str:
+    """Render the concrete acceptance command for resolvable unknowns."""
+    if not sources:
+        return ""
+    rendered = " ".join(f"--accept-unmeasured-spend {source}" for source in sources)
+    return f"to proceed, rerun with {rendered}"
