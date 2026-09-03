@@ -64,10 +64,13 @@ class SemanticCorpusReport:
     cost_unknown_records_excluded: int
     repeated_identity_groups: int
     stable_repeated_identity_groups: int
+    repeated_identity_stability: float | None
     independent_repeat_groups: int
     stable_independent_repeat_groups: int
+    independent_repeat_stability: float | None
     cache_derived_repeat_groups: int
     stable_cache_derived_repeat_groups: int
+    cache_derived_repeat_stability: float | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -88,10 +91,13 @@ class SemanticCorpusReport:
             "cost_unknown_records_excluded": self.cost_unknown_records_excluded,
             "repeated_identity_groups": self.repeated_identity_groups,
             "stable_repeated_identity_groups": self.stable_repeated_identity_groups,
+            "repeated_identity_stability": self.repeated_identity_stability,
             "independent_repeat_groups": self.independent_repeat_groups,
             "stable_independent_repeat_groups": self.stable_independent_repeat_groups,
+            "independent_repeat_stability": self.independent_repeat_stability,
             "cache_derived_repeat_groups": self.cache_derived_repeat_groups,
             "stable_cache_derived_repeat_groups": self.stable_cache_derived_repeat_groups,
+            "cache_derived_repeat_stability": self.cache_derived_repeat_stability,
         }
 
 
@@ -185,6 +191,18 @@ def _stability_groups(
         )
         by_identity.setdefault(key, []).append(record)
     return [group for group in by_identity.values() if len(group) > 1]
+
+
+def _stability_ratio(*, stable_groups: int, total_groups: int) -> float | None:
+    if total_groups == 0:
+        return None
+    return stable_groups / total_groups
+
+
+def _render_stability_ratio(*, label: str, stable_groups: int, total_groups: int) -> str:
+    if total_groups == 0:
+        return f"{label}=unmeasured"
+    return f"{label}={stable_groups}/{total_groups}"
 
 
 def build_semantic_corpus_report(
@@ -334,10 +352,22 @@ def build_semantic_corpus_report(
         cost_unknown_records_excluded=cost_unknown_records_excluded,
         repeated_identity_groups=repeated_identity_groups,
         stable_repeated_identity_groups=stable_repeated_identity_groups,
+        repeated_identity_stability=_stability_ratio(
+            stable_groups=stable_repeated_identity_groups,
+            total_groups=repeated_identity_groups,
+        ),
         independent_repeat_groups=independent_repeat_groups,
         stable_independent_repeat_groups=stable_independent_repeat_groups,
+        independent_repeat_stability=_stability_ratio(
+            stable_groups=stable_independent_repeat_groups,
+            total_groups=independent_repeat_groups,
+        ),
         cache_derived_repeat_groups=cache_derived_repeat_groups,
         stable_cache_derived_repeat_groups=stable_cache_derived_repeat_groups,
+        cache_derived_repeat_stability=_stability_ratio(
+            stable_groups=stable_cache_derived_repeat_groups,
+            total_groups=cache_derived_repeat_groups,
+        ),
     )
 
 
@@ -362,13 +392,24 @@ def render_semantic_corpus_report(report: SemanticCorpusReport) -> str:
             f"novel_confirmed_defects={report.confirmed_novel_defects}",
             f"cost_per_confirmed_finding={cost_per_confirmed} "
             f"cost_unknown_records_excluded={report.cost_unknown_records_excluded}",
-            f"repeat_stability="
-            f"{report.stable_repeated_identity_groups}/{report.repeated_identity_groups} "
-            f"independent="
-            f"{report.stable_independent_repeat_groups}/{report.independent_repeat_groups} "
-            f"cache_derived="
-            f"{report.stable_cache_derived_repeat_groups}/"
-            f"{report.cache_derived_repeat_groups}",
+            "repeat_stability="
+            + _render_stability_ratio(
+                label="repeated",
+                stable_groups=report.stable_repeated_identity_groups,
+                total_groups=report.repeated_identity_groups,
+            )
+            + " "
+            + _render_stability_ratio(
+                label="independent",
+                stable_groups=report.stable_independent_repeat_groups,
+                total_groups=report.independent_repeat_groups,
+            )
+            + " "
+            + _render_stability_ratio(
+                label="cache_derived",
+                stable_groups=report.stable_cache_derived_repeat_groups,
+                total_groups=report.cache_derived_repeat_groups,
+            ),
         ]
     )
 

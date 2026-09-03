@@ -14,6 +14,7 @@ from theforge.eval.semantic_report import (
     SemanticCorpusEntry,
     SemanticFindingJudgment,
     build_semantic_corpus_report,
+    render_semantic_corpus_report,
 )
 from theforge.eval.semantic_runner import (
     SemanticBaselineRequiredError,
@@ -645,7 +646,105 @@ class TestSemanticReporting:
         assert report.cost_unknown_records_excluded == 1
         assert report.repeated_identity_groups == 1
         assert report.stable_repeated_identity_groups == 1
+        assert report.repeated_identity_stability == pytest.approx(1.0)
         assert report.independent_repeat_groups == 1
         assert report.stable_independent_repeat_groups == 1
+        assert report.independent_repeat_stability == pytest.approx(1.0)
         assert report.cache_derived_repeat_groups == 0
         assert report.stable_cache_derived_repeat_groups == 0
+        assert report.cache_derived_repeat_stability is None
+
+    def test_corpus_report_marks_cache_only_independent_stability_unmeasured(
+        self, tmp_path: Path
+    ) -> None:
+        store = SemanticReviewStore(tmp_path)
+        digest = "digest-one"
+        finding = SemanticFinding(
+            summary="Known defect",
+            rationale="Baseline defect recovered",
+            severity="high",
+        )
+
+        store.append_baseline(
+            FrozenSemanticBaseline(
+                issue_ref="issue-1",
+                input_digest=digest,
+                canonical_type="enhancement",
+                defect_ids=("d1",),
+                frozen_at=utc_now_iso(),
+            )
+        )
+        store.append_record(
+            SemanticEvaluationRecord(
+                issue_ref="issue-1",
+                canonical_type="enhancement",
+                input_digest=digest,
+                model_id="anthropic/sonnet/cli",
+                prompt_contract_version="semantic-review.v1",
+                status=STATUS_FINDINGS,
+                cache_hit=False,
+                duration_seconds=1.0,
+                cost_usd=0.6,
+                cost_provenance="estimated",
+                started_at=utc_now_iso(),
+                completed_at=utc_now_iso(),
+                configured_profile_name="preflight",
+                configured_model_name="sonnet",
+                resolved_model_id="anthropic/sonnet/cli",
+                outcome=OUTCOME_FINDINGS,
+                findings=(finding,),
+            )
+        )
+        store.append_record(
+            SemanticEvaluationRecord(
+                issue_ref="issue-1",
+                canonical_type="enhancement",
+                input_digest=digest,
+                model_id="anthropic/sonnet/cli",
+                prompt_contract_version="semantic-review.v1",
+                status=STATUS_FINDINGS,
+                cache_hit=True,
+                duration_seconds=0.01,
+                cost_usd=0.0,
+                cost_provenance="cache_zero",
+                started_at=utc_now_iso(),
+                completed_at=utc_now_iso(),
+                configured_profile_name="preflight",
+                configured_model_name="sonnet",
+                resolved_model_id="anthropic/sonnet/cli",
+                outcome=OUTCOME_FINDINGS,
+                findings=(finding,),
+            )
+        )
+
+        corpus = SemanticCorpus(
+            name="semantic-audit",
+            entries=(
+                SemanticCorpusEntry(
+                    issue_ref="issue-1",
+                    input_digest=digest,
+                    frozen_baseline_defect_ids=("d1",),
+                    judgments=(
+                        SemanticFindingJudgment(
+                            finding_digest=finding.finding_digest,
+                            judgment="confirmed",
+                            defect_id="d1",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        report = build_semantic_corpus_report(corpus, store=store)
+        rendered = render_semantic_corpus_report(report)
+
+        assert report.repeated_identity_groups == 1
+        assert report.stable_repeated_identity_groups == 1
+        assert report.repeated_identity_stability == pytest.approx(1.0)
+        assert report.independent_repeat_groups == 0
+        assert report.stable_independent_repeat_groups == 0
+        assert report.independent_repeat_stability is None
+        assert report.cache_derived_repeat_groups == 1
+        assert report.stable_cache_derived_repeat_groups == 1
+        assert report.cache_derived_repeat_stability == pytest.approx(1.0)
+        assert "repeat_stability=repeated=1/1 independent=unmeasured cache_derived=1/1" in rendered
