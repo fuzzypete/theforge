@@ -886,3 +886,51 @@ class TestRatificationFlow:
                 input_fn=_inputs(),
                 emit=lambda _line: None,
             )
+
+
+class TestSpikeClosureGuard:
+    """Ratification closes issues, so it asks the spike guard first (#2600)."""
+
+    @staticmethod
+    def _gh_view(labels: tuple[str, ...], body: str = ""):
+        import subprocess
+
+        payload = json.dumps(
+            {
+                "state": "OPEN",
+                "labels": [{"name": name} for name in labels],
+                "body": body,
+                "comments": [],
+            }
+        )
+
+        def _run(cmd, **kwargs):
+            if "view" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, payload, "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return _run
+
+    def test_outcomeless_spike_fails_the_close(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "theforge.spike_guard.guard.subprocess.run",
+            self._gh_view(("spike",), "A question."),
+        )
+        with pytest.raises(ratify_flow.TriageRatificationError, match="records no outcome"):
+            ratify_flow._gh_issue_close(2348, tmp_path)
+
+    def test_non_spike_closes(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "theforge.spike_guard.guard.subprocess.run", self._gh_view(("enhancement",))
+        )
+        closed: list[list[str]] = []
+
+        def _run(cmd, **kwargs):
+            import subprocess
+
+            closed.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr("theforge.coordinator.triage_ratification_flow.subprocess.run", _run)
+        ratify_flow._gh_issue_close(1310, tmp_path)
+        assert any("close" in cmd for cmd in closed)

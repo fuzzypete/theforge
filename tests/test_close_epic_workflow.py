@@ -15,13 +15,14 @@ network, no GitHub token, and no provider SDKs.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+from tests.gh_stub import install_stubs, stub_env, workflow_step
 
 WORKFLOW = (
     Path(__file__).resolve().parents[1]
@@ -30,59 +31,16 @@ WORKFLOW = (
     / "close-epic-on-last-subissue.yml"
 )
 
-# A stub `gh` that answers the four call shapes the workflow makes, driven by
-# FAKE_* env vars. `gh api graphql` -> parent number; `gh api .../sub_issues`
-# -> all numbers, or just the open ones when the --jq carries a `select`;
-# `gh issue view` -> parent state; `gh issue close` -> recorded to $CLOSE_LOG.
-GH_STUB = r"""#!/usr/bin/env bash
-set -eu
-case "$1" in
-  api)
-    if [ "$2" = "graphql" ]; then
-      printf '%s' "${FAKE_PARENT:-}"
-      exit 0
-    fi
-    for a in "$@"; do
-      case "$a" in
-        *select*) printf '%s\n' ${FAKE_SUBS_OPEN:-}; exit 0 ;;
-      esac
-    done
-    printf '%s\n' ${FAKE_SUBS_ALL:-}
-    exit 0
-    ;;
-  issue)
-    case "$2" in
-      view) printf '%s' "${FAKE_PARENT_STATE:-OPEN}"; exit 0 ;;
-      close) printf '%s\n' "$*" >> "$CLOSE_LOG"; exit 0 ;;
-    esac
-    ;;
-esac
-echo "unexpected gh call: $*" >&2
-exit 1
-"""
-
 
 def _run_step(tmp_path: Path, fake_env: dict[str, str]) -> tuple[str, str]:
     """Run the workflow's shell step with a stubbed gh; return (stdout, close_log)."""
     doc = yaml.safe_load(WORKFLOW.read_text())
-    steps = doc["jobs"]["close-parent-epic-if-complete"]["steps"]
-    script = steps[0]["run"]
+    script = workflow_step(doc, "close-parent-epic-if-complete")
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    gh = bindir / "gh"
-    gh.write_text(GH_STUB)
-    gh.chmod(0o755)
-
-    close_log = tmp_path / "close.log"
-    close_log.write_text("")
-
+    bindir, logs = install_stubs(tmp_path)
     env = {
-        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "CLOSE_LOG": str(close_log),
+        **stub_env(bindir, logs, tmp_path),
         # Context the workflow reads from `env:` (github.* at runtime).
-        "GH_TOKEN": "stub",
         "REPO": "fuzzypete/theforge",
         "OWNER": "fuzzypete",
         "REPO_NAME": "theforge",
@@ -98,7 +56,7 @@ def _run_step(tmp_path: Path, fake_env: dict[str, str]) -> tuple[str, str]:
         timeout=60,
     )
     assert proc.returncode == 0, f"step failed: {proc.stderr}"
-    return proc.stdout, close_log.read_text()
+    return proc.stdout, logs["close"].read_text()
 
 
 pytestmark = pytest.mark.skipif(
@@ -112,7 +70,7 @@ def test_last_subissue_closed_closes_parent_with_summary(tmp_path):
         tmp_path,
         {
             "FAKE_PARENT": "1725",
-            "FAKE_PARENT_STATE": "OPEN",
+            "FAKE_STATE_1725": "OPEN",
             "FAKE_SUBS_ALL": "1801 1802 1823",
             "FAKE_SUBS_OPEN": "",
         },
@@ -132,13 +90,53 @@ def test_open_subissue_leaves_parent_open(tmp_path):
         tmp_path,
         {
             "FAKE_PARENT": "1725",
-            "FAKE_PARENT_STATE": "OPEN",
+            "FAKE_STATE_1725": "OPEN",
             "FAKE_SUBS_ALL": "1801 1802 1823",
             "FAKE_SUBS_OPEN": "1802",
         },
     )
     assert "still has 1 open sub-issue" in stdout
     assert close_log.strip() == "", "parent must not be closed while a sub-issue is open"
+
+
+def test_spike_parent_without_an_outcome_is_not_closed(tmp_path):
+    """This workflow never checks the parent is an epic, so a spike parent must be guarded.
+
+    All sub-issues closed is not one of a spike's two legal exits (#2600).
+    """
+    stdout, close_log = _run_step(
+        tmp_path,
+        {
+            "FAKE_PARENT": "1725",
+            "FAKE_STATE_1725": "OPEN",
+            "FAKE_LABELS_1725": "spike",
+            "FAKE_SUBS_ALL": "1801 1802 1823",
+            "FAKE_SUBS_OPEN": "",
+        },
+    )
+    assert "Not closing parent #1725" in stdout
+    assert close_log.strip() == ""
+
+
+def test_spike_parent_with_a_recorded_outcome_closes(tmp_path):
+    """A spike parent that recorded a do-not-proceed decision closes like any other."""
+    stdout, close_log = _run_step(
+        tmp_path,
+        {
+            "FAKE_PARENT": "1725",
+            "FAKE_STATE_1725": "OPEN",
+            "FAKE_LABELS_1725": "spike",
+            "FAKE_BODY_1725": (
+                "<!-- forge-spike-outcome-v1\n"
+                "outcome: do_not_proceed\n"
+                "reason: the approach does not pay for its complexity\n-->"
+            ),
+            "FAKE_SUBS_ALL": "1801 1802 1823",
+            "FAKE_SUBS_OPEN": "",
+        },
+    )
+    assert "auto-closing" in stdout
+    assert "1725" in close_log
 
 
 def test_no_parent_is_noop(tmp_path):
@@ -154,7 +152,7 @@ def test_already_closed_parent_is_idempotent(tmp_path):
         tmp_path,
         {
             "FAKE_PARENT": "1725",
-            "FAKE_PARENT_STATE": "CLOSED",
+            "FAKE_STATE_1725": "CLOSED",
             "FAKE_SUBS_ALL": "1801 1802 1823",
             "FAKE_SUBS_OPEN": "",
         },

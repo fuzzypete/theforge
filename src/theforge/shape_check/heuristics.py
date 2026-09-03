@@ -654,7 +654,7 @@ def derive_fix_ready(
       first job is cause discovery, not hypothesized-cause implementation.
     - ``type='bug'`` with a missing or incomplete Diagnosis section →
       ``(False, False, [warnings])``.
-    - Any other recognized type (enhancement, task, epic) →
+    - Any other recognized type (enhancement, task, spike, epic) →
       ``(True, False, [])``.
 
     Status labels (e.g. ``status:diagnosed``) are operator intent and do not

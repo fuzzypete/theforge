@@ -147,6 +147,26 @@ class TestNoAutoCloseForOperatorAction:
         assert "Refs #1471" in body
         assert "Closes #1471" not in body
 
+    def test_spike_issue_gets_refs_not_closes(self, tmp_path: Path) -> None:
+        """A spike closes through the recorded-outcome guard, never GitHub auto-close (#2600).
+
+        ``Closes #N`` would hand the decision to GitHub's native default-branch
+        auto-close (and to close-on-merge.yml on a release branch) before the
+        guard is consulted, so a merged PR alone could close an outcomeless
+        spike.
+        """
+        config = _make_merge_pr_config(tmp_path)
+        task = TaskStory(
+            name="Does the observer earn its keep?",
+            story_path=None,
+            slug="issue-2348",
+            type="spike",
+            github_issue=2348,
+        )
+        body = _capture_pr_body(config, task)
+        assert "Refs #2348" in body
+        assert "Closes #2348" not in body
+
     def test_dev_runnable_issue_still_gets_closes(self, tmp_path: Path) -> None:
         config = _make_merge_pr_config(tmp_path)
         task = _make_issue_task(tmp_path, 1326)

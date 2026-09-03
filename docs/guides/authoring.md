@@ -74,7 +74,7 @@ Content rules below are identical for both backends. Where this guide says
 "issue body," read it as "issue body or the prose section of the story file."
 Storage is incidental; shape is what matters.
 
-## The five use cases
+## The six use cases
 
 | Use case | Required sections | Optional but recommended |
 |----------|------------------|--------------------------|
@@ -83,6 +83,7 @@ Storage is incidental; shape is what matters.
 | Refactor / mechanical change | Title, Why, Acceptance criteria, Example (before/after) | Notes |
 | Rollup | Title, Why, Acceptance criteria (one per child), Example | Notes |
 | Docs / chore | Title, Why, Acceptance criteria, Example | Notes |
+| Spike | Title, Why, Acceptance criteria, Example | Notes |
 
 There is also a sixth, deliberately-not-dev-runnable type:
 
@@ -380,6 +381,86 @@ retry:
   max_review_cycles: 2
 ```
 ````
+
+---
+
+## Spike
+
+### Purpose
+
+A chartered question: is this approach worth adopting? The deliverables are a
+design document and a validating POC. A spike is a normal dev-runnable story —
+it carries the `spike` label and an `## Acceptance criteria` section like any
+other — with one extra rule at the *other* end of its life.
+
+### The two legal exits
+
+A spike cannot be closed without recording one of exactly two outcomes:
+
+| outcome | what must exist afterwards |
+|---|---|
+| do not proceed | a recorded decision on the spike, naming why |
+| proceed, or proceed when X | a follow-on issue in the pipeline, carrying the trigger condition if there is one |
+| *(nothing)* | not a legal exit |
+
+"Do not do this" is a complete and successful outcome. Nothing here obliges a
+spike to recommend proceeding — it obliges the answer to survive as an
+artifact rather than as operator memory.
+
+Record the outcome with a marker in the spike's body or in a comment on it:
+
+```markdown
+<!-- forge-spike-outcome-v1
+outcome: do_not_proceed
+reason: the ranking never clears its trust threshold on real sprint data
+-->
+```
+
+```markdown
+<!-- forge-spike-outcome-v1
+outcome: follow_up
+follow-up: #2599
+-->
+```
+
+```markdown
+<!-- forge-spike-outcome-v1
+outcome: conditional_follow_up
+follow-up: #2599
+-->
+```
+
+A follow-on issue must be **open**, carry exactly one type label, and not be a
+`todo:draft`. A `conditional_follow_up` additionally requires the follow-on
+issue to carry the condition — a closed spike's prose does not count, because
+that is precisely the artifact nobody re-reads:
+
+```markdown
+## Spike trigger condition
+
+- **What must be true:** the observer's ranking beats the naive baseline on
+  three consecutive real sprints.
+- **How to know:** the comparison hook reports its trust threshold met in the
+  sprint audit rather than declining to be used.
+```
+
+### How this is enforced
+
+Mechanically, at every close, not as guidance:
+
+- the sprint's landing close and its ALREADY_DONE dispositions;
+- `forge todo` triage and `forge triage` ratification;
+- `close-on-merge.yml` and `close-epic-on-last-subissue.yml`;
+- a spike's PR references its issue with `Refs #N`, never `Closes #N`, so
+  GitHub's native auto-close cannot decide the question first.
+
+GitHub has no synchronous pre-close hook, so the one path that cannot be
+refused in advance — a human pressing "Close issue" in the web UI — is caught
+after the fact: `enforce-spike-outcome.yml` re-asks the same guard and reopens
+the spike with the reason when the close was not a legal exit.
+
+The rule lives in one place, `theforge.spike_guard`; every path above calls it,
+and `python -m theforge.spike_guard <issue>` is how the workflows ask.
 
 ---
 
