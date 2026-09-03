@@ -79,8 +79,8 @@ def render_debrief_section(assembled_context: Any, *, style: str = STYLE_YAML_BL
         "",
         f"The Repository Context Pack above injected {len(refs)} prior-run claim(s).",
         "Each is shown with a stable reference in square brackets.",
-        f"{_placement(style)} with exactly one entry per reference below — no more,",
-        "no fewer:",
+        f"{_placement(style)}, holding exactly one entry per",
+        "reference below — no more, no fewer:",
         "",
         *(f"  - {ref}" for ref in refs),
         "",
@@ -108,10 +108,10 @@ def render_debrief_section(assembled_context: Any, *, style: str = STYLE_YAML_BL
 
 def _placement(style: str) -> str:
     if style == STYLE_HANDOFF:
-        return "Add a `knowledge_debrief` key to your `<forge_handoff>` block, listing entries"
+        return "Add a `knowledge_debrief` key to your `<forge_handoff>` block"
     if style == STYLE_TOOL_CALL:
-        return "Pass a `knowledge_debrief` array in your `submit_review` call, listing entries"
-    return "Add a top-level `knowledge_debrief` key to your YAML output, listing entries"
+        return "Pass a `knowledge_debrief` array in your `submit_review` call"
+    return "Add a top-level `knowledge_debrief` key to your YAML output"
 
 
 def _example(style: str, sample_ref: str) -> list[str]:
@@ -125,6 +125,9 @@ def _example(style: str, sample_ref: str) -> list[str]:
         f'  - claim_ref: "{sample_ref}"',
         f"    disposition: {DISPOSITION_CHANGED_DECISION}",
         '    did: "one sentence: what you did with this claim"',
-        '    evidence: ["src/pkg/module.py", "plan §3"]',
+        # Placeholder rather than a concrete path: this prompt ships to every
+        # project forge runs, and a worked example naming one repository's layout
+        # reads as an instruction to produce that layout.
+        '    evidence: ["<path/to/file_you_changed>", "plan §3"]',
         "```",
     ]
