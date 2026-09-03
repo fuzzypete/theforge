@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from theforge import knowledge_receipts
 from theforge.config import ForgeConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.handoff_claim_checker import check_handoff_fix_claims
@@ -552,6 +553,33 @@ def _emit_fix_claim_check(
     )
 
 
+def _record_review_debriefs(
+    state: CoordinatorState,
+    named: list[tuple[str, ReviewResult]],
+    *,
+    cycle_num: int,
+) -> None:
+    """Record each reviewer's prior-run knowledge receipt for audit (#2866).
+
+    Written after the pool's verdicts are parsed and read by nothing downstream:
+    a reviewer's debrief cannot influence its own verdict, the synthesis, or any
+    coordinator decision. Reviewers whose output failed to parse still get a
+    submission, so "the reviewer was asked and answered nothing" stays
+    distinguishable from "the reviewer was never asked".
+    """
+    for name, parsed in named:
+        raw = parsed.raw_yaml if isinstance(parsed.raw_yaml, dict) else {}
+        state.knowledge_debriefs.append(
+            knowledge_receipts.debrief_submission(
+                phase="review",
+                agent_role=name,
+                phase_iteration=cycle_num,
+                source="review_yaml",
+                payload=raw.get("knowledge_debrief"),
+            )
+        )
+
+
 def _parse_pool_outputs(successful: list) -> list[ReviewResult]:
     """Parse each surviving reviewer's output into a ReviewResult, in pool order.
 
@@ -1044,6 +1072,7 @@ def _run_review_pool(
                 (r.profile_name, parsed) for r, parsed in zip(successful, _survivor_parsed)
             ]
             _survivor_individual = [p for p in _survivor_parsed if not p.parse_errors]
+            _record_review_debriefs(state, _survivor_named, cycle_num=_cycle_num)
             return successful, failed_results, None, _survivor_individual, _survivor_named
 
     if failed_results and meta.quorum_met:
@@ -1189,6 +1218,7 @@ def _run_review_pool(
     # data was extracted; callers that use this for PR review attribution will
     # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
+    _record_review_debriefs(state, named_parsed, cycle_num=_cycle_num)
 
     # Per-cycle served-version attribution (#2226). Recorded on the cycle rather
     # than reconstructed from the attempt log: the attempt log holds every

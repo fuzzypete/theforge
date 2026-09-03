@@ -25,6 +25,7 @@ exception. A run with nothing to learn from must proceed normally.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,23 @@ _NOISE_TOKENS = frozenset(
         "or",
     }
 )
+
+
+def claim_reference(run_id: str, claim: str) -> str:
+    """A stable, content-addressed handle for one rendered claim.
+
+    Derived from the source run plus the claim text so the same claim rendered
+    into two phases of the same run resolves to the same reference, and a
+    reference stays resolvable after the fact without re-reading the summary.
+
+    It lives beside the renderer rather than beside the manifest because the
+    reference is now *displayed* to the agent (#2866): the string an agent can
+    cite and the string the exposure record stores have to be produced by the
+    same function, or a receipt could name a claim the record cannot find.
+    """
+    digest = hashlib.sha256(claim.strip().encode("utf-8")).hexdigest()[:12]
+    return f"{run_id}:{digest}"
+
 
 INDEX_STATE_READY = "ready"
 INDEX_STATE_MISSING = "missing"
@@ -512,6 +530,7 @@ def _render_summary(
         phase,
         summary=summary,
         entry=entry,
+        run_id=run_id,
         rendering_mode=rendering_mode,
         touched_files=touched_files,
         touched_dirs=touched_dirs,
@@ -529,6 +548,7 @@ def _phase_lines(
     *,
     summary: Mapping[str, Any],
     entry: Mapping[str, Any],
+    run_id: str,
     rendering_mode: str,
     touched_files: set[str],
     touched_dirs: set[str],
@@ -542,17 +562,28 @@ def _phase_lines(
     if rendering_mode == "signal_only":
         return (_render_preflight_signals(summary), [])
     if phase == "plan":
-        return _render_plan_summary(summary)
+        return _render_plan_summary(summary, run_id=run_id)
     if phase == "dev":
         return _render_dev_summary(
             summary,
             entry=entry,
+            run_id=run_id,
             touched_files=touched_files,
             touched_dirs=touched_dirs,
         )
     if phase == "review":
-        return _render_review_summary(summary)
+        return _render_review_summary(summary, run_id=run_id)
     return ([], [])
+
+
+def _claim_line(run_id: str, claim: str) -> str:
+    """Render one claim with the reference the exposure record already stores.
+
+    The reference is displayed because a receipt has to cite an exposed claim
+    without restating its prose (#2866); an agent that can only quote the text
+    back cannot be matched against the record deterministically.
+    """
+    return f"  - [{claim_reference(run_id, claim)}] {claim}"
 
 
 def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
@@ -596,7 +627,9 @@ def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _render_plan_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+def _render_plan_summary(
+    summary: Mapping[str, Any], *, run_id: str
+) -> tuple[list[str], list[str]]:
     lines: list[str] = []
     what_changed = summary.get("what_changed")
     if isinstance(what_changed, Mapping):
@@ -606,7 +639,7 @@ def _render_plan_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[st
     rendered = _evidenced_claims(summary)[:_MAX_RENDERED_CLAIMS]
     if rendered:
         lines.append("- Lessons with resolved evidence:")
-        lines.extend(f"  - {claim}" for claim in rendered)
+        lines.extend(_claim_line(run_id, claim) for claim in rendered)
     return (lines, rendered)
 
 
@@ -614,6 +647,7 @@ def _render_dev_summary(
     summary: Mapping[str, Any],
     *,
     entry: Mapping[str, Any],
+    run_id: str,
     touched_files: set[str],
     touched_dirs: set[str],
 ) -> tuple[list[str], list[str]]:
@@ -631,11 +665,13 @@ def _render_dev_summary(
     )[:_MAX_RENDERED_CLAIMS]
     if rendered:
         lines.append("- Evidence-backed implementation patterns:")
-        lines.extend(f"  - {claim}" for claim in rendered)
+        lines.extend(_claim_line(run_id, claim) for claim in rendered)
     return (lines, rendered)
 
 
-def _render_review_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+def _render_review_summary(
+    summary: Mapping[str, Any], *, run_id: str
+) -> tuple[list[str], list[str]]:
     lines: list[str] = []
     rendered: list[str] = []
     insights = summary.get("review_insights")
@@ -650,13 +686,13 @@ def _render_review_summary(summary: Mapping[str, Any]) -> tuple[list[str], list[
         ][:_MAX_RENDERED_CLAIMS]
         if recurring:
             lines.append("- Recurring findings to re-check:")
-            lines.extend(f"  - {item}" for item in recurring)
+            lines.extend(_claim_line(run_id, item) for item in recurring)
         if resolved:
             lines.append("- Resolved findings worth verifying stayed fixed:")
-            lines.extend(f"  - {item}" for item in resolved)
+            lines.extend(_claim_line(run_id, item) for item in resolved)
         if observations:
             lines.append("- Verification concerns:")
-            lines.extend(f"  - {item}" for item in observations)
+            lines.extend(_claim_line(run_id, item) for item in observations)
         rendered = [*recurring, *resolved, *observations]
 
     complexity = summary.get("complexity_signal")

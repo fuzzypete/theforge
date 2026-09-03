@@ -4,6 +4,7 @@ from theforge.coordinator.state import CycleHistory
 
 from .context_assembler import ContextPack
 from .conventions import render_conventions_block, render_hard_conventions_block
+from .debrief_prompts import STYLE_TOOL_CALL, STYLE_YAML_BLOCK, render_debrief_section
 from .story import TaskStory
 
 _REVIEW_ROLE_SECTIONS: dict[str, str] = {
@@ -645,4 +646,7 @@ def build_review_prompt(
           they break YAML parsing. Use single quotes or paraphrase instead.
           Bad:  description: "Regex changed from r\\"..."
           Good: description: "Regex changed from raw string pattern ..."
-    """)
+    """) + render_debrief_section(
+        assembled_context,
+        style=STYLE_TOOL_CALL if mode == "api" else STYLE_YAML_BLOCK,
+    )

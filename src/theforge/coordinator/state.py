@@ -1059,6 +1059,13 @@ class CoordinatorState:
     # reviewer completion-rate profile. Accumulates across every review cycle.
     reviewer_attempts: list[dict[str, Any]] = field(default_factory=list)
     context_manifests: list[dict] = field(default_factory=list)
+    # Prior-run knowledge receipts (#2866): one entry per phase output that could
+    # have carried a debrief, whether or not it did. Audit-shaped dicts written
+    # AFTER the phase output is in hand and read by nothing in this package —
+    # no routing, retry, readiness or landing decision may branch on them.
+    # Missing, malformed, and unrecognised debriefs are recorded as such rather
+    # than dropped: "the agent returned nothing" is a finding about the loop.
+    knowledge_debriefs: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
     # Each entry is the parsed handoff-file dict, or None if absent/unparseable.
     # Stable record of all findings across cycles, classified by finding_classifier
