@@ -1,0 +1,103 @@
+schema_version: 2
+run_id: f51c1e23c133
+authoritative_run_record: .forge/audits/runs/f51c1e23c133.json
+generated_at: '2026-09-03T18:27:44.283053+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01039875
+story:
+  slug: issue-2721
+  name: An infrastructure abort makes one story's spend unmeasurable, which cancels
+    unrelated stories and every resume of the run
+  github_issue: 2721
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/budget.py
+- src/theforge/sprint/budget_runtime.py
+- tests/test_unmeasured_cost_reporting.py
+what_changed:
+  description: This run changed budget-unverifiable messaging so resumed and dispatch-time
+    refusals surface actionable acceptance guidance for unmeasured-spend sources,
+    including cases dominated by the derived whole-generation marker.
+  approach: The change threaded normalized unresolved-source handling through budget
+    evaluation and runtime refusal reporting, then aligned operator-facing paths with
+    focused coverage for startup, resume, and per-story skip cases.
+  files_modified: *id002
+what_was_learned:
+- claim: When a resume-level blocker is represented by a derived aggregate marker,
+    operator guidance must still be projected back to the underlying story sources;
+    otherwise the system names a source the operator cannot act on and hides the identifiers
+    needed to clear the condition.
+  evidence:
+  - type: review_finding
+    finding_id: fd6c62cc39ea23c2
+    description: The review found that when only the whole-generation marker remained
+      unresolved, the refusal named that derived marker, omitted usable acceptance
+      guidance, and failed to print the prior story id that the acceptance path actually
+      requires, showing future work must resolve aggregate blockers back to actionable
+      source ids.
+  - type: review_finding
+    finding_id: 02563cb3c8b765df
+    description: The review also found the dispatch-time SKIPPED reason diverged from
+      startup behavior in the same aggregate-marker case, reinforcing that every operator-facing
+      path must map the derived blocker to the same underlying clearable sources.
+- claim: Acceptance guidance for unresolved spend has to be filtered by whether a
+    per-story ceiling is actually derivable; emitting commands mechanically for every
+    recorded source can direct operators to a path that cannot succeed.
+  evidence:
+  - type: review_finding
+    finding_id: eb0977d795f8f21b
+    description: The review found resumed-sprint refusals were offering acceptance
+      commands for all prior unmeasured stories, including ones whose audit records
+      had no derivable ceiling, demonstrating that guidance generation must be constrained
+      by the same feasibility checks as acceptance itself.
+- claim: Budget refusal messaging needs consistency across startup/resume and per-story
+    dispatch paths, because the same unresolved accounting state can surface in multiple
+    phases and inconsistent remedies create different operator behavior for one underlying
+    condition.
+  evidence:
+  - type: review_finding
+    finding_id: 02563cb3c8b765df
+    description: This finding compared dispatch-time SKIPPED messaging against startup
+      refusal messaging for the same unresolved-source set and showed they diverged
+      on whether they exposed a remedy, demonstrating the need to verify parity across
+      lifecycle phases rather than validating only one entry point.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly called out that the remedy was extended
+      to the whole-generation-marker case at startup and across the broader runtime
+      paths, showing the run's verification focus centered on cross-path consistency
+      rather than a single message site.
+learned_patterns:
+- aggregate-source-normalization
+- feasible-remedy-only
+- cross-phase-message-parity
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly surfaced edge cases where the derived whole-generation unmeasured
+    marker obscured or over-expanded the real actionable story sources.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.5373573
+  dominant_difficulty: Representing inherited unmeasured spend through a derived generation-level
+    marker without losing actionable, phase-consistent operator guidance.
