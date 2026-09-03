@@ -32,6 +32,15 @@ def cmd_knowledge_report(args: argparse.Namespace) -> int:
     from theforge.knowledge_invariant_proof import (  # noqa: PLC0415
         build_invariant_proof_from_records,
     )
+    from theforge.knowledge_receipts_report import (  # noqa: PLC0415
+        build_receipt_distribution,
+    )
+    from theforge.knowledge_receipts_report import (
+        render_terminal as render_receipts,  # noqa: PLC0415
+    )
+    from theforge.knowledge_receipts_report import (
+        report_payload as receipt_payload,  # noqa: PLC0415
+    )
 
     config_path = _find_config(Path(args.config).resolve() if args.config else None)
     if config_path is None:
@@ -75,14 +84,20 @@ def cmd_knowledge_report(args: argparse.Namespace) -> int:
 
     proof = build_invariant_proof_from_records(records)
     uptake = _uptake_sections(records)
+    # Prior-run knowledge receipts (#2866). Its own section, its own totals: a
+    # receipt count is not a contribution to the cohort effectiveness verdict and
+    # must not be readable as one.
+    receipts = build_receipt_distribution(records)
 
     if args.format == "terminal":
         print(render_terminal(report, proof), end="")
         print(_render_uptake_sections(uptake), end="")
+        print(render_receipts(receipts), end="")
         return 0
 
     payload = report_payload(report, proof)
     payload["prior_run_uptake"] = uptake
+    payload["knowledge_receipts"] = receipt_payload(receipts)
     if args.format == "json":
         print(json.dumps(payload, indent=2))
     else:

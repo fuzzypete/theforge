@@ -10,9 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from theforge.knowledge_receipts import CLOSED_DISPOSITIONS
+
 VALID_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 VALID_SEVERITIES = ("P1", "P2")
 VALID_AC_VERIFICATION_STATUSES = ("VERIFIED", "PARTIAL", "NOT_VERIFIED")
+
+# Audit-only prior-run knowledge receipt (#2866). Imported from the verifier
+# rather than restated so a transport schema cannot advertise a disposition the
+# verifier would then record as unrecognised. Nothing in review validation reads
+# this field — a malformed debrief never rejects a verdict.
+VALID_KNOWLEDGE_DISPOSITIONS = tuple(sorted(CLOSED_DISPOSITIONS))
 
 # ── Parse-error taxonomy ─────────────────────────────────────────────
 # Operator-facing logs and audit must distinguish which validation stage
@@ -486,6 +494,7 @@ def review_json_schema() -> dict:
             "ac_verification",
             "criteria_enumerable",
             "criteria_enumerable_rationale",
+            "knowledge_debrief",
         ],
         "properties": {
             "verdict": {
@@ -606,6 +615,38 @@ def review_json_schema() -> dict:
                     "sentence stating why the issue has no enumerable acceptance "
                     "criteria. Empty string when criteria_enumerable is true."
                 ),
+            },
+            # Audit-only receipt on injected prior-run claims (#2866). Declared
+            # required-and-nullable rather than optional because this schema is
+            # submitted with strict=true, where every property must appear in
+            # `required`; a reviewer shown no prior-run claims sends null. It is
+            # never read by verdict validation or by any coordinator decision.
+            "knowledge_debrief": {
+                "description": (
+                    "Audit-only. One entry per prior-run claim reference shown in the "
+                    "Repository Context Pack. Null when the pack carried no claims. "
+                    "Never affects the verdict."
+                ),
+                "anyOf": [
+                    {"type": "null"},
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["claim_ref", "disposition", "did", "evidence"],
+                            "properties": {
+                                "claim_ref": {"type": "string"},
+                                "disposition": {
+                                    "type": "string",
+                                    "enum": list(VALID_KNOWLEDGE_DISPOSITIONS),
+                                },
+                                "did": {"type": "string"},
+                                "evidence": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    },
+                ],
             },
         },
     }
