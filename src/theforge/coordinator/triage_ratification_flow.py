@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from theforge.coordinator import audit_read_model, audit_storage
+from theforge.spike_guard import check_spike_closure
 from theforge.triage_backlog_report import (
     collect_backlog_report,
     fetch_open_milestones,
@@ -394,6 +395,12 @@ def _gh_issue_edit_milestone(number: int, milestone: str, project_root: Path) ->
 
 
 def _gh_issue_close(number: int, project_root: Path) -> None:
+    # Ratification is a repository-controlled close path, so it asks the same
+    # spike guard every other one does (#2600). A spike with no recorded
+    # outcome fails the ratification action rather than closing silently.
+    decision = check_spike_closure(number, project_root)
+    if not decision.allowed:
+        raise TriageRatificationError(f"refusing to close #{number}: {decision.reason}")
     proc = subprocess.run(
         ["gh", "issue", "close", str(number)],
         capture_output=True,

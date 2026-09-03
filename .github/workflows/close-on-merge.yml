@@ -46,11 +46,15 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      # Checked out so the spike closure guard runs from source rather than
+      # being restated in bash: the rule has one implementation (#2600).
+      - uses: actions/checkout@v4
       - name: Close issues referenced by the merged PR
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PYTHONPATH: src
           # Passed via env (not inline ${{ }}) so a hostile PR body cannot
           # inject shell — it is only ever read as data, never evaluated.
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -77,6 +81,16 @@ jobs:
 
             case "$state" in
               OPEN)
+                # A spike has exactly two legal exits, and a merged PR is
+                # neither of them. The guard passes every non-spike through
+                # unchanged; for a spike it demands a recorded outcome (#2600).
+                if ! refusal=$(python3 -m theforge.spike_guard "$n" 2>&1 >/dev/null); then
+                  echo "Not closing #$n: $refusal"
+                  note=$(printf 'Merged PR #%s did not close this issue.\n\n%s' \
+                    "$PR_NUMBER" "$refusal")
+                  gh issue comment "$n" --repo "$REPO" --body "$note"
+                  continue
+                fi
                 echo "Closing #$n (referenced by merged PR #$PR_NUMBER)"
                 gh issue close "$n" --repo "$REPO" \
                   --comment "Closed by merged PR #$PR_NUMBER."

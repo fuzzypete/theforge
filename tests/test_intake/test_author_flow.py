@@ -196,4 +196,4 @@ def test_advisory_shape_reasons_do_not_become_missing_parts() -> None:
 
 
 def test_available_type_labels_exclude_non_dispatchable_types() -> None:
-    assert available_type_labels() == ("bug", "enhancement", "task")
+    assert available_type_labels() == ("bug", "enhancement", "task", "spike")

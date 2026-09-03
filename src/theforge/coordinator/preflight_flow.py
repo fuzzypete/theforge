@@ -732,15 +732,15 @@ def _run_preflight_phase(
         work_type = _parse_preflight_work_type(preflight_result.output)
         # Structured story type wins over AI inference. A bug-typed story is
         # always work_type="bug" so AC-synthesis paths are skipped; an
-        # enhancement/task is normalized to "feature" so the AC-verification
-        # flow runs. Epics are tracking-only and should never reach preflight,
+        # enhancement/task/spike is normalized to "feature" so the
+        # AC-verification flow runs. Epics are tracking-only and should never reach preflight,
         # but if one does we treat it as feature so the pipeline is at least
         # well-defined. AI-inferred refactor/mechanical signals are preserved
         # only when there is no structured type — those are sub-classifications
         # of feature work that the agent may legitimately refine.
         if task.type == "bug":
             work_type = "bug"
-        elif task.type in {"enhancement", "task", "epic"}:
+        elif task.type in {"enhancement", "task", "spike", "epic"}:
             if work_type not in {"refactor", "mechanical"}:
                 work_type = "feature"
         state.preflight_work_type = work_type
