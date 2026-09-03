@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -174,6 +175,20 @@ def test_cmd_todo_promote_removes_draft_label(mock_run, tmp_path, capsys):
     assert "Promoted todo #12" in capsys.readouterr().out
 
 
+def _spike_guard_gh(labels: tuple[str, ...] = (), body: str = "") -> MagicMock:
+    """Answer the spike guard's `gh issue view --json` probe."""
+    return _proc(
+        stdout=json.dumps(
+            {
+                "state": "OPEN",
+                "labels": [{"name": name} for name in labels],
+                "body": body,
+                "comments": [],
+            }
+        )
+    )
+
+
 @patch("theforge.cli.todo.subprocess.run")
 def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatch, capsys):
     mock_run.side_effect = [
@@ -182,6 +197,7 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
         _proc(stdout='{"title": "a todo", "body": "existing body", "labels": []}'),
         _proc(returncode=0),
         _proc(),
+        _spike_guard_gh(),  # the spike guard's pre-close probe: not a spike
         _proc(),
     ]
     args = _make_args(tmp_path, todo_action="triage", number=12, text=None)
@@ -201,9 +217,38 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
     assert calls[4][0:4] == ["gh", "issue", "edit", "12"]
     assert calls[4][4] == "--body-file"
     assert calls[4][5].endswith(".md")
-    assert calls[5] == ["gh", "issue", "close", "12"]
+    assert calls[5] == ["gh", "issue", "view", "12", "--json", "state,labels,body"]
+    assert calls[6] == ["gh", "issue", "close", "12"]
     assert "timeout" not in mock_run.call_args_list[3].kwargs
     assert "Closed todo #12" in capsys.readouterr().out
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_triage_refuses_to_close_an_outcomeless_spike(
+    mock_run, tmp_path, monkeypatch, capsys
+):
+    """Triage is a repository-controlled close path, so it asks the guard too (#2600)."""
+    mock_run.side_effect = [
+        _proc(),
+        _proc(),
+        _proc(stdout='{"title": "a spike", "body": "existing body", "labels": []}'),
+        _proc(returncode=0),
+        _proc(),
+        _spike_guard_gh(labels=("spike",), body="A question."),
+    ]
+    args = _make_args(tmp_path, todo_action="triage", number=12, text=None)
+    responses = iter(["spike", "Sprint 12", "y", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setenv("EDITOR", "nano")
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    calls = [call.args[0] for call in mock_run.call_args_list]
+    assert not any("close" in call for call in calls), "the spike must stay open"
+    err = capsys.readouterr().err
+    assert "records no outcome" in err
+    assert "todo #12 left open." in err
 
 
 @patch("theforge.cli.todo.subprocess.run")

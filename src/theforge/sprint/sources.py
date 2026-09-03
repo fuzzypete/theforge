@@ -14,6 +14,7 @@ from ..shape_check.heuristics import (
     RECOGNIZED_STATUS_LABELS,
     derive_fix_ready,
 )
+from ..spike_guard import check_spike_closure
 from ..task import (
     ALLOW_MUTATE_FORGE_YAML_KEY,
     RECOGNIZED_STORY_TYPES,
@@ -469,6 +470,9 @@ class GitHubIssueSource:
             summary = result.state.review_results[-1].summary
         comment = f"Completed by TheForge. {summary}".strip()
 
+        if not self._may_close_issue(task, config, closing_comment=comment):
+            return
+
         try:
             proc = subprocess.run(
                 [
@@ -530,6 +534,8 @@ class GitHubIssueSource:
                 "Disposition: already implemented — the change this issue asks for is "
                 "already present in the codebase. Closing as completed."
             )
+            if not self._may_close_issue(task, config, closing_comment=body):
+                return
             self._run_issue_gh(
                 ["issue", "close", str(number), "--comment", body, "--reason", "completed"],
                 project_root,
@@ -541,6 +547,8 @@ class GitHubIssueSource:
                 "Disposition: premise obsolete — the premise this issue depends on is "
                 "no longer present in the codebase. Closing as not planned."
             )
+            if not self._may_close_issue(task, config, closing_comment=body):
+                return
             self._run_issue_gh(
                 ["issue", "close", str(number), "--comment", body, "--reason", "not planned"],
                 project_root,
@@ -563,6 +571,51 @@ class GitHubIssueSource:
                 project_root,
                 f"issue edit #{number}",
             )
+
+    def _may_close_issue(
+        self,
+        task: TaskStory,
+        config: "ForgeConfig",
+        *,
+        closing_comment: str | None = None,
+    ) -> bool:
+        """Return whether the tracking issue may be closed, refusing spikes without an outcome.
+
+        Every close this source performs goes through here (#2600). A spike
+        that records neither a do-not-proceed decision nor a follow-on work
+        item stays open, and the refusal is posted to the issue so the operator
+        sees why rather than finding a story that landed against an open issue.
+
+        A non-spike story never reaches ``gh``: ``task.type`` already answers
+        the question, so an ordinary close keeps its previous cost and its
+        previous failure modes.
+        """
+        number = task.github_issue
+        assert number is not None  # guarded by every caller
+        decision = check_spike_closure(
+            number,
+            config.project_root,
+            known_type=task.type,
+            closing_comment=closing_comment,
+        )
+        if decision.allowed:
+            return True
+        _log.warning("refusing to close issue #%s: %s", number, decision.reason)
+        # The comment that would have accompanied the close carries the story's
+        # result — an ALREADY_DONE determination and its evidence, or the review
+        # summary. It stays durable whether or not the close is allowed, so a
+        # refusal withholds the closure and nothing else.
+        note = (
+            "TheForge finished this spike's work but did **not** close the issue.\n\n"
+            f"{decision.reason}"
+        )
+        body = f"{closing_comment}\n\n---\n\n{note}" if closing_comment else note
+        self._run_issue_gh(
+            ["issue", "comment", str(number), "--body", body],
+            config.project_root,
+            f"issue comment #{number}",
+        )
+        return False
 
     @staticmethod
     def _run_issue_gh(args: list[str], project_root: Path, failure_desc: str) -> bool:

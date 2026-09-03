@@ -551,6 +551,31 @@ TASK_SPEC = IssueTypeSpec(
     ),
 )
 
+SPIKE_SPEC = IssueTypeSpec(
+    key="spike",
+    label="spike",
+    summary=(
+        "a chartered question: design work and a validating POC, which closes only on a "
+        "recorded outcome"
+    ),
+    dispatchable=True,
+    declares_type=True,
+    section_rules=(
+        SectionRule("acceptance_criteria", Presence.REQUIRED),
+        SectionRule("example", Presence.ADVISORY),
+        SectionRule("observed", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
+        SectionRule("expected", Presence.FORBIDDEN, ContradictionTrigger.BUG_BODY_SHAPE),
+        SectionRule("reproduction", Presence.FORBIDDEN),
+        SectionRule("diagnosis", Presence.FORBIDDEN),
+    ),
+    lifecycle_states=_FEATURE_LIFECYCLE,
+    contradiction=TypeShapeContradiction(
+        slug="bug-report-shape",
+        rule_text="spike issues use why/acceptance criteria/example, not bug-report sections",
+        remediation_hint="relabel the issue as a bug or rewrite the body to the spike shape",
+    ),
+)
+
 EPIC_SPEC = IssueTypeSpec(
     key="epic",
     label="epic",
@@ -588,6 +613,7 @@ ISSUE_TYPES: tuple[IssueTypeSpec, ...] = (
     BUG_SPEC,
     ENHANCEMENT_SPEC,
     TASK_SPEC,
+    SPIKE_SPEC,
     EPIC_SPEC,
     OPERATOR_ACTION_SPEC,
 )

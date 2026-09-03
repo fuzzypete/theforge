@@ -49,6 +49,22 @@ Bug reports are exempt from the AC rule because bugs use a different shape.
 
 Sources: `feedback_acs_required.md`, `feedback_issue_labels.md`
 
+### A spike closes on a recorded outcome or not at all
+
+A spike (the `spike` label) is chartered to answer a question, and it has
+exactly two legal exits: a recorded decision not to proceed, carrying its
+reasoning, or a follow-on issue that exists in the pipeline. "Do not do this"
+is a complete and successful outcome; *nothing* is not an exit. Where the
+answer is conditional, the condition is carried by the follow-on issue — a
+`## Spike trigger condition` section naming what must be true and how anyone
+would know — because prose in a closed spike is the artifact nobody re-reads.
+
+This is enforced mechanically at every close path, not offered as guidance:
+`theforge.spike_guard` is the single implementation, and the web-UI close that
+no pre-close hook can intercept is reversed after the fact by
+`enforce-spike-outcome.yml`. See
+[the authoring guide](docs/guides/authoring.md#spike) for the marker syntax.
+
 ### Feature and documentation issues should include a concrete example
 
 Default to including a concrete example that shows what success looks like:

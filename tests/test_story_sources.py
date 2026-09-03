@@ -332,7 +332,7 @@ class TestGitHubIssueSource:
                 source.fetch("999", tmp_path)
 
     def test_on_complete_closes_issue_in_merge_mode(self, tmp_path: Path) -> None:
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         result = MagicMock()
         result.merge = {"merged": True}
         result.state.review_results = [MagicMock(summary="All good")]
@@ -353,7 +353,7 @@ class TestGitHubIssueSource:
 
     def test_on_complete_uses_project_root_cwd(self, tmp_path: Path) -> None:
         """gh issue close must use project_root as cwd regardless of process cwd."""
-        task = TaskStory(name="Test", slug="test", github_issue=7)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=7)
         result = MagicMock()
         result.merge = {"merged": True}
         result.state.review_results = []
@@ -370,7 +370,7 @@ class TestGitHubIssueSource:
 
     def test_on_complete_logs_warning_on_nonzero_exit(self, tmp_path: Path) -> None:
         """A nonzero exit from gh issue close is logged, not silently swallowed."""
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         result = MagicMock()
         result.merge = {"merged": True}
         result.state.review_results = []
@@ -389,7 +389,7 @@ class TestGitHubIssueSource:
         assert "close" in msg
 
     def test_on_complete_noop_for_pr_mode(self) -> None:
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         result = MagicMock()
         result.merge = {"merged": True}
         config = MagicMock()
@@ -402,7 +402,7 @@ class TestGitHubIssueSource:
         mock_run.assert_not_called()
 
     def test_on_complete_noop_when_not_merged(self) -> None:
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         result = MagicMock()
         result.merge = {"merged": False}
         config = MagicMock()
@@ -415,7 +415,7 @@ class TestGitHubIssueSource:
         mock_run.assert_not_called()
 
     def test_on_escalate_comments_on_issue(self, tmp_path: Path) -> None:
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         state = MagicMock()
         state.error = "Gate failed"
         config = MagicMock()
@@ -434,7 +434,7 @@ class TestGitHubIssueSource:
 
     def test_on_escalate_uses_project_root_cwd(self, tmp_path: Path) -> None:
         """gh issue comment must use project_root as cwd regardless of process cwd."""
-        task = TaskStory(name="Test", slug="test", github_issue=5)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=5)
         state = MagicMock()
         state.error = "timeout"
         config = MagicMock()
@@ -449,7 +449,7 @@ class TestGitHubIssueSource:
 
     def test_on_escalate_logs_warning_on_nonzero_exit(self, tmp_path: Path) -> None:
         """A nonzero exit from gh issue comment is logged, not silently swallowed."""
-        task = TaskStory(name="Test", slug="test", github_issue=42)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=42)
         state = MagicMock()
         state.error = "timeout"
         config = MagicMock()
@@ -490,7 +490,7 @@ class TestGitHubIssueSource:
 
     def test_already_done_already_implemented_closes_completed(self, tmp_path: Path) -> None:
         """A verified-resolved symptom closes the issue with --reason completed."""
-        task = TaskStory(name="Test", slug="test", github_issue=1879)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=1879)
         result = self._already_done_result(
             reason="Symptom no longer reproduces at HEAD.",
             symptom={"status": "verified_resolved", "reproduces_now": False},
@@ -513,7 +513,7 @@ class TestGitHubIssueSource:
 
     def test_already_done_premise_obsolete_closes_not_planned(self, tmp_path: Path) -> None:
         """A never-reproduced symptom closes the issue with --reason 'not planned'."""
-        task = TaskStory(name="Test", slug="test", github_issue=1880)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=1880)
         result = self._already_done_result(
             reason="Bug premise absent from baseline.",
             symptom={"status": "not_reproduced", "reproduces_now": False},
@@ -531,7 +531,7 @@ class TestGitHubIssueSource:
 
     def test_already_done_ambiguous_routes_to_operator(self, tmp_path: Path) -> None:
         """An ambiguous disposition comments and adds the operator-action label, no close."""
-        task = TaskStory(name="Test", slug="test", github_issue=1881)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=1881)
         result = self._already_done_result(reason="Spec appears satisfied.", symptom={})
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -553,7 +553,7 @@ class TestGitHubIssueSource:
 
     def test_already_done_noop_when_not_merge_mode(self, tmp_path: Path) -> None:
         """ALREADY_DONE resolution is gated on merge mode like the close path."""
-        task = TaskStory(name="Test", slug="test", github_issue=1882)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=1882)
         result = self._already_done_result()
         config = MagicMock()
         config.workspace.on_approve = "pr"
@@ -564,7 +564,7 @@ class TestGitHubIssueSource:
 
     def test_merged_land_still_uses_close_path(self, tmp_path: Path) -> None:
         """A real merge still closes with the review summary, never the ALREADY_DONE path."""
-        task = TaskStory(name="Test", slug="test", github_issue=1883)
+        task = TaskStory(name="Test", slug="test", type="enhancement", github_issue=1883)
         state = SimpleNamespace(
             preflight_verdict="ALREADY_DONE",  # even if preflight said ALREADY_DONE
             preflight_reason="x",
@@ -581,6 +581,100 @@ class TestGitHubIssueSource:
         assert "--reason" not in cmd  # merged close uses the legacy no-reason form
         comment = cmd[cmd.index("--comment") + 1]
         assert "Completed by TheForge" in comment
+
+    # ── Spike closure guard (#2600) ────────────────────────────────────
+
+    _SPIKE_OUTCOME = (
+        "<!-- forge-spike-outcome-v1\noutcome: do_not_proceed\n"
+        "reason: the signal is unreachable\n-->"
+    )
+
+    def _spike_issue_json(self, body: str = "", labels=("spike",)) -> str:
+        return json.dumps(
+            {
+                "state": "OPEN",
+                "labels": [{"name": name} for name in labels],
+                "body": body,
+                "comments": [],
+            }
+        )
+
+    def test_spike_without_an_outcome_is_not_closed_on_merge(self, tmp_path: Path) -> None:
+        """A landed spike with no recorded outcome stays open, with the reason posted."""
+        task = TaskStory(name="Spike", slug="issue-2348", type="spike", github_issue=2348)
+        state = SimpleNamespace(
+            preflight_verdict="PROCEED",
+            review_results=[SimpleNamespace(summary="POC landed")],
+        )
+        result = SimpleNamespace(success=True, merge={"merged": True}, state=state)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=self._spike_issue_json("A question."), stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),  # the refusal comment
+            ]
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        assert not any("close" in cmd for cmd in commands), "the spike must stay open"
+        comment = commands[-1]
+        assert "comment" in comment
+        body = comment[comment.index("--body") + 1]
+        assert "records no outcome" in body
+        # The story's own result is not lost just because the close was refused.
+        assert "POC landed" in body
+
+    def test_spike_with_a_recorded_outcome_closes_on_merge(self, tmp_path: Path) -> None:
+        task = TaskStory(name="Spike", slug="issue-2348", type="spike", github_issue=2348)
+        state = SimpleNamespace(
+            preflight_verdict="PROCEED",
+            review_results=[SimpleNamespace(summary="POC landed")],
+        )
+        result = SimpleNamespace(success=True, merge={"merged": True}, state=state)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(
+                    returncode=0, stdout=self._spike_issue_json(self._SPIKE_OUTCOME), stderr=""
+                ),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        assert any("close" in cmd and "2348" in cmd for cmd in commands)
+
+    def test_already_done_spike_without_an_outcome_is_not_closed(self, tmp_path: Path) -> None:
+        """The ALREADY_DONE dispositions are close paths too, so they ask the guard."""
+        task = TaskStory(name="Spike", slug="issue-2349", type="spike", github_issue=2349)
+        result = self._already_done_result(
+            reason="Symptom no longer reproduces at HEAD.",
+            symptom={"status": "verified_resolved", "reproduces_now": False},
+            work_type="bug",
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=self._spike_issue_json(), stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        assert not any("close" in cmd for cmd in commands)
+        body = commands[-1][commands[-1].index("--body") + 1]
+        assert "ALREADY_DONE" in body, "the determination stays durable"
+        assert "records no outcome" in body
+
+    def test_a_non_spike_close_makes_no_extra_gh_call(self, tmp_path: Path) -> None:
+        """The guard must not put a lookup on the hot path of an ordinary close."""
+        task = TaskStory(name="Test", slug="test", type="bug", github_issue=42)
+        result = MagicMock()
+        result.merge = {"merged": True}
+        result.state.review_results = []
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            GitHubIssueSource().on_complete(task, result, self._merge_config(tmp_path))
+        mock_run.assert_called_once()
+        assert "close" in mock_run.call_args[0][0]
 
     def test_classify_disposition(self) -> None:
         from theforge.sprint.sources import classify_already_done_disposition

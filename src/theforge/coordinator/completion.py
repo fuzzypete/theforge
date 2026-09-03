@@ -361,7 +361,18 @@ def _create_pr(
     else:
         findings_md = "_No findings._"
 
-    if task.github_issue and _issue_is_operator_action(task.github_issue, config.project_root):
+    if task.github_issue and (task.type or "").strip().lower() == "spike":
+        # A spike closes only through the guarded close path, which checks that
+        # an outcome was recorded (#2600). ``Closes #N`` would hand the decision
+        # to GitHub's native auto-close on a default-branch merge — and to
+        # close-on-merge.yml on a release branch — before the guard is ever
+        # consulted, so the PR references the spike without the keyword.
+        closes_line = f"\n\nRefs #{task.github_issue}"
+        _log(
+            f"  Issue #{task.github_issue} is a spike; PR references it (Refs) so "
+            f"closure goes through the recorded-outcome guard"
+        )
+    elif task.github_issue and _issue_is_operator_action(task.github_issue, config.project_root):
         # Operator-action issues close manually when the operator performs the
         # deliverable — never via a PR's auto-close directive. Emit a plain
         # reference (``Refs``) so the PR still appears in the issue timeline

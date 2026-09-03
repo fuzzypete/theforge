@@ -1,0 +1,54 @@
+name: Enforce the spike outcome rule on close
+
+# A spike is chartered to answer a question, and it has exactly two legal
+# exits: a recorded decision not to proceed, or a follow-on work item in the
+# pipeline. Closing with neither leaves the answer in operator memory, where
+# six weeks later it is indistinguishable from a spike that was never
+# chartered (#2600).
+#
+# Every close path *inside* TheForge asks the guard synchronously before it
+# closes anything: the sprint's landing close and its ALREADY_DONE
+# dispositions, `forge todo` triage, triage ratification, close-on-merge.yml
+# and close-epic-on-last-subissue.yml. GitHub offers no synchronous pre-close
+# hook, so the one path none of those cover is a human pressing "Close issue"
+# in the web UI. This workflow is that backstop: it runs after the fact,
+# re-asks the same guard, and restores the open state when the close was not
+# a legal exit. The restoration is the enforcement — the rule is not guidance
+# a closing operator may follow.
+#
+# Event-scoped, NOT a sweep: it reads only the issue in the event payload.
+# Reopening does not emit a `closed` event, so this cannot loop.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reopen-spike-closed-without-outcome:
+    # Label-gated in the event payload so an ordinary issue closing costs
+    # nothing: no checkout, no runner, no gh call.
+    if: contains(github.event.issue.labels.*.name, 'spike')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reopen the spike if it recorded no outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PYTHONPATH: src
+        run: |
+          if refusal=$(python3 -m theforge.spike_guard "$ISSUE_NUMBER" 2>&1 >/dev/null); then
+            echo "Spike #$ISSUE_NUMBER records a legal outcome; leaving it closed."
+            exit 0
+          fi
+
+          echo "Reopening spike #$ISSUE_NUMBER: $refusal"
+          gh issue reopen "$ISSUE_NUMBER" --repo "$REPO"
+          note=$(printf 'Reopened: a spike closes on a recorded outcome, and this one has none.\n\n%s' \
+            "$refusal")
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$note"

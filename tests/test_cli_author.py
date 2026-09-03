@@ -43,7 +43,7 @@ def test_parser_registers_author_command() -> None:
 
 
 def test_author_parser_rejects_non_dispatchable_types() -> None:
-    assert available_type_labels() == ("bug", "enhancement", "task")
+    assert available_type_labels() == ("bug", "enhancement", "task", "spike")
     parser = build_parser()
     try:
         parser.parse_args(["author", "--type", "epic"])

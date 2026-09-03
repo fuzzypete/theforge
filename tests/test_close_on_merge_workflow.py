@@ -11,7 +11,6 @@ lockstep with the shipped workflow.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,82 +18,19 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "close-on-merge.yml"
+from tests.gh_stub import install_stubs, stub_env, workflow_step
 
-# A stub `gh` that answers the call shapes the workflow makes, driven by
-# FAKE_* env vars:
-#   gh issue view <n> --json state,labels  -> $FAKE_STATE / $FAKE_LABELS (comma-separated)
-#   gh label create                        -> recorded to $LABEL_LOG
-#   gh issue close <n> ...                 -> recorded to $CLOSE_LOG
-#   gh issue edit <n> --add-label ...      -> recorded to $EDIT_LOG
-#   gh issue comment <n> ...               -> recorded to $COMMENT_LOG
-GH_STUB = r"""#!/usr/bin/env bash
-set -eu
-case "$1" in
-  label)
-    printf '%s\n' "$*" >> "$LABEL_LOG"
-    exit 0
-    ;;
-  issue)
-    case "$2" in
-      view)
-        labels="${FAKE_LABELS:-}"
-        json='{"state":"'"${FAKE_STATE:-OPEN}"'","labels":['
-        first=1
-        IFS=',' read -ra parts <<< "$labels"
-        for l in "${parts[@]}"; do
-          [ -z "$l" ] && continue
-          if [ "$first" = 1 ]; then first=0; else json="$json,"; fi
-          json="$json{\"name\":\"$l\"}"
-        done
-        json="$json]}"
-        printf '%s' "$json"
-        exit 0
-        ;;
-      close)
-        printf '%s\n' "$*" >> "$CLOSE_LOG"
-        exit 0
-        ;;
-      edit)
-        printf '%s\n' "$*" >> "$EDIT_LOG"
-        exit 0
-        ;;
-      comment)
-        printf '%s\n' "$*" >> "$COMMENT_LOG"
-        exit 0
-        ;;
-    esac
-    ;;
-esac
-echo "unexpected gh call: $*" >&2
-exit 1
-"""
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "close-on-merge.yml"
 
 
 def _run_step(tmp_path: Path, pr_body: str, fake_env: dict[str, str]) -> dict[str, str]:
     """Run the workflow's shell step with a stubbed gh; return output/log contents."""
     doc = yaml.safe_load(WORKFLOW.read_text())
-    steps = doc["jobs"]["close-referenced-issues"]["steps"]
-    script = steps[0]["run"]
+    script = workflow_step(doc, "close-referenced-issues")
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    gh = bindir / "gh"
-    gh.write_text(GH_STUB)
-    gh.chmod(0o755)
-
-    logs = {name: tmp_path / f"{name}.log" for name in ("label", "close", "edit", "comment")}
-    for path in logs.values():
-        path.write_text("")
-
+    bindir, logs = install_stubs(tmp_path)
     env = {
-        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-        "HOME": str(tmp_path),
-        "LABEL_LOG": str(logs["label"]),
-        "CLOSE_LOG": str(logs["close"]),
-        "EDIT_LOG": str(logs["edit"]),
-        "COMMENT_LOG": str(logs["comment"]),
-        "GH_TOKEN": "stub",
+        **stub_env(bindir, logs, tmp_path),
         "REPO": "fuzzypete/theforge",
         "PR_NUMBER": "2062",
         "PR_BODY": pr_body,
@@ -110,6 +46,13 @@ def _run_step(tmp_path: Path, pr_body: str, fake_env: dict[str, str]) -> dict[st
     )
     assert proc.returncode == 0, f"step failed: {proc.stderr}"
     return {"stdout": proc.stdout, **{name: p.read_text() for name, p in logs.items()}}
+
+
+SPIKE_FOLLOW_UP_BODY = """## Spike trigger condition
+
+- **What must be true:** the observer's ranking beats the naive baseline.
+- **How to know:** the comparison hook reports its trust threshold met.
+"""
 
 
 pytestmark = pytest.mark.skipif(
@@ -151,6 +94,74 @@ def test_already_closed_issue_is_skipped(tmp_path):
     assert result["close"].strip() == ""
     assert result["edit"].strip() == ""
     assert "already closed" in result["stdout"]
+
+
+def test_spike_without_a_recorded_outcome_is_not_closed(tmp_path):
+    """AC: a merged PR is not a legal exit from a spike, so the issue stays open."""
+    result = _run_step(
+        tmp_path,
+        "Closes #2348",
+        {"FAKE_STATE": "OPEN", "FAKE_LABELS": "spike", "FAKE_BODY": "A design question."},
+    )
+    assert result["close"].strip() == "", "a spike with no outcome must stay open"
+    assert "records no outcome" in result["comment"]
+    assert "Not closing #2348" in result["stdout"]
+
+
+def test_spike_with_do_not_proceed_closes(tmp_path):
+    """AC: 'do not proceed' is a complete outcome, recorded as one — the spike closes."""
+    body = (
+        "A design question.\n\n"
+        "<!-- forge-spike-outcome-v1\n"
+        "outcome: do_not_proceed\n"
+        "reason: the trust threshold is unreachable with the available signal\n"
+        "-->\n"
+    )
+    result = _run_step(
+        tmp_path,
+        "Closes #2348",
+        {"FAKE_STATE": "OPEN", "FAKE_LABELS": "spike", "FAKE_BODY": body},
+    )
+    assert "2348" in result["close"]
+    assert result["comment"].strip() == ""
+
+
+def test_spike_with_conditional_follow_up_closes_when_the_condition_is_carried(tmp_path):
+    """AC: a conditional answer closes when the follow-on artifact carries the condition."""
+    body = "<!-- forge-spike-outcome-v1\noutcome: conditional_follow_up\nfollow-up: #2599\n-->\n"
+    result = _run_step(
+        tmp_path,
+        "Closes #2348",
+        {
+            "FAKE_LABELS_2348": "spike",
+            "FAKE_BODY_2348": body,
+            "FAKE_STATE_2599": "OPEN",
+            "FAKE_LABELS_2599": "enhancement",
+            "FAKE_BODY_2599": SPIKE_FOLLOW_UP_BODY,
+        },
+    )
+    assert "2348" in result["close"]
+
+
+def test_spike_conditional_follow_up_without_the_condition_is_refused(tmp_path):
+    """AC: the condition must be carried by the follow-on, not by the closed spike's prose."""
+    body = (
+        "The condition is that the trust threshold is met.\n\n"
+        "<!-- forge-spike-outcome-v1\noutcome: conditional_follow_up\nfollow-up: #2599\n-->\n"
+    )
+    result = _run_step(
+        tmp_path,
+        "Closes #2348",
+        {
+            "FAKE_LABELS_2348": "spike",
+            "FAKE_BODY_2348": body,
+            "FAKE_STATE_2599": "OPEN",
+            "FAKE_LABELS_2599": "enhancement",
+            "FAKE_BODY_2599": "Adopt the observer.",
+        },
+    )
+    assert result["close"].strip() == ""
+    assert "Spike trigger condition" in result["comment"]
 
 
 def test_no_label_is_created(tmp_path):
