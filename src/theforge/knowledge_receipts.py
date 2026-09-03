@@ -133,6 +133,66 @@ _PATH_TOKEN_RE = re.compile(
 )
 _PLAN_SECTION_RE = re.compile(r"(?:§|section\s+|step\s+|part\s+)(\d+)", re.IGNORECASE)
 
+# Words that appear in a pointer without narrowing it to any one artifact: the
+# category nouns themselves, and the connective vocabulary every pointer shares.
+# A pointer left holding only these has named a *kind* of thing, which is the
+# false-corroboration failure this set exists to prevent.
+_POINTER_NOISE_TOKENS = frozenset(
+    {
+        # category nouns — already consumed by choosing the resolver
+        "commit",
+        "commits",
+        "test",
+        "tests",
+        "testing",
+        "plan",
+        "plans",
+        "file",
+        "files",
+        "change",
+        "changes",
+        "changed",
+        "diff",
+        "code",
+        "line",
+        "lines",
+        # connectives and deixis
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "and",
+        "for",
+        "with",
+        "from",
+        "into",
+        "was",
+        "were",
+        "are",
+        "its",
+        "which",
+        "where",
+        "when",
+        "made",
+        "added",
+        "adding",
+        "new",
+        "see",
+        "above",
+        "below",
+        "touching",
+        "touches",
+        "covering",
+        "covers",
+        "some",
+        "any",
+        "one",
+        "run",
+        "runs",
+    }
+)
+
 
 # ── Debrief normalization ────────────────────────────────────────────────────
 
@@ -294,17 +354,28 @@ def resolve_pointer(pointer: Any, artifacts: Mapping[str, Any]) -> dict:
     contributes to no count and letting it decide corroboration would make it
     contribute to one.
 
+    **A pointer must identify a specific recorded target, not a category of
+    them.** "A commit touching the rebuild entry point" is not corroborated by
+    the run having made *some* commit — if the only commit recorded is a README
+    update, the cited consequence is absent and the claim is uncorroborated. So
+    every category form below is resolved by matching the pointer's own
+    distinguishing words against the candidate target's recorded text, and a
+    pointer carrying no distinguishing words identifies nothing.
+
     Recognised pointer forms, tried in order:
 
     * a path-like token (``src/theforge/foo.py``, ``foo.py``) — resolves iff the
       run's changed-file set contains a path that matches it exactly or by path
       suffix. A pointer naming a path the run did not change is *unresolved*,
       not unrecognised: it named something checkable and the check failed.
-    * ``plan``, optionally with a section (``plan §3``, ``plan step 3``) —
-      resolves iff a plan was recorded, and, when a section is named, iff that
-      section or step id is present in it.
-    * ``commit`` — resolves iff the run recorded at least one commit.
-    * ``test`` — resolves iff the run changed at least one test file.
+    * ``plan``, optionally with a section (``plan §3``, ``plan step 3``) — a
+      named section resolves iff that section or step id is present in the
+      recorded plan; an unqualified plan pointer resolves only iff its
+      distinguishing words appear in the plan text.
+    * ``commit`` — resolves iff the pointer's distinguishing words identify one
+      of the commits this run actually recorded.
+    * ``test`` — resolves iff the pointer's distinguishing words identify one of
+      the test files this run actually changed.
 
     Anything else is ``unrecognised_pointer_form``, which yields an
     *uncorroborated* use claim. A pointer nobody can check is not a pointer.
@@ -331,19 +402,53 @@ def resolve_pointer(pointer: Any, artifacts: Mapping[str, Any]) -> dict:
     if "plan" in lowered:
         return _resolve_plan_pointer(text, artifacts)
     if "commit" in lowered:
-        commits = _string_list(artifacts.get("commits"))
-        if commits:
-            return _pointer(text, resolved=True, kind=POINTER_COMMIT, target=commits[0])
-        return _pointer(text, resolved=False, kind=POINTER_COMMIT, reason="no_commit_recorded")
+        return _resolve_category_pointer(
+            text,
+            kind=POINTER_COMMIT,
+            candidates=_string_list(artifacts.get("commits")),
+            empty_reason="no_commit_recorded",
+            unidentified_reason="pointer_does_not_identify_a_recorded_commit",
+        )
     if "test" in lowered:
-        test_files = [path for path in changed_files if _looks_like_test(path)]
-        if test_files:
-            return _pointer(text, resolved=True, kind=POINTER_TEST, target=test_files[0])
-        return _pointer(text, resolved=False, kind=POINTER_TEST, reason="no_test_file_changed")
+        return _resolve_category_pointer(
+            text,
+            kind=POINTER_TEST,
+            candidates=[path for path in changed_files if _looks_like_test(path)],
+            empty_reason="no_test_file_changed",
+            unidentified_reason="pointer_does_not_identify_a_changed_test",
+        )
 
     return _pointer(
         text, resolved=False, kind=POINTER_UNRESOLVED, reason="unrecognised_pointer_form"
     )
+
+
+def _resolve_category_pointer(
+    text: str,
+    *,
+    kind: str,
+    candidates: Sequence[str],
+    empty_reason: str,
+    unidentified_reason: str,
+) -> dict:
+    """Resolve a pointer naming a *kind* of artifact to one specific instance.
+
+    The category word alone ("a commit", "a test") narrows the search and
+    identifies nothing inside it, so it cannot corroborate: the run having made
+    commits is not evidence that any commit carries the cited consequence. What
+    makes a category pointer checkable is the words around the category word —
+    they are matched against each candidate's own recorded text, and the first
+    candidate they hit is the resolved target.
+    """
+    if not candidates:
+        return _pointer(text, resolved=False, kind=kind, reason=empty_reason)
+    wanted = _distinguishing_tokens(text)
+    if not wanted:
+        return _pointer(text, resolved=False, kind=kind, reason=unidentified_reason)
+    for candidate in candidates:
+        if wanted & _target_tokens(candidate):
+            return _pointer(text, resolved=True, kind=kind, target=candidate)
+    return _pointer(text, resolved=False, kind=kind, reason=unidentified_reason)
 
 
 def _resolve_plan_pointer(text: str, artifacts: Mapping[str, Any]) -> dict:
@@ -352,7 +457,18 @@ def _resolve_plan_pointer(text: str, artifacts: Mapping[str, Any]) -> dict:
         return _pointer(text, resolved=False, kind=POINTER_PLAN, reason="no_plan_recorded")
     match = _PLAN_SECTION_RE.search(text)
     if match is None:
-        return _pointer(text, resolved=True, kind=POINTER_PLAN, target="plan")
+        # No section named, so the pointer has to identify its target the same
+        # way every other category pointer does. "The plan" on its own says only
+        # that this run had a plan, which every run has.
+        wanted = _distinguishing_tokens(text)
+        if wanted and wanted & _target_tokens(plan_text):
+            return _pointer(text, resolved=True, kind=POINTER_PLAN, target="plan")
+        return _pointer(
+            text,
+            resolved=False,
+            kind=POINTER_PLAN,
+            reason="pointer_does_not_identify_a_plan_section",
+        )
     section = match.group(1)
     step_ids = {str(item) for item in artifacts.get("plan_step_ids") or []}
     if section in step_ids:
@@ -360,6 +476,39 @@ def _resolve_plan_pointer(text: str, artifacts: Mapping[str, Any]) -> dict:
     if re.search(rf"(?:§|#+\s*|\bstep\s+|\bsection\s+){re.escape(section)}\b", plan_text, re.I):
         return _pointer(text, resolved=True, kind=POINTER_PLAN, target=f"plan section {section}")
     return _pointer(text, resolved=False, kind=POINTER_PLAN, reason="plan_section_not_found")
+
+
+def _distinguishing_tokens(text: str) -> frozenset[str]:
+    """The words in a pointer that could pick one artifact out of a category.
+
+    Category nouns and ordinary connective words are removed because they are
+    carried by every pointer of that form and so distinguish nothing — leaving
+    them in is exactly what let "a commit touching the rebuild entry point"
+    match a README-only commit.
+    """
+    return frozenset(token for token in _tokenize(text) if token not in _POINTER_NOISE_TOKENS)
+
+
+def _target_tokens(target: str) -> frozenset[str]:
+    """Tokenize a candidate artifact's recorded text the same way as a pointer."""
+    return _tokenize(target)
+
+
+def _tokenize(text: str) -> frozenset[str]:
+    """Words of ``text``, with underscore-joined names also split into parts.
+
+    ``tests/test_rebuild.py`` has to offer ``rebuild`` — a filename is a phrase
+    written without spaces, and a resolver that only saw ``test_rebuild`` would
+    call every pointer naming the file's actual subject unidentified. The
+    unsplit form is kept too, so a pointer citing ``test_rebuild`` still hits.
+    Matching stays on whole tokens, never on raw substrings.
+    """
+    tokens: set[str] = set()
+    for word in re.findall(r"[a-z0-9_]+", text.lower()):
+        for token in (word, *word.split("_")):
+            if len(token) > 2:
+                tokens.add(token)
+    return frozenset(tokens)
 
 
 def _match_changed_file(token: str, changed_files: Iterable[str]) -> str | None:

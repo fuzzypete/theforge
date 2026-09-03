@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writing the result to a new `knowledge_receipts` block on the audit record
   (record schema v46) that `forge knowledge-report` renders as a distribution.
 
+  A pointer must identify one specific artifact, not a category of them — "a
+  commit touching the rebuild entry point" is not corroborated by the run having
+  made some commit, and a bare `a commit` or `the test` resolves against nothing.
+
   It is not a satisfaction survey: the schema has no field for usefulness,
   confidence, or a counterfactual, and free text contributes to no count. It
   reports a **corroborated** use claim separately from an **uncorroborated** one

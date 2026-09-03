@@ -171,7 +171,8 @@ class TestEvidencePointerResolution:
             "plan §3",
             "plan step 3",
             "a commit touching the rebuild entry point",
-            "the regression test",
+            "the rebuild regression test",
+            "the plan section on the rebuild path",
         ],
     )
     def test_a_resolvable_pointer_yields_a_corroborated_use_claim(self, pointer: str) -> None:
@@ -246,6 +247,65 @@ class TestEvidencePointerResolution:
             artifacts=self.ARTIFACTS,
         )
         assert report["counts"][kr.OUTCOME_UNCORROBORATED_USE] == 1
+
+    @pytest.mark.parametrize(
+        ("pointer", "artifacts"),
+        [
+            # The reviewed failure: a commit pointer counted as corroborated
+            # because the run made *some* commit, when the only one recorded was
+            # an unrelated README update.
+            (
+                "a commit touching the rebuild entry point",
+                {**ARTIFACTS, "commits": ["def5678 docs: update README"]},
+            ),
+            (
+                "the rebuild regression test",
+                {**ARTIFACTS, "changed_files": ["tests/test_unrelated_thing.py"]},
+            ),
+            (
+                "the plan section on the rebuild path",
+                {**ARTIFACTS, "plan_text": "approach\nrename the config loader"},
+            ),
+        ],
+    )
+    def test_a_category_pointer_whose_target_lacks_the_consequence_stays_uncorroborated(
+        self, pointer: str, artifacts: dict
+    ) -> None:
+        """Existence of *an* artifact of that kind is not the cited consequence."""
+        report = kr.build_receipt_report(
+            context_manifests=[_manifest("dev", [_claim("r1")])],
+            debriefs=[
+                _submission(
+                    "dev",
+                    [
+                        {
+                            "claim_ref": "r1",
+                            "disposition": "changed_decision",
+                            "did": "added the rebuild path",
+                            "evidence": [pointer],
+                        }
+                    ],
+                )
+            ],
+            artifacts=artifacts,
+        )
+        assert report["counts"][kr.OUTCOME_UNCORROBORATED_USE] == 1
+        assert report["counts"][kr.OUTCOME_CORROBORATED_USE] == 0
+
+    @pytest.mark.parametrize("pointer", ["a commit", "the test", "the plan"])
+    def test_a_bare_category_pointer_identifies_nothing_and_never_corroborates(
+        self, pointer: str
+    ) -> None:
+        """'A commit' names a kind of artifact; every run has one of those."""
+        resolved = kr.resolve_pointer(pointer, self.ARTIFACTS)
+        assert resolved["resolved"] is False
+        assert "does_not_identify" in resolved["unresolved_reason"]
+
+    def test_token_matching_splits_underscored_names_but_not_substrings(self) -> None:
+        """``tests/test_rebuild.py`` offers ``rebuild``; it does not offer ``build``."""
+        artifacts = {"changed_files": ["tests/test_rebuild.py"]}
+        assert kr.resolve_pointer("the rebuild test", artifacts)["resolved"] is True
+        assert kr.resolve_pointer("the build test", artifacts)["resolved"] is False
 
     def test_path_matching_is_on_whole_segments_not_substrings(self) -> None:
         resolved = kr.resolve_pointer(

@@ -1410,7 +1410,7 @@ Read the categories exactly as written:
 
 | Reported as | Means |
 |---|---|
-| `corroborated use claims` | The agent asserted the claim influenced the work and every pointer it gave resolves to something the run's artifacts contain. Corroboration establishes that the cited consequence **exists** — never that the injected claim caused it, and never that the use was verified, confirmed, or effective. |
+| `corroborated use claims` | The agent asserted the claim influenced the work and every pointer it gave resolves to one specific artifact the run recorded. Corroboration establishes that the cited consequence **exists** — never that the injected claim caused it, and never that the use was verified, confirmed, or effective. |
 | `uncorroborated use claims` | The same assertion with an absent or unresolvable pointer. A separate population; **no readout sums the two.** |
 | `confirmed existing approach` / `already known` / `irrelevant` / `stale or wrong` | The four non-use dispositions, reported under their own names. There is no "unused" bucket. |
 | `unaddressed` | The claim was injected into that phase and no debrief named it. Distinct from every disposition the agent could have chosen. |
@@ -1419,10 +1419,20 @@ Read the categories exactly as written:
 | `nothing to debrief` | The phase received no claims, so it produced no debrief. Never reported as unused. |
 | `undebriefed` | The phase received claims and returned no readable debrief. |
 
+A pointer must identify **one specific artifact, not a category of them**. "A
+commit touching the rebuild entry point" is not corroborated by the run having
+made some commit: if the only commit recorded is a README update, the cited
+consequence is absent and the claim stays uncorroborated. Path pointers are
+matched on whole path segments, section pointers against the recorded plan, and
+commit/test pointers by matching the pointer's own distinguishing words against
+the candidate's recorded text. A bare `a commit` or `the test` identifies nothing
+and never corroborates.
+
 The debrief schema has no field for usefulness, satisfaction, confidence, or a
 counterfactual — an agent asked whether context was useful agrees at a rate that
 carries no information. Free text is limited to `did`, which describes what was
-done and contributes to no count.
+done and contributes to no count — including this one: corroboration reads only
+the pointer, never `did`.
 
 The instrument is **audit-only**. Nothing in routing, selection, readiness, or
 landing reads a debrief; it changes what an operator can see and nothing the
