@@ -158,7 +158,7 @@ class TestDispositionsOutsideTheSet:
 class TestEvidencePointerResolution:
     ARTIFACTS = {
         "changed_files": ["src/theforge/rebuild.py", "tests/test_rebuild.py"],
-        "commits": ["abc1234 feat: rebuild path"],
+        "commits": ["abc1234 feat: rebuild the projection entry point"],
         "plan_text": "approach\nstep 3\nadd the projection rebuild path",
         "plan_step_ids": ["1", "2", "3"],
     }
@@ -170,9 +170,11 @@ class TestEvidencePointerResolution:
             "rebuild.py",
             "plan §3",
             "plan step 3",
+            # Every describing word is present in the commit subject.
             "a commit touching the rebuild entry point",
-            "the rebuild regression test",
-            "the plan section on the rebuild path",
+            # ...and in the changed test's filename, and in the plan's prose.
+            "the rebuild test",
+            "the plan projection rebuild path",
         ],
     )
     def test_a_resolvable_pointer_yields_a_corroborated_use_claim(self, pointer: str) -> None:
@@ -251,27 +253,43 @@ class TestEvidencePointerResolution:
     @pytest.mark.parametrize(
         ("pointer", "artifacts"),
         [
-            # The reviewed failure: a commit pointer counted as corroborated
-            # because the run made *some* commit, when the only one recorded was
-            # an unrelated README update.
+            # Reviewed cycle 1: counted as corroborated because the run made
+            # *some* commit, when the only one recorded was a README update.
             (
                 "a commit touching the rebuild entry point",
                 {**ARTIFACTS, "commits": ["def5678 docs: update README"]},
             ),
+            # Reviewed cycle 2: the same README commit, but its message now
+            # happens to mention "rebuild". One shared word is a coincidence,
+            # not the entry point the pointer describes.
             (
-                "the rebuild regression test",
-                {**ARTIFACTS, "changed_files": ["tests/test_unrelated_thing.py"]},
+                "a commit touching the rebuild entry point",
+                {**ARTIFACTS, "commits": ["def5678 docs: update README to mention rebuild"]},
             ),
             (
-                "the plan section on the rebuild path",
+                "the rebuild test",
+                {**ARTIFACTS, "changed_files": ["tests/test_unrelated_thing.py"]},
+            ),
+            # A changed test that shares "rebuild" but is not the rebuild test.
+            (
+                "the rebuild regression test",
+                {**ARTIFACTS, "changed_files": ["tests/test_rebuild.py"]},
+            ),
+            (
+                "the plan projection rebuild path",
                 {**ARTIFACTS, "plan_text": "approach\nrename the config loader"},
+            ),
+            # Plan prose sharing exactly one of the pointer's words.
+            (
+                "the plan projection rebuild path",
+                {**ARTIFACTS, "plan_text": "approach\nrename the projection loader"},
             ),
         ],
     )
     def test_a_category_pointer_whose_target_lacks_the_consequence_stays_uncorroborated(
         self, pointer: str, artifacts: dict
     ) -> None:
-        """Existence of *an* artifact of that kind is not the cited consequence."""
+        """Neither category existence nor a single shared word is the consequence."""
         report = kr.build_receipt_report(
             context_manifests=[_manifest("dev", [_claim("r1")])],
             debriefs=[
@@ -306,6 +324,22 @@ class TestEvidencePointerResolution:
         artifacts = {"changed_files": ["tests/test_rebuild.py"]}
         assert kr.resolve_pointer("the rebuild test", artifacts)["resolved"] is True
         assert kr.resolve_pointer("the build test", artifacts)["resolved"] is False
+
+    def test_a_pointer_must_be_contained_in_its_target_not_merely_overlap_it(self) -> None:
+        """Every describing word must be present — partial overlap is not a match."""
+        artifacts = {"commits": ["abc1234 feat: rebuild the projection entry point"]}
+        assert kr.resolve_pointer("a commit rebuilding projection", artifacts)["resolved"] is False
+        assert (
+            kr.resolve_pointer("the commit for the projection entry point", artifacts)["resolved"]
+            is True
+        )
+
+    def test_a_pointer_naming_a_commit_sha_resolves_to_that_commit(self) -> None:
+        """A sha is the one word that identifies a commit outright."""
+        artifacts = {"commits": ["abc1234 feat: rebuild path", "def5678 docs: readme"]}
+        resolved = kr.resolve_pointer("commit abc1234", artifacts)
+        assert resolved["resolved"] is True
+        assert resolved["target"] == "abc1234 feat: rebuild path"
 
     def test_path_matching_is_on_whole_segments_not_substrings(self) -> None:
         resolved = kr.resolve_pointer(

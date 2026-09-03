@@ -355,12 +355,14 @@ def resolve_pointer(pointer: Any, artifacts: Mapping[str, Any]) -> dict:
     contribute to one.
 
     **A pointer must identify a specific recorded target, not a category of
-    them.** "A commit touching the rebuild entry point" is not corroborated by
-    the run having made *some* commit — if the only commit recorded is a README
-    update, the cited consequence is absent and the claim is uncorroborated. So
-    every category form below is resolved by matching the pointer's own
-    distinguishing words against the candidate target's recorded text, and a
-    pointer carrying no distinguishing words identifies nothing.
+    them, and it must be contained in that target rather than merely overlap
+    it.** "A commit touching the rebuild entry point" is not corroborated by the
+    run having made *some* commit, nor by a README-only commit whose message
+    happens to contain the word "rebuild" — one shared word is a coincidence,
+    not a consequence. Every category form below therefore resolves only when
+    *all* of the pointer's distinguishing words appear in the candidate's
+    recorded text, and a pointer carrying no distinguishing words identifies
+    nothing at all.
 
     Recognised pointer forms, tried in order:
 
@@ -370,12 +372,12 @@ def resolve_pointer(pointer: Any, artifacts: Mapping[str, Any]) -> dict:
       not unrecognised: it named something checkable and the check failed.
     * ``plan``, optionally with a section (``plan §3``, ``plan step 3``) — a
       named section resolves iff that section or step id is present in the
-      recorded plan; an unqualified plan pointer resolves only iff its
+      recorded plan; an unqualified plan pointer resolves only iff all of its
       distinguishing words appear in the plan text.
-    * ``commit`` — resolves iff the pointer's distinguishing words identify one
-      of the commits this run actually recorded.
-    * ``test`` — resolves iff the pointer's distinguishing words identify one of
-      the test files this run actually changed.
+    * ``commit`` — resolves iff all of the pointer's distinguishing words appear
+      in one commit this run actually recorded.
+    * ``test`` — resolves iff all of the pointer's distinguishing words appear in
+      one test file this run actually changed.
 
     Anything else is ``unrecognised_pointer_form``, which yields an
     *uncorroborated* use claim. A pointer nobody can check is not a pointer.
@@ -436,9 +438,18 @@ def _resolve_category_pointer(
     The category word alone ("a commit", "a test") narrows the search and
     identifies nothing inside it, so it cannot corroborate: the run having made
     commits is not evidence that any commit carries the cited consequence. What
-    makes a category pointer checkable is the words around the category word —
-    they are matched against each candidate's own recorded text, and the first
-    candidate they hit is the resolved target.
+    makes a category pointer checkable is the words around the category word.
+
+    Those words must be *contained* in the candidate, not merely overlap it. One
+    shared word is a coincidence, not a consequence: a README-only commit whose
+    message happens to say "rebuild" shares a token with "the rebuild entry
+    point" while containing nothing of the entry point the pointer describes.
+    Containment is what "the target contains the described consequence" says
+    literally — every word the agent used to describe it is present — and it
+    needs no similarity threshold to defend. It also fails in the safe
+    direction: a pointer too vague to check is recorded uncorroborated, which is
+    a real population the report reports, whereas a wrong corroboration is a
+    number an operator would believe.
     """
     if not candidates:
         return _pointer(text, resolved=False, kind=kind, reason=empty_reason)
@@ -446,7 +457,7 @@ def _resolve_category_pointer(
     if not wanted:
         return _pointer(text, resolved=False, kind=kind, reason=unidentified_reason)
     for candidate in candidates:
-        if wanted & _target_tokens(candidate):
+        if wanted <= _target_tokens(candidate):
             return _pointer(text, resolved=True, kind=kind, target=candidate)
     return _pointer(text, resolved=False, kind=kind, reason=unidentified_reason)
 
@@ -458,10 +469,11 @@ def _resolve_plan_pointer(text: str, artifacts: Mapping[str, Any]) -> dict:
     match = _PLAN_SECTION_RE.search(text)
     if match is None:
         # No section named, so the pointer has to identify its target the same
-        # way every other category pointer does. "The plan" on its own says only
-        # that this run had a plan, which every run has.
+        # way every other category pointer does — by containment, not overlap.
+        # "The plan" on its own says only that this run had a plan, which every
+        # run has, and one word shared with a plan's prose says little more.
         wanted = _distinguishing_tokens(text)
-        if wanted and wanted & _target_tokens(plan_text):
+        if wanted and wanted <= _target_tokens(plan_text):
             return _pointer(text, resolved=True, kind=POINTER_PLAN, target="plan")
         return _pointer(
             text,
@@ -482,9 +494,9 @@ def _distinguishing_tokens(text: str) -> frozenset[str]:
     """The words in a pointer that could pick one artifact out of a category.
 
     Category nouns and ordinary connective words are removed because they are
-    carried by every pointer of that form and so distinguish nothing — leaving
-    them in is exactly what let "a commit touching the rebuild entry point"
-    match a README-only commit.
+    carried by every pointer of that form and so distinguish nothing. What
+    remains is the agent's description of the consequence, and every word of it
+    has to be present in a candidate for that candidate to be its target.
     """
     return frozenset(token for token in _tokenize(text) if token not in _POINTER_NOISE_TOKENS)
 

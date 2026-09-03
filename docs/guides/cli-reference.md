@@ -1419,14 +1419,19 @@ Read the categories exactly as written:
 | `nothing to debrief` | The phase received no claims, so it produced no debrief. Never reported as unused. |
 | `undebriefed` | The phase received claims and returned no readable debrief. |
 
-A pointer must identify **one specific artifact, not a category of them**. "A
-commit touching the rebuild entry point" is not corroborated by the run having
-made some commit: if the only commit recorded is a README update, the cited
-consequence is absent and the claim stays uncorroborated. Path pointers are
-matched on whole path segments, section pointers against the recorded plan, and
-commit/test pointers by matching the pointer's own distinguishing words against
-the candidate's recorded text. A bare `a commit` or `the test` identifies nothing
-and never corroborates.
+A pointer must identify **one specific artifact, not a category of them**, and it
+must be **contained in** that artifact rather than merely overlap it. "A commit
+touching the rebuild entry point" is not corroborated by the run having made some
+commit; nor by a README-only commit whose message happens to say "rebuild", since
+one shared word is a coincidence rather than the consequence described. Path
+pointers are matched on whole path segments, section pointers against the recorded
+plan, and commit/test pointers only when *every* distinguishing word in the
+pointer appears in the candidate's recorded text. A bare `a commit` or `the test`
+identifies nothing and never corroborates.
+
+The rule fails in the safe direction on purpose: a pointer too vague to check is
+recorded uncorroborated, which is a population the report reports honestly,
+whereas a wrong corroboration is a number an operator would believe.
 
 The debrief schema has no field for usefulness, satisfaction, confidence, or a
 counterfactual — an agent asked whether context was useful agrees at a rate that
