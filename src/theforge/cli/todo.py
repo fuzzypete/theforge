@@ -14,6 +14,7 @@ from pathlib import Path
 from theforge.cli.shared import _find_config
 from theforge.shape_check.producer import label_names, validate_issue_body
 from theforge.shape_check.types import ShapeVerdict
+from theforge.spike_guard import check_spike_closure
 
 TODO_DRAFT_LABEL = "todo:draft"
 
@@ -270,6 +271,14 @@ def _triage_todo(args: argparse.Namespace) -> int:
             temp_path.unlink(missing_ok=True)
 
     if close_issue:
+        # A spike closes on a recorded outcome or not at all (#2600). Triage is
+        # a repository-controlled close path like any other, so it asks the same
+        # guard rather than trusting the closing operator to remember.
+        decision = check_spike_closure(int(issue_number), project_root)
+        if not decision.allowed:
+            print(decision.reason, file=sys.stderr)
+            print(f"todo #{issue_number} left open.", file=sys.stderr)
+            return 1
         proc = _run_gh(["gh", "issue", "close", issue_number], project_root)
         if proc.returncode != 0:
             err = proc.stderr.strip() or proc.stdout.strip() or "gh issue close failed"

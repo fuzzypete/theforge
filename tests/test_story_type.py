@@ -18,7 +18,7 @@ from theforge.task import RECOGNIZED_STORY_TYPES, StoryTypeError, parse_story_fr
 
 class TestFrontmatterType:
     def test_recognized_type_set(self) -> None:
-        assert RECOGNIZED_STORY_TYPES == {"bug", "enhancement", "epic", "task"}
+        assert RECOGNIZED_STORY_TYPES == {"bug", "enhancement", "epic", "spike", "task"}
 
     def test_parse_valid_type(self, tmp_path: Path) -> None:
         story = tmp_path / "s.md"
@@ -38,7 +38,7 @@ class TestFrontmatterType:
         with pytest.raises(StoryTypeError) as exc:
             parse_story_frontmatter(story)
         assert "feature-ish" in str(exc.value)
-        assert "bug, enhancement, epic, task" in str(exc.value)
+        assert "bug, enhancement, epic, spike, task" in str(exc.value)
 
     def test_non_string_type_rejected(self, tmp_path: Path) -> None:
         story = tmp_path / "s.md"

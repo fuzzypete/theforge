@@ -24,6 +24,7 @@ or demoted into quoted prose.
 - [`bug`](#bug) — a defect report: what happened, what should have happened, and why
 - [`enhancement`](#enhancement) — new or changed behavior, stated as outcomes a reviewer can check
 - [`task`](#task) — operator-scoped or documentation-shaped work with a checkable outcome
+- [`spike`](#spike) — a chartered question: design work and a validating POC, which closes only on a recorded outcome
 - [`epic`](#epic) — a tracking entry grouping runnable children; never dispatched itself
 - [`operator-action`](#operator-action) — a deliverable only a human operator can produce; deliberately non-dispatched
 
@@ -137,6 +138,38 @@ Task issues use why/acceptance criteria/example, not bug-report sections.
 - Refused on sight: `Steps to reproduce`, `Diagnosis`
 - Refused only as part of the bug-report shape: `Observed`, `Expected` — a reproduction heading, or a symptom heading paired with an expectation heading, must be present before these count. One of them alone is ordinary prose.
 - Remediation: relabel the issue as a bug or rewrite the body to the task shape
+
+---
+
+## `spike`
+
+A chartered question: design work and a validating POC, which closes only on a recorded outcome.
+
+### Sections, in canonical order
+
+| Section | Heading | Rule |
+| --- | --- | --- |
+| Acceptance criteria | `## Acceptance criteria` (also recognized: `Done criteria`, `Checklist`) | required — the gate refuses a body without it |
+| Example | `## Example` (also recognized: `Examples`) | advisory — reported when absent, but it decides nothing |
+| Observed | `## Observed` (also recognized: `What happened`) | forbidden — but only as part of the bug-report shape (see below) |
+| Expected | `## Expected` (also recognized: `What was expected`) | forbidden — but only as part of the bug-report shape (see below) |
+| Steps to reproduce | `## Steps to reproduce` (also recognized: `Reproduction`) | forbidden — its presence contradicts this type |
+| Diagnosis | `## Diagnosis` (also recognized: `Root cause`) | forbidden — its presence contradicts this type |
+
+### Lifecycle states
+
+| State | Admits implementation | Meaning |
+| --- | --- | --- |
+| `ungroomed` | no (`missing_acceptance_criteria`) | no acceptance criteria, so no observable statement of done |
+| `implementation_ready` | yes | the document satisfies its type's grammar and may enter a sprint |
+
+### Type/shape contradiction
+
+Spike issues use why/acceptance criteria/example, not bug-report sections.
+
+- Refused on sight: `Steps to reproduce`, `Diagnosis`
+- Refused only as part of the bug-report shape: `Observed`, `Expected` — a reproduction heading, or a symptom heading paired with an expectation heading, must be present before these count. One of them alone is ordinary prose.
+- Remediation: relabel the issue as a bug or rewrite the body to the spike shape
 
 ---
 

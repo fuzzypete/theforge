@@ -26,6 +26,9 @@ jobs:
   close-parent-epic-if-complete:
     runs-on: ubuntu-latest
     steps:
+      # Checked out for the spike closure guard: this workflow closes an issue,
+      # so it is one of the paths that must ask whether it is allowed to (#2600).
+      - uses: actions/checkout@v4
       - name: Close parent epic if all its sub-issues are closed
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,6 +36,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PYTHONPATH: src
         run: |
           set -euo pipefail
 
@@ -75,6 +79,17 @@ jobs:
 
           if [ "$open_count" -ne 0 ]; then
             echo "Parent epic #$parent still has $open_count open sub-issue(s); leaving it open."
+            exit 0
+          fi
+
+          # This workflow does not require the parent to be an epic — any issue
+          # with sub-issues reaches here, a spike included. A spike closes only
+          # on a recorded outcome, so ask the shared guard first (#2600).
+          if ! refusal=$(python3 -m theforge.spike_guard "$parent" 2>&1 >/dev/null); then
+            echo "Not closing parent #$parent: $refusal"
+            note=$(printf 'All sub-issues are closed, but this issue was not closed.\n\n%s' \
+              "$refusal")
+            gh issue comment "$parent" --repo "$REPO" --body "$note"
             exit 0
           fi
 
