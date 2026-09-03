@@ -700,6 +700,15 @@ class SprintBudgetRuntime:
             raw: self.describe_source(raw, occurrence=_OCCURRENCE_CARRIED)
             for raw in _carry_snapshot.unresolved_unmeasured_sources
         }
+        _acceptable_startup_sources = [
+            source.source for source in _startup_budget_sources.values() if source.acceptable
+        ]
+        if "carried:prior-generation" in _carry_snapshot.unresolved_unmeasured_sources:
+            for source in unmeasured_spend_policy.acceptable_prior_sources(
+                prior_unmeasured_spend_sources(_ctx.config.project_root, _ctx.sprint_id)
+            ):
+                if source not in _acceptable_startup_sources:
+                    _acceptable_startup_sources.append(source)
         _decision = evaluate_budget(
             accumulated_cost=0.0,
             prior_cost=_carry_snapshot.carried_cost_usd,
@@ -707,9 +716,7 @@ class SprintBudgetRuntime:
             unmeasured_spend=_carry_snapshot.unresolved_unmeasured_sources,
             accepted_unmeasured_ceiling_usd=_carry_snapshot.accepted_unmeasured_ceiling_usd,
             source_details=_startup_budget_details,
-            acceptable_unmeasured_spend_sources=[
-                source.source for source in _startup_budget_sources.values() if source.acceptable
-            ],
+            acceptable_unmeasured_spend_sources=_acceptable_startup_sources,
         )
         if _decision is not None:
             _log(f"Selected run cannot dispatch under the supplied ceiling: {_decision.detail}")

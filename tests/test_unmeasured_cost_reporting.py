@@ -1631,7 +1631,7 @@ class TestAcceptedPriorAuditSourceIsCharged:
         assert mock_run.call_count == 0
         assert result.stopped_reason.startswith("Budget unverifiable")
         assert "carried:prior-generation" in result.unresolved_unmeasured_spend_sources
-        assert "--accept-unmeasured-spend" not in result.stopped_reason
+        assert "--accept-unmeasured-spend feature-a" in result.stopped_reason
 
 
 class TestAcceptancePersistenceIsReportedHonestly:
@@ -1791,6 +1791,17 @@ class TestReportedShapeIsResolvable:
         assert mock_run.call_count == 0
         assert result.stopped_reason.startswith("Budget unverifiable")
         assert "carried:prior-generation" in result.unresolved_unmeasured_spend_sources
+
+    def test_resume_refusal_names_the_story_source_that_can_clear_the_marker(
+        self, tmp_path: Path
+    ) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, _mock_run = self._run(config, manifest_path)
+
+        assert result.stopped_reason is not None
+        assert "carried:prior-generation" in result.stopped_reason
+        assert "--accept-unmeasured-spend issue-2206" in result.stopped_reason
+        assert "--accept-unmeasured-spend prior-generation" not in result.stopped_reason
 
     def test_accepting_the_story_source_clears_the_derived_marker(self, tmp_path: Path) -> None:
         config, manifest_path = self._arrange(tmp_path)
