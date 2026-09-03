@@ -137,6 +137,8 @@ def main() -> None:
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
         "eval-preflight": eval_cmd.cmd_eval_preflight,
+        "review-semantic": eval_cmd.cmd_review_semantic,
+        "semantic-report": eval_cmd.cmd_semantic_report,
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
         "rca": rca.cmd_rca,

@@ -1,1 +1,1 @@
-"""Evaluation harness for TheForge — preflight model comparison."""
+"""Evaluation helpers for TheForge audit harnesses."""
