@@ -460,7 +460,6 @@ def await_inherited_agents(
     for no reason (#2617).
     """
     deadline = time.monotonic() + max(0.0, float(timeout))
-    waited = False
     wait_log_emitted = False
     while True:
         resolution = resolve_liveness(
@@ -489,7 +488,7 @@ def await_inherited_agents(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        if waited and not wait_log_emitted and log is not None:
+        if not wait_log_emitted and log is not None:
             if slug in resolution.live_slugs:
                 groups = resolve_inherited_agents(
                     [slug],
@@ -517,7 +516,6 @@ def await_inherited_agents(
                     "until it is confirmed finished or the wait times out"
                 )
             wait_log_emitted = True
-        waited = True
         time.sleep(min(max(0.01, poll_interval), remaining))
 
 
