@@ -1105,6 +1105,143 @@ class TestDiagnoseFlow:
             "confirmed_cause_verification",
         )
 
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_complete_confirmed_cause_body_lands_when_runner_reports_unsuccessful(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2848,
+            "title": "diagnose discards completed investigation",
+            "body": (
+                "## What happened\n"
+                "One diagnose run recorded nothing on the issue.\n\n"
+                "## What was expected\n"
+                "A completed investigation should land its diagnosis.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        payload = {
+            "observed_symptom": "The diagnose run recorded nothing on the issue.",
+            "reproduction_or_evidence": (
+                "The audit shows a parsed confirmed-cause artifact with no issue-body update."
+            ),
+            "hypotheses": [
+                {
+                    "statement": "Landing failed before the issue body write.",
+                    "status": "confirmed",
+                    "evidence": "The audit records a LAND failure after PARSE.",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": (
+                "The declared lifecycle verdict followed artifact.partial instead of "
+                "lifecycle-blocking completeness, so shape validation refused a runnable body."
+            ),
+            "confirmed_cause_support": (
+                "The run reached a confirmed cause and source-verified it against the checkout."
+            ),
+            "confirmed_cause_support_provenance": {
+                "source_type": "observed",
+                "detail": "Observed directly in the persisted diagnose audit.",
+            },
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+            "affected_code_path": "src/theforge/coordinator/diagnose_flow.py:1849",
+            "fix_success_criterion": (
+                "A lifecycle-complete diagnosis lands on the issue even if the runner "
+                "reported unsuccessful completion."
+            ),
+            "symptom_scope_coverage": {
+                "symptom_is_categorical": False,
+                "stated_scope": "",
+                "examined_locations": [],
+            },
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```",
+            success=False,
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2848,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success, result.message
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.message.startswith("Diagnosis landed at ")
+        assert "runner reported unsuccessful completion" in result.message
+        assert mock_edit.called, "a lifecycle-complete diagnosis must still land"
+        new_body = mock_edit.call_args.args[1]
+        assert "## Diagnosis" in new_body
+        assert "Partial diagnosis" not in new_body
+        assert result.state.artifact is not None
+        assert not result.state.artifact.partial
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-2848-*.yaml"))
+        assert audit_files
+        audit = yaml.safe_load(audit_files[-1].read_text())
+        assert audit["agent"]["reported_success"] is False
+        assert audit["artifact"]["partial"] is False
+        assert audit["landing"]["destination"] == "body_section"
+
+    def test_declared_verdict_stays_needs_diagnosis_for_categorical_scope_gap(self):
+        from theforge.coordinator.diagnose_flow import _declared_diagnosis_verdict
+        from theforge.shape_check.types import ShapeVerdict
+
+        artifact = DiagnosisArtifact(
+            issue_number=2849,
+            observed_symptom="A sibling renderer omits the branch name.",
+            reproduction_or_evidence="CLI output shows the branch name missing.",
+            hypotheses=(
+                Hypothesis(
+                    "The shared renderer omits the field.",
+                    "confirmed",
+                    "The same helper is used by the affected surface.",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
+            confirmed_cause="The shared renderer omits the branch name field.",
+            affected_code_path="src/theforge/ui/status_cli.py:render_status",
+            fix_success_criterion="Every sibling renderer includes the branch name.",
+            partial=True,
+            partial_reason=DiagnosePartialReason.CAUSE_FOUND_INCOMPLETE,
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+            symptom_scope_coverage=SymptomScopeCoverage(),
+        )
+        section = render_artifact_markdown(
+            artifact,
+            issue_requires_categorical_scope=True,
+        )
+
+        assert artifact.lifecycle_blocking_missing_fields(
+            issue_requires_categorical_scope=True
+        ) == ("symptom_scope_coverage",)
+        assert (
+            _declared_diagnosis_verdict(
+                artifact,
+                section,
+                issue_requires_categorical_scope=True,
+            )
+            is ShapeVerdict.NEEDS_DIAGNOSIS
+        )
+
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -1951,6 +2088,16 @@ class TestDiagnoseFlow:
         # structurally complete.
         assert not result.success
         assert result.state.phase == DiagnosePhase.BUDGET_EXCEEDED
+        assert result.message == (
+            f"Partial diagnosis landed (budget exceeded (${config.diagnose.budget_usd})) "
+            "— operator review required"
+        )
+        assert mock_post.called, "budget-exceeded partial diagnoses should still land for review"
+        posted_body = mock_post.call_args.args[1]
+        assert "## Diagnosis" in posted_body
+        assert "Partial diagnosis" in posted_body
+        assert "exceeded its budget" in posted_body
+        assert "Worker pool reserves N-1 slots in scheduler.py:142" in posted_body
         audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-8-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[0].read_text())
