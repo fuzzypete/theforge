@@ -696,6 +696,10 @@ class SprintBudgetRuntime:
             if _carry_snapshot.unresolved_unmeasured_sources
             else None
         )
+        _startup_budget_sources = {
+            raw: self.describe_source(raw, occurrence=_OCCURRENCE_CARRIED)
+            for raw in _carry_snapshot.unresolved_unmeasured_sources
+        }
         _decision = evaluate_budget(
             accumulated_cost=0.0,
             prior_cost=_carry_snapshot.carried_cost_usd,
@@ -703,6 +707,9 @@ class SprintBudgetRuntime:
             unmeasured_spend=_carry_snapshot.unresolved_unmeasured_sources,
             accepted_unmeasured_ceiling_usd=_carry_snapshot.accepted_unmeasured_ceiling_usd,
             source_details=_startup_budget_details,
+            acceptable_unmeasured_spend_sources=[
+                source.source for source in _startup_budget_sources.values() if source.acceptable
+            ],
         )
         if _decision is not None:
             _log(f"Selected run cannot dispatch under the supplied ceiling: {_decision.detail}")
@@ -730,6 +737,7 @@ class SprintBudgetRuntime:
             if _unresolved
             else None
         )
+        _sources = {raw: self.describe_source(raw) for raw in _unresolved}
         return evaluate_budget(
             accumulated_cost=snapshot.accumulated + snapshot.in_flight,
             prior_cost=snapshot.prior,
@@ -739,6 +747,9 @@ class SprintBudgetRuntime:
                 _applied
             ),
             source_details=_details,
+            acceptable_unmeasured_spend_sources=[
+                source.source for source in _sources.values() if source.acceptable
+            ],
         )
 
     def decision_before_dispatch(self) -> BudgetBlock | None:

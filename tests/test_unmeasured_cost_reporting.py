@@ -587,11 +587,13 @@ class TestBudgetEnforcement:
             prior_cost=0.0,
             budget_usd=10.0,
             unmeasured_spend=["issue-1945"],
+            acceptable_unmeasured_spend_sources=["issue-1945"],
         )
         assert block is not None
         assert block.kind == "unverifiable"
         assert "issue-1945" in block.story_reason
         assert "lower bound" in block.story_reason
+        assert "--accept-unmeasured-spend issue-1945" in block.story_reason
         assert block.stopped_reason.startswith("Budget unverifiable")
 
     def test_unmeasured_source_list_is_elided_not_dropped(self) -> None:
@@ -1159,8 +1161,15 @@ class TestUnmeasuredResolutionSeam:
         # The refusal is no longer opaque: it names the bound and the call.
         assert "at most $4.50 more" in result.stopped_reason
         assert "role=review" in result.stopped_reason
+        assert "--accept-unmeasured-spend feature-a" in result.stopped_reason
         assert result.unresolved_unmeasured_spend_sources
         assert result.accepted_unmeasured_spend == ()
+        audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        skipped = [story for story in audit["specs"] if story["outcome"] == "SKIPPED"]
+        assert skipped, audit["specs"]
+        assert "--accept-unmeasured-spend feature-a" in (skipped[0]["error"] or "")
 
     def test_accepting_the_source_lets_the_same_story_run(self, tmp_path: Path) -> None:
         config, manifest_path = self._arrange(tmp_path)
@@ -1622,6 +1631,7 @@ class TestAcceptedPriorAuditSourceIsCharged:
         assert mock_run.call_count == 0
         assert result.stopped_reason.startswith("Budget unverifiable")
         assert "carried:prior-generation" in result.unresolved_unmeasured_spend_sources
+        assert "--accept-unmeasured-spend" not in result.stopped_reason
 
 
 class TestAcceptancePersistenceIsReportedHonestly:
