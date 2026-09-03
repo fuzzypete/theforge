@@ -2174,6 +2174,8 @@ def _run_diagnose_flow_body(
     emit_phase(DiagnosePhase.DONE)
     write_diagnose_audit(state, project_root)
     message = f"Diagnosis landed at {location}"
+    if state.agent_reported_success is False:
+        message += " — runner reported unsuccessful completion"
     if state.missing_metadata_fields:
         # The landing is runnable, but say what the artifact never recorded so
         # the gap is visible without opening the audit.

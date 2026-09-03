@@ -1182,6 +1182,8 @@ class TestDiagnoseFlow:
 
         assert result.success, result.message
         assert result.state.phase == DiagnosePhase.DONE
+        assert result.message.startswith("Diagnosis landed at ")
+        assert "runner reported unsuccessful completion" in result.message
         assert mock_edit.called, "a lifecycle-complete diagnosis must still land"
         new_body = mock_edit.call_args.args[1]
         assert "## Diagnosis" in new_body
@@ -2086,6 +2088,16 @@ class TestDiagnoseFlow:
         # structurally complete.
         assert not result.success
         assert result.state.phase == DiagnosePhase.BUDGET_EXCEEDED
+        assert result.message == (
+            f"Partial diagnosis landed (budget exceeded (${config.diagnose.budget_usd})) "
+            "— operator review required"
+        )
+        assert mock_post.called, "budget-exceeded partial diagnoses should still land for review"
+        posted_body = mock_post.call_args.args[1]
+        assert "## Diagnosis" in posted_body
+        assert "Partial diagnosis" in posted_body
+        assert "exceeded its budget" in posted_body
+        assert "Worker pool reserves N-1 slots in scheduler.py:142" in posted_body
         audit_files = list((tmp_path / ".forge" / "audits").glob("diagnose-issue-8-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[0].read_text())
