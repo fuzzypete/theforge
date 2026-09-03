@@ -463,16 +463,28 @@ class TestGroomRefusesBeforeEditing:
 
 class TestDiagnoseRefusesBeforeEditing:
     def _artifact(self):
-        from theforge.diagnose_types import DiagnosisArtifact
+        from theforge.diagnose_types import ClaimVerification, DiagnosisArtifact, Hypothesis
 
         return DiagnosisArtifact(
             issue_number=44,
             observed_symptom="the export drops rows",
             reproduction_or_evidence="run log at `src/c.py:9`",
-            hypotheses=(),
+            hypotheses=(
+                Hypothesis(
+                    "the loader drops rows before serialization",
+                    "confirmed",
+                    "confirmed by reading the export path",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
             confirmed_cause="the loader in `src/a.py:42` drops it",
             affected_code_path="src/b.py:17",
             fix_success_criterion="no rows are dropped",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
         )
 
     def test_body_section_citations_on_a_non_bug_issue_report_rather_than_write(self, tmp_path):

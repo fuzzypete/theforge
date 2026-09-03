@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from theforge import knowledge_receipts
 from theforge import worker_budget as _worker_budget
 from theforge.agent_types import FAILURE_ENDED_WITHOUT_RESULT
 from theforge.config import ForgeConfig, apply_model_info
@@ -852,6 +853,22 @@ def _capture_dev_handoff(
 
     if not isinstance(dev_result, _AgentResult):
         raise TypeError(f"Expected AgentResult, got {type(dev_result)}")
+    # Prior-run knowledge receipt (#2866). Recorded here — after the dev output
+    # exists and before nothing — purely so the audit can say what this
+    # invocation reported about the claims it was shown. Read the payload, record
+    # it, branch on none of it: a handoff with no debrief takes the same path it
+    # always did.
+    state.knowledge_debriefs.append(
+        knowledge_receipts.debrief_submission(
+            phase="dev",
+            agent_role="dev",
+            phase_iteration=state.dev_iteration,
+            source="dev_handoff",
+            payload=(dev_result.dev_handoff or {}).get("knowledge_debrief")
+            if isinstance(dev_result.dev_handoff, dict)
+            else None,
+        )
+    )
     if dev_result.dev_handoff is not None:
         _forge_handoff_dir = config.project_root / ".forge" / "handoffs" / task.slug
         _forge_handoff_dir.mkdir(parents=True, exist_ok=True)

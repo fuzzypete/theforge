@@ -21,6 +21,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
+from theforge import knowledge_receipts
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
 from theforge.assignment import (
     MECHANISM_PLAN_MODEL_ESCALATION,
@@ -36,6 +37,7 @@ from theforge.config import (
 from theforge.config.bridge import model_ref_to_profile
 from theforge.config.model_identity import PHASE_PLAN
 from theforge.config.profiles import _apply_transport_fallback
+from theforge.knowledge_receipts import extract_knowledge_debrief
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
     format_provenance,
@@ -996,6 +998,19 @@ def _run_plan_phase(
         worktree_plan_path.write_text(plan_text, encoding="utf-8")
         state.plan_output = plan_text
         state.plan_structured = parse_plan_output(plan_text)
+        # Prior-run knowledge receipt (#2866). Read out of the plan agent's own
+        # YAML after the plan is parsed, recorded for audit, and consulted by no
+        # branch below: a plan is accepted or regenerated on exactly the grounds
+        # it always was.
+        state.knowledge_debriefs.append(
+            knowledge_receipts.debrief_submission(
+                phase="plan",
+                agent_role="plan",
+                phase_iteration=state.plan_regen_count + 1,
+                source="plan_yaml",
+                payload=extract_knowledge_debrief(plan_text),
+            )
+        )
 
         # Decompose signal: the planner judged the story too large to implement
         # as one unit. Escalate for manual splitting — the coordinator does NOT
