@@ -1,0 +1,136 @@
+schema_version: 2
+run_id: 09992ae2fa64
+authoritative_run_record: .forge/audits/runs/09992ae2fa64.json
+generated_at: '2026-09-03T18:20:49.279350+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011592499999999999
+story:
+  slug: issue-2685
+  name: Semantic evaluation runs as an audit-only instrument, so its usefulness is
+    measured before any readiness policy consumes it
+  github_issue: 2685
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/main.py
+- src/theforge/eval/__init__.py
+- src/theforge/eval/semantic_input.py
+- src/theforge/eval/semantic_parser.py
+- src/theforge/eval/semantic_prompt.py
+- src/theforge/eval/semantic_report.py
+- src/theforge/eval/semantic_runner.py
+- src/theforge/eval/semantic_storage.py
+- src/theforge/eval/semantic_types.py
+- src/theforge/sprint/live_stories.py
+- tests/test_cli_semantic_eval.py
+- tests/test_semantic_eval.py
+what_changed:
+  description: Added a manual, audit-only semantic evaluation path that reads a story
+    issue, produces structured findings or terminal audit outcomes, and records run
+    identity, outcome, timing, and cost without affecting readiness or mutating the
+    source document. The run also added corpus reporting and baseline-freezing support
+    so evaluator output can be measured against a human baseline.
+  approach: The change was split into CLI entrypoints, input/prompt/parser/type plumbing,
+    a runner and storage layer keyed by serialized input digest plus model and prompt
+    version, and reporting logic that aggregates recorded runs into measurement metrics
+    while preserving the evaluator's non-blocking, non-authoritative role.
+  files_modified: *id002
+what_was_learned:
+- claim: When reusing prior evaluation results by identity, cache hits must exclude
+    failure records and must not be bypassable through normal repeat-run controls,
+    or the audit record stops meaning 'same identity, same outcome' and starts mixing
+    retry policy into correctness.
+  evidence:
+  - type: review_finding
+    finding_id: 9d470b979549cf0c
+    description: Review found that serving the most recent record without filtering
+      status let an EVALUATION_FAILED result permanently shadow later default invocations
+      for the same identity, showing that failure records cannot participate in outcome
+      reuse the same way successful parsed outcomes do.
+  - type: review_finding
+    finding_id: ad903e01c041fb46
+    description: Review found that --no-cache forced a fresh model call even when
+      digest, model id, and prompt version matched an existing record, demonstrating
+      that allowing operators to bypass same-identity reuse breaks the required 'recorded
+      identity returns recorded outcome' invariant.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly called out both cache P1s as resolved,
+      confirming that identity-reuse semantics were a central correctness constraint
+      rather than an incidental implementation detail.
+- claim: If a workflow freezes a human baseline before revealing machine output, operator-supplied
+    baseline data must either be reconciled visibly or rejected explicitly; silently
+    preferring stored state hides disagreements that matter to the audit.
+  evidence:
+  - type: review_finding
+    finding_id: dc639598f7f5d121
+    description: Review found that invocation-supplied defect ids were discarded when
+      a frozen baseline already existed, which prevented operators from seeing that
+      their provided baseline disagreed with the stored one and bypassed the intended
+      mismatch guard.
+- claim: Metrics design can invalidate itself if normal operator flow eliminates the
+    repeated live cases a report expects to count, so reporting logic has to be aligned
+    with the actual execution model rather than with pre-cache assumptions.
+  evidence:
+  - type: review_finding
+    finding_id: 27dd70223834a851
+    description: Review found that once same-identity repeats were always served from
+      storage, normal use could no longer produce multiple live records for the same
+      identity, causing the independent repeat-stability counters to remain zero and
+      exposing a mismatch between metric definition and system behavior.
+learned_patterns:
+- identity-cache-excludes-failures
+- baseline-mismatch-must-surface
+- metrics-must-match-execution-model
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: ad903e01c041fb46
+    severity: P1
+    file: src/theforge/cli/eval_cmd.py
+    description: When an operator repeats review-semantic with --no-cache for an input
+      digest, model id, and prompt contract version that already have a record, the
+      command disables the cache path and the runner invokes the agent again.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 9d470b979549cf0c
+    severity: P1
+    file: src/theforge/eval/semantic_storage.py
+    description: "The identity cache lookup returns the most recent record for a (digest,\
+      \ model id, prompt contract version) triple without filtering on status, so\
+      \ once a run fails to reach a model or fails to parse, every later default invocation\
+      \ for that identity is served the EVALUATION_FAILED record without invoking\
+      \ a model \u2014 and when a valid FINDINGS or NO_FINDINGS record was already\
+      \ stored for that same identity, the later failure record shadows it and is\
+      \ returned in its place."
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop concentrated on identity semantics around reruns and on whether
+    reporting/baseline flows still meant what the audit slice claimed they measured.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 15.3657409
+  dominant_difficulty: Preserving audit-only semantics while making cached reruns,
+    failure handling, baseline freezing, and corpus metrics all agree on what constitutes
+    the same evaluation run.
