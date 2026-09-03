@@ -246,7 +246,6 @@ def review_issue_semantically(
     profile: ModelProfile,
     prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
     baseline_defect_ids: tuple[str, ...] | None = None,
-    use_cache: bool = True,
     store: SemanticReviewStore | None = None,
     gh_issue_view: Callable[[int, Path], subprocess.CompletedProcess[str]] = _gh_issue_view,
     agent_runner: Callable[..., AgentResult] | None = None,
@@ -277,6 +276,13 @@ def review_issue_semantically(
             canonical_type=evaluation_input.canonical_type,
             defect_ids=baseline_defect_ids,
         )
+    elif baseline_defect_ids is not None:
+        baseline, baseline_created = semantic_store.freeze_baseline(
+            issue_ref=issue.issue_ref,
+            input_digest=evaluation_input.input_digest,
+            canonical_type=evaluation_input.canonical_type,
+            defect_ids=baseline_defect_ids,
+        )
 
     evaluation_profile = build_audit_only_profile(profile)
     model_id = semantic_model_id(evaluation_profile)
@@ -284,29 +290,28 @@ def review_issue_semantically(
     started_at = utc_now_iso()
     start = time.monotonic()
 
-    if use_cache:
-        cached = semantic_store.latest_record_for_identity(
-            input_digest=evaluation_input.input_digest,
-            model_id=model_id,
-            prompt_contract_version=prompt_contract_version,
+    cached = semantic_store.latest_record_for_identity(
+        input_digest=evaluation_input.input_digest,
+        model_id=model_id,
+        prompt_contract_version=prompt_contract_version,
+    )
+    if cached is not None:
+        completed_at = utc_now_iso()
+        record = _cache_record(
+            cached=cached,
+            profile=evaluation_profile,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=time.monotonic() - start,
         )
-        if cached is not None:
-            completed_at = utc_now_iso()
-            record = _cache_record(
-                cached=cached,
-                profile=evaluation_profile,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=time.monotonic() - start,
-            )
-            semantic_store.append_record(record)
-            return ReviewSemanticResult(
-                issue=issue,
-                evaluation_input=evaluation_input,
-                baseline=baseline,
-                baseline_created=baseline_created,
-                record=record,
-            )
+        semantic_store.append_record(record)
+        return ReviewSemanticResult(
+            issue=issue,
+            evaluation_input=evaluation_input,
+            baseline=baseline,
+            baseline_created=baseline_created,
+            record=record,
+        )
 
     prompt = build_semantic_review_prompt(
         evaluation_input,

@@ -86,7 +86,6 @@ def test_cmd_review_semantic_prints_findings_and_uses_default_profile(capsys) ->
         prompt_contract_version=None,
         baseline_defect_ids=["d1"],
         freeze_empty_baseline=False,
-        no_cache=False,
         config=None,
     )
 
@@ -108,6 +107,7 @@ def test_cmd_review_semantic_prints_findings_and_uses_default_profile(capsys) ->
     assert "prompt_contract_version=semantic-review.v1" in out
     assert "Semantic defect" in out
     assert mock_review.call_args.kwargs["profile"] == config.preflight_profile
+    assert "use_cache" not in mock_review.call_args.kwargs
 
 
 def test_cmd_semantic_report_renders_json(capsys) -> None:
@@ -144,3 +144,13 @@ def test_main_dispatches_review_semantic_command() -> None:
 
     assert excinfo.value.code == 0
     mock_cmd.assert_called_once()
+
+
+def test_review_semantic_parser_rejects_no_cache_flag() -> None:
+    main_module = import_module("theforge.cli.main")
+    parser = main_module.build_parser()
+
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["review-semantic", "42", "--no-cache"])
+
+    assert excinfo.value.code == 2

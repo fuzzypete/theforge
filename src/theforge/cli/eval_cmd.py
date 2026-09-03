@@ -265,7 +265,6 @@ def cmd_review_semantic(args: object) -> int:
                 getattr(args, "prompt_contract_version", None) or PROMPT_CONTRACT_VERSION
             ),
             baseline_defect_ids=baseline_input,
-            use_cache=not bool(getattr(args, "no_cache", False)),
         )
     except SemanticBaselineRequiredError as exc:
         print(
@@ -383,11 +382,6 @@ def register_parser(subparsers: object) -> None:
         "--freeze-empty-baseline",
         action="store_true",
         help="Freeze an empty human baseline before revealing evaluator output",
-    )
-    review.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Bypass the exact-identity cache and append a fresh live record",
     )
     review.add_argument(
         "--config",

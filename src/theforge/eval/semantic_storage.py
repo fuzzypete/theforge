@@ -203,6 +203,7 @@ class SemanticReviewStore:
                 record.input_digest == input_digest
                 and record.model_id == model_id
                 and record.prompt_contract_version == prompt_contract_version
+                and record.status in (STATUS_FINDINGS, STATUS_NO_FINDINGS)
             ):
                 match = record
         return match

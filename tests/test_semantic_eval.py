@@ -32,6 +32,7 @@ from theforge.eval.semantic_types import (
     OUTCOME_FINDINGS,
     STATUS_EVALUATION_FAILED,
     STATUS_FINDINGS,
+    STATUS_NO_FINDINGS,
     SemanticFinding,
 )
 
@@ -348,6 +349,116 @@ class TestSemanticRunner:
         assert parse_failed.record.outcome is None
         assert parse_failed.record.findings == ()
         assert "parse failed" in (parse_failed.record.failure_detail or "")
+
+    def test_failed_identity_record_does_not_poison_repeat_run(self, tmp_path: Path) -> None:
+        calls = 0
+
+        def agent_runner(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return _agent_result("plain prose, not structured")
+            return _agent_result('{"outcome":"NO_FINDINGS"}')
+
+        first = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+            baseline_defect_ids=(),
+        )
+        second = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+        )
+
+        assert first.record.status == STATUS_EVALUATION_FAILED
+        assert first.record.cache_hit is False
+        assert second.record.status == STATUS_NO_FINDINGS
+        assert second.record.cache_hit is False
+        assert calls == 2
+
+    def test_later_failed_record_does_not_shadow_cached_success(self, tmp_path: Path) -> None:
+        calls = 0
+
+        def agent_runner(**kwargs):
+            nonlocal calls
+            calls += 1
+            return _agent_result('{"outcome":"NO_FINDINGS"}')
+
+        first = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+            baseline_defect_ids=(),
+        )
+        store = SemanticReviewStore(tmp_path)
+        store.append_record(
+            SemanticEvaluationRecord(
+                issue_ref=first.record.issue_ref,
+                canonical_type=first.record.canonical_type,
+                input_digest=first.record.input_digest,
+                model_id=first.record.model_id,
+                prompt_contract_version=first.record.prompt_contract_version,
+                status=STATUS_EVALUATION_FAILED,
+                cache_hit=False,
+                duration_seconds=0.2,
+                cost_usd=None,
+                cost_provenance="unknown",
+                started_at=utc_now_iso(),
+                completed_at=utc_now_iso(),
+                configured_profile_name="semantic-source",
+                configured_model_name="sonnet",
+                resolved_model_id=None,
+                failure_detail="transient parse failure",
+            )
+        )
+
+        second = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+        )
+
+        assert first.record.status == STATUS_NO_FINDINGS
+        assert second.record.status == STATUS_NO_FINDINGS
+        assert second.record.cache_hit is True
+        assert second.record.failure_detail is None
+        assert calls == 1
+
+    def test_existing_frozen_baseline_rejects_mismatched_defect_ids(self, tmp_path: Path) -> None:
+        review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=lambda **kwargs: _agent_result('{"outcome":"NO_FINDINGS"}'),
+            baseline_defect_ids=("d1",),
+        )
+
+        with pytest.raises(ValueError, match="already frozen and cannot be changed"):
+            review_issue_semantically(
+                issue_number=1,
+                project_root=tmp_path,
+                secrets={},
+                profile=_profile(),
+                gh_issue_view=_issue_view(),
+                agent_runner=lambda **kwargs: _agent_result('{"outcome":"NO_FINDINGS"}'),
+                baseline_defect_ids=("d2",),
+            )
 
 
 class TestSemanticReporting:
