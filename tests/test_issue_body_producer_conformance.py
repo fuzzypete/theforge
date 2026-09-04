@@ -193,6 +193,9 @@ SEAM_GUARDS: dict[tuple[str, str], dict[str, str]] = {
     },
     ("src/theforge/cli/author.py", "_create_issue"): {"forge-author-create": "_create_issue"},
     ("src/theforge/cli/author.py", "_edit_issue"): {"forge-author-edit": "_edit_issue"},
+    ("src/theforge/cli/baseline_fix.py", "_create_issue"): {
+        "forge-baseline-fix-create": "_validated_issue_body"
+    },
     ("src/theforge/cli/report.py", "_create_issue"): {"forge-report-create": "cmd_report"},
     ("src/theforge/cli/report.py", "_update_body"): {"forge-report-update": "cmd_report"},
     ("src/theforge/cli/shape.py", "_apply_to_github"): {"forge-shape": "cmd_shape"},

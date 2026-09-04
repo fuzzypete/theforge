@@ -81,6 +81,9 @@ PRODUCERS: dict[str, str] = {
     "forge-diagnose": "forge diagnose Diagnosis section landed into the issue body",
     "forge-report-create": "forge report initial bug filing in the target repository",
     "forge-report-update": "forge report publication-state body update",
+    "forge-baseline-fix-create": (
+        "forge baseline-fix derived bug filing from a reproduced sprint baseline failure"
+    ),
     "forge-todo-create": "forge todo draft capture",
     "forge-todo-triage": "forge todo triage interactive body edit",
     "forge-advisory-finding": "advisory convention debt issue filed from a run",
