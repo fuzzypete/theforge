@@ -128,6 +128,43 @@ infer which spend mechanism, retry boundary, or run boundary you meant.
 
 ---
 
+## Titles
+
+A title is read in a list, beside fifty others, by someone with no context
+loaded. Its whole job is to let that reader tell what the issue is about and
+decide whether to open it.
+
+Lead with the subject — the command or component that misbehaves, or the thing
+being built. Make the misbehavior or the change the verb. Then stop.
+
+The failure mode is a title that states a *stance about* the subject instead of
+naming the subject: mechanism first, consequence clause second, and the thing
+itself never mentioned. Such titles are grammatical, accurate, and unreadable
+in a list.
+
+| Instead of | Write |
+|---|---|
+| Semantic evaluation runs as an audit-only instrument, so its usefulness is measured before any readiness policy consumes it | An adversarial semantic reviewer for issue bodies, audit-only until its hit rate is measured |
+| A diagnose run whose agent scopes its own result as incomplete has the confirmed cause refused at landing, so honest scoping discards paid investigation | Diagnose discards a confirmed cause when the agent scopes its own result as incomplete |
+
+Two checks before filing:
+
+- **Does the subject appear in the first four words?** A title opening with a
+  subordinate clause — "A run whose…", "When a…", "Every path that…" — has
+  buried it.
+- **Is it legible to someone who has not read the body?** A title that only
+  parses once you already know the answer is a summary of the conclusion, not a
+  name for the problem.
+
+Rationale, mechanism and consequence belong in the body. `## Why`, `## Expected`
+and `## Diagnosis` exist for them; a title carrying that load does their job
+badly and its own job not at all.
+
+The per-use-case **Title** rules below add type-specific constraints on top of
+this one.
+
+---
+
 ## Feature or enhancement
 
 ### Purpose
