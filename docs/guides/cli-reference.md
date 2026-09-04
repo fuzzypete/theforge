@@ -187,6 +187,44 @@ Collision-derived edges — from preflight predicting overlapping `likely_files`
 
 ---
 
+## `forge baseline-fix`
+
+Route a reproduced broken sprint baseline into the ordinary single-story pipeline.
+
+```bash
+forge baseline-fix --run <sprint-run-id> [flags]
+forge baseline-fix --sprint-audit .forge/audits/run-<sprint-run-id>-sprint-audit.yaml [flags]
+```
+
+**Use this when:** A sprint audit stopped with `broken_baseline`, the baseline
+record says `failure_reproduced: true`, and you want forge to file and run the
+repair issue instead of fixing the baseline by hand.
+**Avoid this when:** The failure did not reproduce, or you are trying to bypass
+the baseline with `forge sprint --force` rather than repairing it.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--run <id>` | Select `run-<id>-sprint-audit.yaml` from `.forge/audits/` |
+| `--sprint-audit <path>` | Use an explicit sprint audit file |
+| `--config <path>` | Path to `forge.yaml` |
+| `--base-branch <branch>` | Override the target base branch for this run |
+| `--auto-merge` | Force local merge after APPROVE even when config would not land locally |
+| `--interactive` | Pause at APPROVE for human confirmation |
+| `--verbose`, `-v` | Show tool activity, heartbeats, and raw agent output |
+| `--no-notify` | Suppress notifications |
+| `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
+
+The command validates the captured baseline evidence, opens a `bug` issue with
+the preserved gate output/worktree details, fetches that issue back through the
+GitHub story source, and runs it through the normal dev, validate, review, and
+landing flow. Without `--run` or `--sprint-audit`, it only selects the latest
+sprint audit when that choice is unambiguous. A nonzero exit leaves the
+preserved evidence and reproduction worktree intact for manual follow-up.
+
+---
+
 ## `forge ideate`
 
 Run multi-model deliberation to generate a story from a brief.
