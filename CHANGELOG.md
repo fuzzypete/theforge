@@ -56,6 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One resolver now decides whether a branch's work has landed (#2795):** the
+  worktree sweep and resume triage asked the same question and disagreed,
+  because the sweep used a proxy a squash merge invalidates — are this branch's
+  commits present on origin? A squash landing produces one new commit with a
+  different SHA, so the count is permanently non-zero and the branch was
+  preserved on every run forever. Both callers now consume
+  `coordinator/branch_landing.py`, which reports **landed / unlanded /
+  undecidable** from the audit trail, git topology, GitHub's merged-PR record
+  and a guarded closing-reference fallback, carrying the source that decided it
+  and — where it could not decide — the evidence that was absent. Only a landed
+  result is new grounds for reclaiming a worktree: unlanded and undecidable
+  branches are preserved exactly as before, and the sweep now says which of the
+  two it is preserving instead of reporting a commit count.
+
 - **A reuse gate that ran out of time now says so to the dev agent (#2796):**
   sprint resume runs a gate on an existing worktree and routes the story to DEV
   when it does not pass, but a gate killed at its `validation.gate_timeout`

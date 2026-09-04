@@ -632,6 +632,31 @@ git worktree prune
 
 ---
 
+### A worktree the sweep preserved
+
+Every WORKSPACE entry sweeps `.forge/worktrees/`. A clean, unlocked,
+unescalated worktree is reclaimed once one shared resolver reports its branch
+as **landed** — from the audit trail, git topology, a merged PR, or a commit on
+the base branch that closes the issue. That covers a squash landing, where the
+branch's own commits never reach origin and so the branch is preserved forever
+on commit presence alone.
+
+Anything else is preserved, and the log says which:
+
+```
+✓ WORKSPACE  feat/issue-2553 landed via merged PR #2577 — reclaimable
+⚠ WORKSPACE  preserving worktree feat/issue-9999 — no merge evidence; 3 local commits not present on origin
+⚠ WORKSPACE  preserving worktree feat/issue-8888 — landing undecidable — the merged-PR lookup could not run; ...
+```
+
+`no merge evidence` means the branch's work is provably absent from the base
+branch — real unlanded work, and the case preservation exists for. `landing
+undecidable` means nothing could speak for the branch either way; the message
+names the evidence that was missing, so a failed `gh` call is not read as proof
+that no PR merged. Neither is ever deleted automatically.
+
+---
+
 ### Restart a failed run cleanly
 
 ```bash

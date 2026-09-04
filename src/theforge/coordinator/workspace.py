@@ -19,6 +19,7 @@ from theforge.task import TaskStory
 from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
 from . import util as _cu
+from .branch_landing import BranchLanding, resolve_branch_landing
 from .config_snapshot import sync_forge_yaml_into_worktree
 from .gate import _run_gate
 from .git_lock import FETCH_LOCK
@@ -695,6 +696,25 @@ def _count_unpublished_commits(branch_name: str, project_root: Path) -> int | No
         return None
 
 
+def _local_commit_note(unpublished: int | None) -> str:
+    """Describe what the cheap origin probe found, for a preservation message."""
+    if unpublished is None:
+        return "cannot determine whether its commits exist on origin"
+    return f"{unpublished} local commit{'s' if unpublished != 1 else ''} not present on origin"
+
+
+def _preserve_reason(landing: BranchLanding, unpublished: int | None) -> str:
+    """Say why a worktree survived, in terms an operator can act on.
+
+    An undecidable landing names the evidence that was absent, because that is
+    what separates a branch holding real unlanded work from one nothing could
+    speak for — the same directory, two very different follow-ups (#2795).
+    """
+    if landing.undecidable:
+        return f"landing undecidable — {landing.describe_absent()}"
+    return f"no merge evidence; {_local_commit_note(unpublished)}"
+
+
 def _is_registered_worktree_path(path: Path, project_root: Path) -> bool | None:
     """Return True when git registers ``path`` as a linked worktree.
 
@@ -807,40 +827,55 @@ def sweep_orphan_worktrees(
             continue
         # A clean tree is not evidence that the work is safe: an agent that commits
         # as it goes leaves a clean tree with local-only history. Absence of commits
-        # missing from origin is what establishes the work exists elsewhere, and it
-        # is also what separates a never-pushed branch from one whose remote ref was
-        # deleted after merging — both of which lack refs/remotes/origin/<branch>.
+        # missing from origin establishes the work exists elsewhere, and it also
+        # separates a never-pushed branch from one whose remote ref was deleted
+        # after merging — both of which lack refs/remotes/origin/<branch>.
+        #
+        # These local checks run first because they are cheap and they clear the
+        # ordinary merged-and-published worktree without any network call.
         unpublished = _count_unpublished_commits(branch_name, project_root)
-        if unpublished is None or unpublished > 0:
-            reason = (
-                "cannot determine whether its commits exist on origin"
-                if unpublished is None
-                else f"{unpublished} commit{'s' if unpublished != 1 else ''} not present on origin"
+        if unpublished == 0:
+            ok_gone, gone_out = _cu._run_shell(
+                f"git rev-parse --verify --quiet refs/remotes/origin/{branch_name}", project_root
             )
-            _cu._log(f"⚠ WORKSPACE  preserving worktree {branch_name} — {reason}")
+            branch_gone = not ok_gone or not gone_out.strip()
+            ok_merged, merged_out = _cu._run_shell(
+                f"git branch --merged {remote_base}", project_root
+            )
+            merged = False
+            if ok_merged:
+                merged_branches = {
+                    line.strip().lstrip("+*").strip()
+                    for line in merged_out.splitlines()
+                    if line.strip()
+                }
+                merged = branch_name in merged_branches
+            if merged or branch_gone:
+                info = (
+                    f"sweep: merged into {remote_base}; no commits missing from origin"
+                    if merged
+                    else "sweep: remote branch gone; no commits missing from origin"
+                )
+                _remove_worktree(candidate, branch_name, project_root, info)
+                continue
+
+        # Everything below here the commit-presence and topology checks would have
+        # preserved. That is exactly where they are too weak to decide: a squash
+        # landing rewrites the branch's commits, so its own SHAs never reach origin
+        # and it is never an ancestor of the base branch, whatever it landed
+        # (#2795). Ask the shared resolver, which reads the same evidence resume
+        # triage does, and let a landed answer clear both gates above.
+        landing = resolve_branch_landing(branch_name, base_branch, project_root, slug=slug)
+        if landing.landed:
+            detail = landing.describe_source(base_branch)
+            _cu._log(f"✓ WORKSPACE  {branch_name} landed via {detail} — reclaimable")
+            _remove_worktree(candidate, branch_name, project_root, f"sweep: landed via {detail}")
             continue
 
-        ok_gone, gone_out = _cu._run_shell(
-            f"git rev-parse --verify --quiet refs/remotes/origin/{branch_name}", project_root
+        _cu._log(
+            f"⚠ WORKSPACE  preserving worktree {branch_name} — "
+            f"{_preserve_reason(landing, unpublished)}"
         )
-        branch_gone = not ok_gone or not gone_out.strip()
-        ok_merged, merged_out = _cu._run_shell(f"git branch --merged {remote_base}", project_root)
-        merged = False
-        if ok_merged:
-            merged_branches = {
-                line.strip().lstrip("+*").strip()
-                for line in merged_out.splitlines()
-                if line.strip()
-            }
-            merged = branch_name in merged_branches
-        if not (merged or branch_gone):
-            continue
-        info = (
-            f"sweep: merged into {remote_base}; no commits missing from origin"
-            if merged
-            else "sweep: remote branch gone; no commits missing from origin"
-        )
-        _remove_worktree(candidate, branch_name, project_root, info)
 
 
 _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/last_setup_command")
