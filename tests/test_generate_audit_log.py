@@ -527,6 +527,13 @@ class TestPhasesBlock:
         state.plan_review_results.append(_make_agent_result(cost_usd=0.53))
         state.plan_review_durations.append(73.0)
         state.plan_review_decision = "approve"
+        state.plan_regen_assessment = {
+            "disposition": "patch",
+            "attempt_count": 1,
+            "reason_code": "too_few_attempts",
+            "qualifying_historical_pairs": [],
+            "surface_trend": "unassessed",
+        }
         result = _make_coordinator_result(state)
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
 
@@ -535,6 +542,37 @@ class TestPhasesBlock:
         assert pr["cost_usd"] == pytest.approx(0.53)
         assert pr["duration_s"] == pytest.approx(73.0)
         assert pr["outcome"] == "approve"
+
+    def test_plan_review_audit_includes_trajectory_assessment(self, tmp_path: Path) -> None:
+        """Plan-review audit records the deterministic trajectory assessment."""
+        state = CoordinatorState()
+        state.plan_review_mode = "agent"
+        state.plan_review_results.append(
+            _make_agent_result(cost_usd=0.11, profile_name="plan-review")
+        )
+        state.plan_review_decision = "reject"
+        state.plan_regen_count = 3
+        state.plan_regen_assessment = {
+            "disposition": "escalate",
+            "attempt_count": 4,
+            "reason_code": "accumulated_non_convergence",
+            "comparable_theme_evidence": {"load_config": 3},
+            "qualifying_historical_pairs": [
+                {"attempts": [1, 2], "shared_themes": ["load_config"], "surface_trend": "flat"},
+                {"attempts": [3, 4], "shared_themes": ["load_config"], "surface_trend": "flat"},
+            ],
+            "surface_trend": "flat",
+        }
+        result = _make_coordinator_result(state)
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        plan_review = log["plan_review"]
+        assert plan_review is not None
+        assessment = plan_review["trajectory_assessment"]
+        assert assessment["disposition"] == "escalate"
+        assert assessment["reason_code"] == "accumulated_non_convergence"
+        assert assessment["qualifying_historical_pairs"][0]["attempts"] == [1, 2]
 
     def test_plan_review_phase_includes_per_reviewer_outcomes(self, tmp_path: Path) -> None:
         """Agent plan review emits attempt-tagged per_reviewer outcomes in the phase summary."""

@@ -8,6 +8,7 @@ No LLM calls — all logic is deterministic regex + set operations.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -88,51 +89,175 @@ def _has_sufficient_overlap(prev_themes: list[str], curr_themes: list[str]) -> b
     return any(not _is_file_path_anchor(t) for t in surviving)
 
 
-def classify_disposition(metadata_history: list[dict]) -> str:
-    """Classify the latest plan attempt as 'patch', 'backtrack', or 'escalate'.
+def _surface_trend(prev: dict, curr: dict) -> str:
+    """Classify the latest finding/file surface movement."""
+    prev_count = prev.get("p1_count", 0) + prev.get("p2_count", 0)
+    curr_count = curr.get("p1_count", 0) + curr.get("p2_count", 0)
+    prev_files = prev.get("files_touched", 0)
+    curr_files = curr.get("files_touched", 0)
+
+    if curr_count < prev_count or curr_files < prev_files:
+        return "shrinking"
+    if curr_count > prev_count or curr_files > prev_files:
+        return "growing"
+    return "flat"
+
+
+def assess_plan_trajectory(
+    metadata_history: list[dict],
+    *,
+    max_plan_regen_attempts: int = 3,
+) -> dict:
+    """Assess the full plan-review trajectory and return audit-friendly details.
 
     Args:
         metadata_history: Full list of plan_attempt_metadata dicts. Each entry has
-            files_touched (int), p1_count (int), p2_count (int), finding_themes (list[str]).
+            files_touched (int), p1_count (int), p2_count (int),
+            finding_themes (list[str]), and trajectory_assessable (bool).
+        max_plan_regen_attempts: Configured patch-loop ceiling. Used to keep the
+            non-convergence threshold reachable when projects lower the default.
 
     Returns:
-        'patch'     — no sufficient theme overlap OR finding count is decreasing
-        'backtrack' — sufficient overlap AND files_touched flat or growing
-        'escalate'  — previous disposition was 'backtrack' AND sufficient overlap still holds
-
-    Ordering: escalate is checked before backtrack (escalate is a stricter subset).
+        Dict with disposition and supporting evidence for audit/reporting.
     """
-    if len(metadata_history) < 2:
-        return "patch"
+    assessable_history = [
+        entry for entry in metadata_history if entry.get("trajectory_assessable", True)
+    ]
+    attempt_count = len(assessable_history)
+    recorded_attempt_count = len(metadata_history)
+    min_attempts_for_stop = max(3, min(4, max_plan_regen_attempts + 1))
+    assessment: dict[str, object] = {
+        "disposition": "patch",
+        "attempt_count": attempt_count,
+        "recorded_attempt_count": recorded_attempt_count,
+        "reason_code": "too_few_attempts",
+        "min_attempts_for_stop": min_attempts_for_stop,
+        "qualifying_historical_pairs": [],
+        "qualifying_pair_count": 0,
+        "comparable_pair_count": 0,
+        "surface_trend": "unassessed",
+        "majority_recurring_themes": [],
+        "comparable_theme_evidence": {},
+        "latest_pair_comparable": False,
+        "latest_pair_qualifies_backtrack": False,
+    }
+    if attempt_count < 2:
+        return assessment
 
-    prev = metadata_history[-2]
-    curr = metadata_history[-1]
+    prev = assessable_history[-2]
+    curr = assessable_history[-1]
+    trend = _surface_trend(prev, curr)
+    assessment["surface_trend"] = trend
 
-    prev_themes: list[str] = prev.get("finding_themes", [])
-    curr_themes: list[str] = curr.get("finding_themes", [])
+    theme_counts: Counter[str] = Counter()
+    qualifying_pairs: list[dict[str, object]] = []
+    comparable_pair_count = 0
 
-    prev_count = prev.get("p1_count", 0) + prev.get("p2_count", 0)
-    curr_count = curr.get("p1_count", 0) + curr.get("p2_count", 0)
+    for idx, entry in enumerate(assessable_history, start=1):
+        for theme in entry.get("finding_themes", []):
+            if not _is_file_path_anchor(theme):
+                theme_counts[theme] += 1
 
-    has_sufficient = _has_sufficient_overlap(prev_themes, curr_themes)
-    complexity_flat_or_growing = curr.get("files_touched", 0) >= prev.get("files_touched", 0)
+        if idx == 1:
+            continue
 
-    # patch: no meaningful overlap OR finding count is decreasing OR complexity shrank
-    if not has_sufficient or curr_count < prev_count or not complexity_flat_or_growing:
-        return "patch"
+        prev_entry = assessable_history[idx - 2]
+        curr_entry = entry
+        prev_themes = prev_entry.get("finding_themes", [])
+        curr_themes = curr_entry.get("finding_themes", [])
+        shared_non_file_themes = sorted(
+            {
+                theme
+                for theme in set(prev_themes) & set(curr_themes)
+                if not _is_file_path_anchor(theme)
+            }
+        )
+        if shared_non_file_themes:
+            comparable_pair_count += 1
 
-    # sufficient overlap + flat/growing complexity: check escalate before backtrack
-    if len(metadata_history) >= 3:
-        prev_disposition = classify_disposition(metadata_history[:-1])
-        if prev_disposition == "backtrack":
-            return "escalate"
+        pair_trend = _surface_trend(prev_entry, curr_entry)
+        qualifies_backtrack = bool(shared_non_file_themes) and pair_trend != "shrinking"
+        if qualifies_backtrack:
+            qualifying_pairs.append(
+                {
+                    "attempts": [idx - 1, idx],
+                    "shared_themes": shared_non_file_themes,
+                    "surface_trend": pair_trend,
+                }
+            )
 
-    return "backtrack"
+    majority_themes = sorted(
+        theme for theme, count in theme_counts.items() if count > (attempt_count / 2)
+    )
+    prev_themes = prev.get("finding_themes", [])
+    curr_themes = curr.get("finding_themes", [])
+    latest_pair_comparable = _has_sufficient_overlap(prev_themes, curr_themes)
+    latest_pair_qualifies_backtrack = latest_pair_comparable and trend != "shrinking"
+
+    assessment["qualifying_historical_pairs"] = qualifying_pairs
+    assessment["qualifying_pair_count"] = len(qualifying_pairs)
+    assessment["comparable_pair_count"] = comparable_pair_count
+    assessment["majority_recurring_themes"] = majority_themes
+    assessment["comparable_theme_evidence"] = dict(sorted(theme_counts.items()))
+    assessment["latest_pair_comparable"] = latest_pair_comparable
+    assessment["latest_pair_qualifies_backtrack"] = latest_pair_qualifies_backtrack
+
+    if trend == "shrinking":
+        assessment["reason_code"] = "surface_shrinking"
+        return assessment
+
+    accumulated_non_convergence = len(qualifying_pairs) >= 2 or (
+        attempt_count >= 4 and bool(majority_themes)
+    )
+    if attempt_count < min_attempts_for_stop:
+        if latest_pair_qualifies_backtrack:
+            assessment["disposition"] = "backtrack"
+            assessment["reason_code"] = "latest_pair_recurs"
+        else:
+            assessment["reason_code"] = (
+                "latest_pair_not_comparable" if not latest_pair_comparable else "too_few_attempts"
+            )
+        return assessment
+
+    if accumulated_non_convergence:
+        assessment["disposition"] = "escalate"
+        assessment["reason_code"] = "accumulated_non_convergence"
+        return assessment
+
+    if comparable_pair_count == 0:
+        assessment["disposition"] = "escalate"
+        assessment["reason_code"] = "unassessable_no_comparable_structure"
+        return assessment
+
+    if latest_pair_qualifies_backtrack:
+        assessment["disposition"] = "backtrack"
+        assessment["reason_code"] = "latest_pair_recurs"
+        return assessment
+
+    assessment["reason_code"] = "latest_pair_fresh_without_accumulation"
+    return assessment
+
+
+def classify_disposition(
+    metadata_history: list[dict],
+    *,
+    max_plan_regen_attempts: int = 3,
+) -> str:
+    """Classify the latest plan attempt as 'patch', 'backtrack', or 'escalate'."""
+    return str(
+        assess_plan_trajectory(
+            metadata_history,
+            max_plan_regen_attempts=max_plan_regen_attempts,
+        )["disposition"]
+    )
 
 
 def record_plan_attempt(
     state: "CoordinatorState",
     findings: "Iterable[PlanReviewFinding]",
+    *,
+    max_plan_regen_attempts: int = 3,
+    trajectory_assessable: bool = True,
 ) -> None:
     """Append per-attempt metadata to state and update plan_regen_disposition.
 
@@ -159,9 +284,14 @@ def record_plan_attempt(
             "p1_count": p1_count,
             "p2_count": p2_count,
             "finding_themes": finding_themes,
+            "trajectory_assessable": trajectory_assessable,
         }
     )
-    state.plan_regen_disposition = classify_disposition(state.plan_attempt_metadata)
+    state.plan_regen_assessment = assess_plan_trajectory(
+        state.plan_attempt_metadata,
+        max_plan_regen_attempts=max_plan_regen_attempts,
+    )
+    state.plan_regen_disposition = str(state.plan_regen_assessment["disposition"])
 
 
 def collect_all_surviving_themes(metadata: list[dict]) -> list[str]:
