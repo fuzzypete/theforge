@@ -383,17 +383,21 @@ class DiagnosisArtifact:
         )
 
     @staticmethod
-    def _is_verification_metadata_field(name: str) -> bool:
-        """True when a missing-field name records claim provenance, not content.
+    def _is_nonblocking_missing_field(name: str) -> bool:
+        """True when a strict-schema gap should stay audit-visible, not block landing.
 
-        The verification entries say *how* a claim was checked; they carry no
-        part of the diagnosis a dev or the shape gate reads.  They are named
-        separately so a gap in them can stay an audit signal without also
-        being a lifecycle blocker.
+        These fields remain part of :meth:`missing_required_fields` so malformed
+        or under-documented artifacts are still inspectable. They are excluded
+        from lifecycle blocking because the landed Diagnosis section shape gate
+        either cannot see them at all (hypotheses, symptom scope coverage,
+        verification metadata) or evaluates only the rendered label presence
+        rather than the artifact-level schema completeness.
         """
-        return name == "confirmed_cause_verification" or (
-            name.startswith("hypotheses[") and name.endswith("].claim_verification")
-        )
+        return name in {
+            "hypotheses",
+            "symptom_scope_coverage",
+            "confirmed_cause_verification",
+        } or (name.startswith("hypotheses[") and name.endswith("].claim_verification"))
 
     def lifecycle_blocking_missing_fields(
         self, *, issue_requires_categorical_scope: bool = False
@@ -403,27 +407,25 @@ class DiagnosisArtifact:
         A subset of :meth:`missing_required_fields`, which stays the strict
         schema/audit signal.  This one answers the narrower lifecycle question:
         does what is missing stop the rendered diagnosis from being the
-        fix-ready artifact it looks like?  Absent narrative content — no
-        confirmed cause, no hypotheses, no reproduction, uncovered categorical
-        scope — does.  A confirmed cause whose ``verification_type`` was never
-        recorded does not: the cause itself is asserted and renders verbatim,
-        so declaring the landing ``needs_diagnosis`` over that metadata gap
-        contradicts what the shape gate reads back off the same body (#2797).
+        fix-ready artifact it looks like?  Only fields that remain lifecycle-
+        blocking in the coordinator flow belong here; strict-schema gaps the
+        gate cannot see stay inspectable via :meth:`nonblocking_missing_fields`
+        instead of forcing a partial landing.
         """
         return tuple(
             name
             for name in self.missing_required_fields(
                 issue_requires_categorical_scope=issue_requires_categorical_scope
             )
-            if not self._is_verification_metadata_field(name)
+            if not self._is_nonblocking_missing_field(name)
         )
 
-    def missing_verification_metadata_fields(
+    def nonblocking_missing_fields(
         self, *, issue_requires_categorical_scope: bool = False
     ) -> tuple[str, ...]:
-        """The verification/provenance-only gaps in this artifact.
+        """Strict-schema gaps that remain visible after a successful landing.
 
-        Recorded in the audit so landing a metadata-incomplete diagnosis as
+        Recorded in the audit so landing a gate-conforming diagnosis as
         runnable stays inspectable after the run succeeds.
         """
         return tuple(
@@ -431,7 +433,15 @@ class DiagnosisArtifact:
             for name in self.missing_required_fields(
                 issue_requires_categorical_scope=issue_requires_categorical_scope
             )
-            if self._is_verification_metadata_field(name)
+            if self._is_nonblocking_missing_field(name)
+        )
+
+    def missing_verification_metadata_fields(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> tuple[str, ...]:
+        """Backward-compatible alias for callers using the legacy helper name."""
+        return self.nonblocking_missing_fields(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
         )
 
     def has_substantive_content(self) -> bool:
@@ -502,10 +512,10 @@ class DiagnoseState:
     unchecked_premises: tuple[UncheckedPremise, ...] = ()
     # Set when premise verification could not check cited anchors/patterns.
     missing_metadata_fields: tuple[str, ...] = ()
-    # Required-field names the artifact left unrecorded that are verification /
-    # provenance metadata only. These do NOT force a partial landing (#2797),
-    # so they are carried here to keep the strict schema gap inspectable in the
-    # audit of a run that landed runnable anyway.
+    # Required-field names the artifact left unrecorded that do NOT force a
+    # partial landing. This includes verification metadata plus other strict-
+    # schema diagnosis gaps the rendered-body gate cannot see, so a successful
+    # landing still leaves the coordinator's stricter artifact audit visible.
     starting_evidence_labels: list[str] = field(default_factory=list)
     # Short labels for each excerpt auto-loaded from issue-body references and
     # injected into the prompt as STARTING EVIDENCE. Empty when the body cited
@@ -618,14 +628,6 @@ def render_artifact_markdown(
             warning = (
                 "> ⚠ Partial diagnosis — the investigation timed out before "
                 "reaching a confirmed cause. Operator review required."
-            )
-        elif artifact.confirmed_cause.strip() and artifact.lifecycle_blocking_missing_fields(
-            issue_requires_categorical_scope=issue_requires_categorical_scope
-        ) == ("symptom_scope_coverage",):
-            warning = (
-                "> ⚠ Partial diagnosis — the investigation confirmed a cause, "
-                "but categorical symptom scope coverage remains incomplete. "
-                "Operator review required."
             )
         elif (
             artifact.partial_reason is DiagnosePartialReason.CAUSE_FOUND_INCOMPLETE

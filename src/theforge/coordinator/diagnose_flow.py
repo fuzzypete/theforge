@@ -65,6 +65,7 @@ from theforge.shape_check.heuristics import (
     _diagnosis_cause_unknown,
     check_bug_missing_expected,
     check_bug_missing_observed,
+    diagnosis_completeness,
     is_bug_format_issue,
 )
 from theforge.shape_check.issue_spec import BUG_SPEC, EXPECTED_SECTION, OBSERVED_SECTION
@@ -1228,13 +1229,16 @@ def _declared_diagnosis_verdict(
 ) -> ShapeVerdict:
     """The lifecycle state the landed Diagnosis section is meant to produce.
 
-    Read off the artifact and its own rendered section — not off the merged
-    issue body the validator then evaluates — so a landing that moves the issue
-    somewhere else is a mismatch rather than a restatement of the answer.
+    Read off the prospective rendered Diagnosis section itself, using the same
+    section-shape heuristics the body validator applies at LAND. The artifact's
+    stricter schema remains visible in the audit and partial classification, but
+    the declaration must stay in parity with the content being written so
+    ``require_conforming_body`` cannot discard a gate-conforming diagnosis over
+    a declare-side-only gap.
     """
-    if artifact.lifecycle_blocking_missing_fields(
-        issue_requires_categorical_scope=issue_requires_categorical_scope
-    ):
+    del artifact, issue_requires_categorical_scope
+    is_complete, _missing = diagnosis_completeness(section)
+    if not is_complete:
         return ShapeVerdict.NEEDS_DIAGNOSIS
     if _diagnosis_cause_unknown(section):
         return ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
@@ -2037,16 +2041,14 @@ def _run_diagnose_flow_body(
     # envelope, return the partial work for operator review rather than landing
     # a misleading "fix-ready" artifact. Name the specific reason when known.
     #
-    # "Essential" is the lifecycle-blocking subset, not the strict schema list:
-    # an artifact whose only gap is unrecorded verification metadata renders a
-    # Diagnosis section the shape gate reads as RUNNABLE, so declaring it
-    # NEEDS_DIAGNOSIS refuses the write against a body that does not occupy the
-    # declared state and discards the whole investigation (#2797). The strict
-    # list still reaches the audit via ``missing_metadata_fields``.
+    # "Essential" is the lifecycle-blocking subset, not the full strict schema
+    # list. Gate-invisible or otherwise non-blocking strict gaps still reach
+    # the audit via ``missing_metadata_fields`` so a landed diagnosis remains
+    # inspectable after success.
     lifecycle_blocking_fields = artifact.lifecycle_blocking_missing_fields(
         issue_requires_categorical_scope=state.issue_scope_is_categorical
     )
-    state.missing_metadata_fields = artifact.missing_verification_metadata_fields(
+    state.missing_metadata_fields = artifact.nonblocking_missing_fields(
         issue_requires_categorical_scope=state.issue_scope_is_categorical
     )
     partial_requires_partial_landing = (
@@ -2061,7 +2063,7 @@ def _run_diagnose_flow_body(
             partial_reason = DiagnosePartialReason.TIMEOUT
         elif artifact.confirmed_cause.strip():
             # A cause was confirmed; what's missing is some other lifecycle
-            # field (scope coverage, reproduction, etc). Distinct from the
+            # field (reproduction, observed symptom, etc). Distinct from the
             # honest-no-cause case below so an operator can tell "ready to
             # sprint after a small gap" from "re-run needed" without opening
             # the landed body (#2803).
@@ -2115,8 +2117,6 @@ def _run_diagnose_flow_body(
             cause_label = f"budget exceeded (${config.diagnose.budget_usd})"
         elif state.agent_failure_code == "timeout":
             cause_label = f"timed out after {int(profile.timeout_seconds)}s"
-        elif lifecycle_blocking_fields == ("symptom_scope_coverage",):
-            cause_label = "diagnosis scope-coverage incomplete"
         elif artifact.confirmed_cause.strip():
             cause_label = "cause found, diagnosis otherwise incomplete"
         else:
@@ -2177,11 +2177,9 @@ def _run_diagnose_flow_body(
     if state.agent_reported_success is False:
         message += " — runner reported unsuccessful completion"
     if state.missing_metadata_fields:
-        # The landing is runnable, but say what the artifact never recorded so
-        # the gap is visible without opening the audit.
-        message += " — verification metadata unrecorded: " + ", ".join(
-            state.missing_metadata_fields
-        )
+        # The landing is runnable, but say which strict diagnosis fields were
+        # still unrecorded so the gap is visible without opening the audit.
+        message += " — non-blocking diagnosis gaps: " + ", ".join(state.missing_metadata_fields)
     return DiagnoseResult(
         success=True,
         state=state,
