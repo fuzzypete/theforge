@@ -1,0 +1,95 @@
+schema_version: 2
+run_id: a9923fdb2c43
+authoritative_run_record: .forge/audits/runs/a9923fdb2c43.json
+generated_at: '2026-09-04T17:29:31.917323+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0077037500000000005
+story:
+  slug: issue-2785
+  name: 'Ratified semantic readiness: review policy, operator ratification, and REVIEWED_READY
+    admission land as one contract'
+  github_issue: 2785
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- api
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/adr/0009-typed-intake-contract.md
+- docs/guides/cli-reference.md
+- docs/reference/semantic-readiness.md
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/main.py
+- src/theforge/cli/sprint.py
+- src/theforge/eval/semantic_readiness.py
+- src/theforge/eval/semantic_storage.py
+- src/theforge/eval/semantic_types.py
+- src/theforge/ready_queue.py
+- src/theforge/shape_check/skip_taxonomy.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/shape_gate.py
+- tests/conftest.py
+- tests/test_cli_semantic_eval.py
+- tests/test_cli_sprint_shape_gate.py
+- tests/test_semantic_readiness.py
+what_changed:
+  description: This run defined and wired the semantic readiness contract so that
+    semantic evaluation results remain audit evidence until an operator ratifies them
+    against a specific revision, and sprint admission consumes that ratified state
+    to determine REVIEWED_READY or unevaluated outcomes. It also documented the policy
+    and exposed CLI flows for evaluation, ratification, and admission reporting.
+  approach: The change separated evaluator output from admission decisions by introducing
+    revision-scoped semantic readiness state and storage, then threading that state
+    through CLI commands, shape/admission gates, sprint manifest handling, and ready-queue
+    reporting while keeping structural verdicts unchanged and recording the policy
+    in ADR and reference documentation.
+  files_modified: *id002
+what_was_learned:
+- claim: When semantic gating removes items from sprint execution, forced-run CLI
+    output still needs its own reconciliation with the filtered runnable set; otherwise
+    status messaging can drift from actual admission behavior.
+  evidence:
+  - type: review_finding
+    finding_id: ac8a5532ae82e684
+    description: The review found that `forge sprint --force` reported all issues
+      as running even after semantic readiness skips had been removed from the runnable
+      set, demonstrating that admission/filtering correctness does not automatically
+      keep user-facing force-mode summaries accurate.
+  - type: file
+    path: src/theforge/cli/sprint.py
+    description: The finding is anchored in the sprint CLI path, showing the mismatch
+      arose specifically where runnable-set decisions are rendered for operators rather
+      than in the underlying readiness policy itself.
+learned_patterns:
+- ratified-state-not-raw-output
+- revision-scoped-readiness
+- late-result-supersession
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the contract wiring overall and surfaced a single remaining inconsistency
+    where force-mode sprint messaging did not reflect semantic skips removed from
+    the runnable set.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 2
+  plan_regenerations: true
+  cost_usd: 4.556182
+  dominant_difficulty: Encoding a policy-level contract across evaluation, ratification,
+    revision invalidation, and admission consumption without letting raw model output
+    or stale results act as readiness state.
