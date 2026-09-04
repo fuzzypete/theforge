@@ -1108,6 +1108,165 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_empty_hypotheses_body_landing_preserves_confirmed_cause(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 420,
+            "title": "confirmed cause should not be discarded",
+            "body": (
+                "## Observed\n\nA landed diagnosis used to be discarded.\n\n"
+                "## Expected\n\nA confirmed cause should be recorded on the issue.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        payload = {
+            "observed_symptom": "A landed diagnosis used to be discarded",
+            "reproduction_or_evidence": "The coordinator reached LAND and refused the write.",
+            "hypotheses": [],
+            "confirmed_cause": "The declaration path required hypotheses the gate never reads.",
+            "affected_code_path": (
+                "src/theforge/coordinator/diagnose_flow.py:_declared_diagnosis_verdict"
+            ),
+            "fix_success_criterion": (
+                "The issue body records the confirmed cause instead of discarding it."
+            ),
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=420,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success, result.message
+        assert mock_edit.called
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+        assert "Partial diagnosis" not in new_body
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("hypotheses",)
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_scope_gap_body_landing_preserves_confirmed_cause(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 421,
+            "title": "every sibling surface omits the same field",
+            "body": _categorical_bug_body(),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=421,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success, result.message
+        assert mock_edit.called
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+        assert "Partial diagnosis" not in new_body
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_partial_body_landing_with_empty_observed_symptom_is_not_refused(
+        self, mock_agent, mock_fetch, mock_edit, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 422,
+            "title": "rendered diagnosis headings must not cause refusal",
+            "body": (
+                "## Observed\n\nThe diagnosis write was refused.\n\n"
+                "## Expected\n\nThe confirmed cause should still be recorded.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        payload = {
+            "observed_symptom": "",
+            "reproduction_or_evidence": (
+                "A rendered section still includes the Observed symptom heading."
+            ),
+            "hypotheses": [
+                {
+                    "statement": "The declaration was derived from stricter artifact fields",
+                    "status": "confirmed",
+                    "evidence": "The body validator only reads the rendered diagnosis section.",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
+            "confirmed_cause": (
+                "The declaration and the rendered-body verdict were computed "
+                "from different signals."
+            ),
+            "affected_code_path": (
+                "src/theforge/coordinator/diagnose_flow.py:_declared_diagnosis_verdict"
+            ),
+            "fix_success_criterion": (
+                "LAND writes the diagnosis instead of refusing it at the producer boundary."
+            ),
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=422,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
+        assert mock_edit.called, "the conforming-body gate must not refuse this partial write"
+        new_body = mock_edit.call_args[0][1]
+        assert "## Diagnosis" in new_body
+        assert "Partial diagnosis" in new_body
+        assert result.message == (
+            "Partial diagnosis landed (cause found, diagnosis otherwise incomplete) "
+            "— operator review required"
+        )
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_complete_confirmed_cause_body_lands_when_runner_reports_unsuccessful(
         self, mock_agent, mock_fetch, mock_edit, tmp_path
     ):
@@ -1197,7 +1356,7 @@ class TestDiagnoseFlow:
         assert audit["artifact"]["partial"] is False
         assert audit["landing"]["destination"] == "body_section"
 
-    def test_declared_verdict_stays_needs_diagnosis_for_categorical_scope_gap(self):
+    def test_declared_verdict_follows_rendered_section_for_categorical_scope_gap(self):
         from theforge.coordinator.diagnose_flow import _declared_diagnosis_verdict
         from theforge.shape_check.types import ShapeVerdict
 
@@ -1230,22 +1389,22 @@ class TestDiagnoseFlow:
             issue_requires_categorical_scope=True,
         )
 
-        assert artifact.lifecycle_blocking_missing_fields(
-            issue_requires_categorical_scope=True
-        ) == ("symptom_scope_coverage",)
+        assert (
+            artifact.lifecycle_blocking_missing_fields(issue_requires_categorical_scope=True) == ()
+        )
         assert (
             _declared_diagnosis_verdict(
                 artifact,
                 section,
                 issue_requires_categorical_scope=True,
             )
-            is ShapeVerdict.NEEDS_DIAGNOSIS
+            is ShapeVerdict.RUNNABLE
         )
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_categorical_issue_without_scope_coverage_lands_partial(
+    def test_categorical_issue_without_scope_coverage_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1267,23 +1426,23 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
         assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
+            "Diagnosis landed at https://example/comment — non-blocking diagnosis "
+            "gaps: symptom_scope_coverage"
         )
         assert result.state.artifact is not None
-        assert result.state.artifact.partial is True
+        assert result.state.artifact.partial is False
         assert result.state.artifact.symptom_scope_coverage == SymptomScopeCoverage()
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
         assert mock_post.call_count == 1
         landed_markdown = mock_post.call_args.args[1]
-        assert "confirmed a cause" in landed_markdown
-        assert "categorical symptom scope coverage remains incomplete" in landed_markdown
-        assert "did not reach a confirmed cause" not in landed_markdown
+        assert "Partial diagnosis" not in landed_markdown
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-44-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["missing_metadata_fields"] == ["symptom_scope_coverage"]
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": (
@@ -1294,7 +1453,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_title_only_categorical_scope_requirement_lands_partial_without_coverage(
+    def test_title_only_categorical_scope_requirement_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1319,15 +1478,13 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
-        assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
-        )
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-46-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["missing_metadata_fields"] == ["symptom_scope_coverage"]
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Any landing path should preserve merge evidence",
@@ -1336,7 +1493,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_observed_section_categorical_scope_requirement_lands_partial_without_coverage(
+    def test_observed_section_categorical_scope_requirement_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1358,15 +1515,13 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
-        assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
-        )
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-48-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["missing_metadata_fields"] == ["symptom_scope_coverage"]
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Every user-facing surface fails to include the run id.",
@@ -1375,7 +1530,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_modified_scope_noun_categorical_requirement_lands_partial_without_coverage(
+    def test_modified_scope_noun_categorical_requirement_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1397,15 +1552,13 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
-        assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
-        )
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-49-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["missing_metadata_fields"] == ["symptom_scope_coverage"]
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Any story with notes should preserve them.",
@@ -1414,7 +1567,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_nested_categorical_scope_requirement_lands_partial_without_coverage(
+    def test_nested_categorical_scope_requirement_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1438,15 +1591,13 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
-        assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
-        )
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
         audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-52-*.yaml"))
         assert audit_files
         loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["missing_metadata_fields"] == ["symptom_scope_coverage"]
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Every story in every sprint should preserve notes.",
@@ -1455,7 +1606,7 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
-    def test_categorical_issue_with_false_scope_flag_lands_partial(
+    def test_categorical_issue_with_false_scope_flag_lands_and_audits_gap(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
         config = self._setup_config(tmp_path)
@@ -1485,15 +1636,12 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
 
-        assert not result.success
-        assert result.state.phase == DiagnosePhase.CAUSE_FOUND_PARTIAL
-        assert result.message == (
-            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
-            "— operator review required"
-        )
+        assert result.success
+        assert result.state.phase == DiagnosePhase.DONE
         assert result.state.artifact is not None
-        assert result.state.artifact.partial is True
+        assert result.state.artifact.partial is False
         assert result.state.artifact.symptom_scope_coverage.symptom_is_categorical is False
+        assert result.state.missing_metadata_fields == ("symptom_scope_coverage",)
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")

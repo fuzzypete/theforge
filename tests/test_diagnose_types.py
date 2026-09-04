@@ -451,7 +451,7 @@ class TestDiagnosisArtifact:
             "confirmed_cause_verification",
         )
         assert artifact.lifecycle_blocking_missing_fields() == ()
-        assert artifact.missing_verification_metadata_fields() == (
+        assert artifact.nonblocking_missing_fields() == (
             "hypotheses[0].claim_verification",
             "confirmed_cause_verification",
         )
@@ -466,24 +466,44 @@ class TestDiagnosisArtifact:
             "confirmed_cause",
             "affected_code_path",
         )
-        assert artifact.missing_verification_metadata_fields() == ()
+        assert artifact.nonblocking_missing_fields() == ()
 
-    def test_missing_categorical_scope_coverage_stays_lifecycle_blocking(self):
+    def test_missing_categorical_scope_coverage_stays_audit_visible_only(self):
         artifact = self._make(
             symptom_scope_coverage=SymptomScopeCoverage(),
             confirmed_cause_verification=ClaimVerification(),
         )
-        assert artifact.lifecycle_blocking_missing_fields(
-            issue_requires_categorical_scope=True
-        ) == ("symptom_scope_coverage",)
-        assert artifact.missing_verification_metadata_fields(
-            issue_requires_categorical_scope=True
-        ) == ("confirmed_cause_verification",)
+        assert artifact.missing_required_fields(issue_requires_categorical_scope=True) == (
+            "confirmed_cause_verification",
+            "symptom_scope_coverage",
+        )
+        assert (
+            artifact.lifecycle_blocking_missing_fields(issue_requires_categorical_scope=True) == ()
+        )
+        assert artifact.nonblocking_missing_fields(issue_requires_categorical_scope=True) == (
+            "confirmed_cause_verification",
+            "symptom_scope_coverage",
+        )
+
+    def test_empty_hypotheses_stays_audit_visible_only(self):
+        artifact = self._make(
+            hypotheses=(),
+            confirmed_cause_verification=ClaimVerification(),
+        )
+        assert artifact.missing_required_fields() == (
+            "hypotheses",
+            "confirmed_cause_verification",
+        )
+        assert artifact.lifecycle_blocking_missing_fields() == ()
+        assert artifact.nonblocking_missing_fields() == (
+            "hypotheses",
+            "confirmed_cause_verification",
+        )
 
     def test_complete_artifact_has_no_lifecycle_blockers_or_metadata_gaps(self):
         artifact = self._make()
         assert artifact.lifecycle_blocking_missing_fields() == ()
-        assert artifact.missing_verification_metadata_fields() == ()
+        assert artifact.nonblocking_missing_fields() == ()
 
     def test_is_complete_false_when_claim_verification_type_is_unrecognized(self):
         artifact = self._make(
@@ -912,7 +932,7 @@ class TestRenderArtifactMarkdown:
         assert "did not reach a confirmed cause" in md
         assert "budget or timeout" not in md
 
-    def test_scope_only_partial_with_confirmed_cause_names_scope_gap_instead(self):
+    def test_rendered_scope_coverage_section_does_not_imply_partial_warning(self):
         artifact = DiagnosisArtifact(
             issue_number=2665,
             observed_symptom="A diagnose banner contradicts the artifact beneath it.",
@@ -923,7 +943,7 @@ class TestRenderArtifactMarkdown:
                 Hypothesis(
                     "scope coverage was the only missing requirement",
                     "confirmed",
-                    "missing_required_fields returns only symptom_scope_coverage",
+                    "The audit still records symptom_scope_coverage as missing metadata.",
                     claim_verification=ClaimVerification(
                         "source", "Checked against the target repository source."
                     ),
@@ -931,20 +951,25 @@ class TestRenderArtifactMarkdown:
             ),
             confirmed_cause="The banner renderer keys only on partial_reason.",
             affected_code_path="src/theforge/diagnose_types.py",
-            fix_success_criterion="The banner describes scope coverage, not cause failure.",
-            partial=True,
-            partial_reason=DiagnosePartialReason.UNCLASSIFIED,
+            fix_success_criterion=(
+                "A landed diagnosis renders the scope section without a warning."
+            ),
             confirmed_cause_verification=ClaimVerification(
                 "source", "Checked against the target repository source."
+            ),
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=True,
+                stated_scope="every sibling renderer",
+                examined_locations=(),
             ),
         )
         rendered = render_artifact_markdown(
             artifact,
             issue_requires_categorical_scope=True,
         )
-        assert "confirmed a cause" in rendered
-        assert "categorical symptom scope coverage remains incomplete" in rendered
-        assert "did not reach a confirmed cause" not in rendered
+        assert "### Stated symptom scope coverage" in rendered
+        assert "every sibling renderer" in rendered
+        assert "Partial diagnosis" not in rendered
 
     def test_budget_partial_artifact_names_budget(self):
         artifact = DiagnosisArtifact(
