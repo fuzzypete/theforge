@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ForgeConfig
-from ..coordinator.audit import has_review_approve
 from ..coordinator.branch_landing import (
     BranchLanding,
     _issue_number_from_slug,
@@ -426,18 +425,12 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 5. Check audit trail for a prior review APPROVE
-    if has_review_approve(project_root, slug, base_branch, branch):
-        return StoryTriage(
-            story_path=story_path,
-            action="skip_merged",
-            reason=(
-                "prior APPROVE in audit trail; branch already satisfied "
-                f"({len(commits_ahead)} commits ahead)"
-            ),
-            worktree_path=None,
-            slug=slug,
-        )
+    # No second landing decision lives here. Step 2 above asked
+    # resolve_branch_landing, which consults the audit trail — including a prior
+    # APPROVE — as its first and strongest source. A separate APPROVE check at
+    # this point answered the same question from weaker evidence: it accepted an
+    # APPROVE with no record of the work reaching base, and it ran *after* the
+    # resolver had already declined (#2795, cycle 2).
 
     # 6. Gate pre-check to decide REVIEW vs DEV entry
     gate_label = GateLabel(

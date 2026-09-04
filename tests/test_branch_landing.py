@@ -92,67 +92,105 @@ def test_is_branch_merged_ff_no_slug(tmp_path: Path) -> None:
     assert result is False
 
 
+def _no_external_evidence():
+    """Silence every source but git topology, so a verdict can only come from it."""
+    return (
+        patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
+        patch("theforge.coordinator.branch_landing._merged_pr_probe", return_value=(None, True)),
+    )
+
+
+def _regular_merged_repo(path: Path, branch: str = "forge/story-a") -> None:
+    """A real ``--no-ff`` merge: the branch entered base as a merge's second parent.
+
+    Base also advances on its own first, so the merge cannot fast-forward — this
+    is the ordinary merge-commit history, the one shape topology can prove.
+    """
+    _seed_repo(path)
+    _git(path, "checkout", "-q", "-b", branch)
+    for i in (1, 2):
+        (path / f"w{i}.txt").write_text(f"work {i}\n")
+        _git(path, "add", ".")
+        _git(path, "commit", "-q", "-m", f"wip {i}")
+    _git(path, "checkout", "-q", "main")
+    (path / "base.txt").write_text("base moved on\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", "base: unrelated work")
+    _git(path, "merge", "-q", "--no-ff", "-m", f"Merge branch '{branch}'", branch)
+
+
 def test_is_branch_merged_regular_merge(tmp_path: Path) -> None:
-    """Regular merge commit: base has moved ahead of branch → True without audit."""
+    """A real merge commit is topology evidence on its own — no audit, no PR.
 
-    def _mock_regular(cmd: list[str], **kwargs: object) -> MagicMock:
-        m = MagicMock()
-        m.returncode = 0
-        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
-            m.stdout = b"3"  # base is 3 commits ahead of branch
-        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
-            m.stdout = b"2"  # branch had unique commits before merge
-        else:
-            m.stdout = b""
-        return m
+    Regression for the cycle-1 P1: the old check demanded the branch still have
+    commits base lacks, which an ancestor branch never does, so every genuine
+    merge resolved as undecidable. This runs against real git rather than a mock
+    that could assert a shape git cannot produce.
+    """
+    _regular_merged_repo(tmp_path)
+    approve, probe = _no_external_evidence()
 
-    with patch("theforge.coordinator.branch_landing.subprocess.run", side_effect=_mock_regular):
-        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
-    assert result is True
+    with approve, probe:
+        landing = resolve_branch_landing("forge/story-a", "main", tmp_path, slug="story-a")
+
+    assert landing.status == LANDED
+    assert landing.source == "topology"
+    assert landing.describe_source("main") == "branch merged into main history"
+    with approve, probe:
+        assert _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a") is True
 
 
-def test_is_branch_merged_regular_merge_falls_back_to_audit(tmp_path: Path) -> None:
-    """Regular merge fallback: ahead > 0, unique == 0, audit APPROVE → True."""
+def test_is_branch_merged_regular_merge_needs_no_slug(tmp_path: Path) -> None:
+    """Topology is local evidence: it decides without a story slug or an issue number."""
+    _regular_merged_repo(tmp_path)
+    _, probe = _no_external_evidence()
 
-    def _mock_regular_fallback(cmd: list[str], **kwargs: object) -> MagicMock:
-        m = MagicMock()
-        m.returncode = 0
-        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
-            m.stdout = b"3"
-        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
-            m.stdout = b"0"
-        else:
-            m.stdout = b""
-        return m
+    with probe:
+        landing = resolve_branch_landing("forge/story-a", "main", tmp_path)
 
-    with (
-        patch(
-            "theforge.coordinator.branch_landing.subprocess.run",
-            side_effect=_mock_regular_fallback,
-        ),
-        patch("theforge.coordinator.branch_landing.has_review_approve", return_value=True),
-    ):
-        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
-    assert result is True
+    assert landing.status == LANDED
+    assert landing.source == "topology"
 
 
 def test_is_branch_merged_stale_empty_branch(tmp_path: Path) -> None:
-    """Base moving past an empty branch must not count as merged."""
+    """Base moving past an empty branch must not count as merged.
 
-    def _mock_stale(cmd: list[str], **kwargs: object) -> MagicMock:
-        m = MagicMock()
-        m.returncode = 0
-        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
-            m.stdout = b"3"  # base advanced beyond the stale branch tip
-        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
-            m.stdout = b"0"  # branch never had unique commits
-        else:
-            m.stdout = b""
-        return m
+    The branch is an ancestor of base and base is ahead of it — the same two
+    facts a merge produces. It is separated by first-parent position: this tip
+    is a plain old base commit, not a merged-in second parent.
+    """
+    _seed_repo(tmp_path)
+    _git(tmp_path, "branch", "forge/story-a")
+    for i in (1, 2):
+        (tmp_path / f"b{i}.txt").write_text(f"base {i}\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-q", "-m", f"base {i}")
 
-    with patch("theforge.coordinator.branch_landing.subprocess.run", side_effect=_mock_stale):
-        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
-    assert result is False
+    approve, probe = _no_external_evidence()
+    with approve, probe:
+        landing = resolve_branch_landing("forge/story-a", "main", tmp_path, slug="story-a")
+
+    assert landing.status == UNDECIDABLE
+    assert landing.landed is False
+    assert "branch is not merged into main by topology" in landing.describe_absent()
+
+
+def test_is_branch_merged_fast_forward_merge_is_not_topology_evidence(tmp_path: Path) -> None:
+    """A fast-forwarded branch sits at base's tip, which proves nothing on its own."""
+    _seed_repo(tmp_path)
+    _git(tmp_path, "checkout", "-q", "-b", "forge/story-a")
+    (tmp_path / "w1.txt").write_text("work\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "wip")
+    _git(tmp_path, "checkout", "-q", "main")
+    _git(tmp_path, "merge", "-q", "--ff-only", "forge/story-a")
+
+    approve, probe = _no_external_evidence()
+    with approve, probe:
+        landing = resolve_branch_landing("forge/story-a", "main", tmp_path, slug="story-a")
+
+    assert landing.source != "topology"
+    assert landing.landed is False
 
 
 def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:

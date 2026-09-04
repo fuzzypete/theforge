@@ -641,19 +641,25 @@ the base branch that closes the issue. That covers a squash landing, where the
 branch's own commits never reach origin and so the branch is preserved forever
 on commit presence alone.
 
+One narrower reclamation stays local and free: a branch with no commits missing
+from origin that is also *contained in* `origin/<base>` holds nothing to lose.
+Note the second half — commits reachable from some unrelated origin ref are not
+commits that landed on the base branch, so a missing
+`refs/remotes/origin/<branch>` is not on its own grounds for removal.
+
 Anything else is preserved, and the log says which:
 
 ```
 ✓ WORKSPACE  feat/issue-2553 landed via merged PR #2577 — reclaimable
-⚠ WORKSPACE  preserving worktree feat/issue-9999 — no merge evidence; 3 local commits not present on origin
+⚠ WORKSPACE  preserving worktree feat/issue-9999 — branch content is absent from main; 3 local commits not present on origin
 ⚠ WORKSPACE  preserving worktree feat/issue-8888 — landing undecidable — the merged-PR lookup could not run; ...
 ```
 
-`no merge evidence` means the branch's work is provably absent from the base
-branch — real unlanded work, and the case preservation exists for. `landing
-undecidable` means nothing could speak for the branch either way; the message
-names the evidence that was missing, so a failed `gh` call is not read as proof
-that no PR merged. Neither is ever deleted automatically.
+`branch content is absent from main` means the branch's work is provably not in
+the base branch — real unlanded work, and the case preservation exists for.
+`landing undecidable` means nothing could speak for the branch either way; the
+message names the evidence that was missing, so a failed `gh` call is not read
+as proof that no PR merged. Neither is ever deleted automatically.
 
 ---
 

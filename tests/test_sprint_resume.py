@@ -56,6 +56,45 @@ def _is_issue_grep(cmd: list[str], issue_number: int) -> bool:
     )
 
 
+def _git(path: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+
+
+def _real_merge_into_main(path: Path, branch: str) -> None:
+    """Merge ``branch`` into ``main`` for real, as an ordinary merge commit.
+
+    Triage's merge evidence is exercised against git itself rather than a mocked
+    ``subprocess.run``: a mock can assert a history git cannot produce, which is
+    how a topology rule that no real merge satisfies survived review (#2795).
+    """
+    _git(path, "init", "-q", "-b", "main")
+    _git(path, "config", "user.email", "test@example.com")
+    _git(path, "config", "user.name", "Test")
+    (path / "seed.txt").write_text("seed\n")
+    _git(path, "add", "seed.txt")
+    _git(path, "commit", "-q", "-m", "seed")
+    _git(path, "checkout", "-q", "-b", branch)
+    (path / "work.txt").write_text("work\n")
+    _git(path, "add", "work.txt")
+    _git(path, "commit", "-q", "-m", "wip")
+    _git(path, "checkout", "-q", "main")
+    (path / "base.txt").write_text("base moved on\n")
+    _git(path, "add", "base.txt")
+    _git(path, "commit", "-q", "-m", "base: unrelated work")
+    _git(path, "merge", "-q", "--no-ff", "-m", f"Merge branch '{branch}'", branch)
+
+
+def _only_local_evidence():
+    """Silence the GitHub probe and the audit trail, leaving git topology to decide."""
+    return patch.multiple(
+        "theforge.coordinator.branch_landing",
+        has_review_approve=MagicMock(return_value=False),
+        _merged_pr_probe=MagicMock(return_value=(None, True)),
+    )
+
+
 def _make_config(tmp_path: Path) -> ForgeConfig:
     return ForgeConfig(
         project="test",
@@ -192,27 +231,18 @@ def _make_coordinator_result(
 
 class TestTriageSpec:
     def test_triage_merged_spec(self, tmp_path: Path) -> None:
-        """Branch already merged to base → skip_merged."""
+        """Branch already merged to base → skip_merged, decided by real git topology."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
+        _real_merge_into_main(tmp_path, "forge/feature-a")
 
-        def _mock_run(cmd, **kwargs):
-            m = MagicMock()
-            if "--is-ancestor" in cmd:
-                m.returncode = 0  # is ancestor
-            elif "rev-list" in cmd and "--count" in cmd:
-                m.returncode = 0
-                m.stdout = b"3"  # base is 3 commits ahead of branch — truly merged
-            else:
-                m.returncode = 0
-                m.stdout = b""
-            return m
-
-        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+        with _only_local_evidence():
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
-        assert "merged" in triage.reason
+        assert triage.reason == (
+            "already merged to main (evidence: branch merged into main history)"
+        )
 
     def test_triage_branch_at_base_head_not_merged(self, tmp_path: Path) -> None:
         """Branch at base HEAD with 0 commits ahead → full (not skip_merged)."""
@@ -435,7 +465,7 @@ class TestTriageSpec:
 
         with (
             patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
-            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+            patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
         ):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
@@ -580,7 +610,7 @@ class TestReadPriorSprintCost:
         with (
             patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
             patch("theforge.sprint.dag._is_issue_closed", return_value=True),
-            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+            patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
         ):
             triage = _triage_spec("issue-1102.md", config, tmp_path)
 
@@ -748,7 +778,7 @@ class TestReadPriorSprintCost:
         with (
             patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
             patch("theforge.sprint.dag._is_issue_closed", return_value=False),
-            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+            patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
         ):
             triage = _triage_spec("issue-1072.md", config, tmp_path)
 
@@ -804,7 +834,7 @@ class TestReadPriorSprintCost:
 
         with (
             patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
-            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+            patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
             patch(
                 "theforge.sprint.dag._run_gate",
                 return_value=("dev", "gate failed", ""),
@@ -820,29 +850,11 @@ class TestReadPriorSprintCost:
 
         _make_spec_file(tmp_path, "Issue 1073", "issue-1073")
         config = _make_config(tmp_path)
-
-        def _mock_run(cmd, **kwargs):
-            m = MagicMock()
-            if "--is-ancestor" in cmd:
-                m.returncode = 0
-                m.stdout = b""
-            elif "rev-list" in cmd and "--count" in cmd:
-                # Both directions non-zero: base advanced past a branch that had
-                # unique work of its own.
-                m.returncode = 0
-                m.stdout = b"2"
-            elif "log" in cmd:
-                m.returncode = 0
-                m.stdout = b""
-            else:
-                m.returncode = 0
-                m.stdout = b""
-            return m
+        _real_merge_into_main(tmp_path, "forge/issue-1073")
 
         with (
-            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            _only_local_evidence(),
             patch("theforge.sprint.dag._is_issue_closed", return_value=False),
-            patch("theforge.sprint.dag.has_review_approve", return_value=False),
         ):
             triage = _triage_spec("issue-1073.md", config, tmp_path)
 
@@ -851,43 +863,73 @@ class TestReadPriorSprintCost:
             "already merged to main (evidence: branch merged into main history)"
         )
 
-    def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
-        """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
-
-        _make_spec_file(tmp_path, "Feature A", "feature-a")
-        config = _make_config(tmp_path)
-
-        worktree = tmp_path / "feature-a"
-        worktree.mkdir()
-
-        # Write an APPROVE record to history.jsonl
-        audits_dir = tmp_path / ".forge" / "audits"
-        audits_dir.mkdir(parents=True)
+    @staticmethod
+    def _seed_approve(tmp_path: Path, *, landed: bool) -> None:
+        """Record a prior APPROVE for feature-a, with or without a landing assertion."""
         record = {
             "task": {"slug": "feature-a"},
+            "run_id": "sr-rec",
             "reviews": [{"verdict": "APPROVE"}],
         }
-        record.setdefault("run_id", "sr-rec")
         audit_substrate.seed_records(tmp_path, [record])
+        if landed:
+            publish_landed(tmp_path, "sr-rec", slug="feature-a")
 
-        def _mock_run(cmd, **kwargs):
-            m = MagicMock()
-            if "--is-ancestor" in cmd:
-                m.returncode = 1  # not merged
-            elif "log" in cmd:
-                m.returncode = 0
-                m.stdout = b"abc123 some commit\n"
-            else:
-                m.returncode = 0
-                m.stdout = b""
-            return m
+    @staticmethod
+    def _mock_unmerged_branch(cmd, **kwargs):
+        """Git as it looks at a squash-landed branch: not an ancestor, commits ahead."""
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1  # not merged by topology
+        elif "log" in cmd:
+            m.returncode = 0
+            m.stdout = b"abc123 some commit\n"
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
 
-        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+    def test_triage_landed_prior_approve_skips_via_resolver(self, tmp_path: Path) -> None:
+        """A prior APPROVE that landed skips — and the audit source is named as such.
+
+        The skip has one origin, ``resolve_branch_landing``, whose first source
+        is this same audit trail. Triage used to re-ask the question afterwards
+        from weaker evidence, which is what this pins shut (#2795).
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+        (tmp_path / "feature-a").mkdir()
+        self._seed_approve(tmp_path, landed=True)
+
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=self._mock_unmerged_branch):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
-        assert "APPROVE" in triage.reason or "approve" in triage.reason.lower()
+        assert triage.reason == "already merged to main (evidence: prior APPROVE in audit trail)"
         assert triage.worktree_path is None
+
+    def test_triage_prior_approve_without_landing_evidence_does_not_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """An APPROVE with no record of the work reaching base is not a landing.
+
+        The removed legacy path accepted exactly this — an APPROVE verdict alone,
+        after the resolver had already declined — and skipped a story whose work
+        was still only on the branch.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+        (tmp_path / "feature-a").mkdir()
+        self._seed_approve(tmp_path, landed=False)
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=self._mock_unmerged_branch),
+            patch("theforge.sprint.dag._run_gate", return_value=("dev", "gate failed", "")),
+        ):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action != "skip_merged"
+        assert "merged" not in triage.reason
 
     def test_triage_gate_pass_no_approve_routes_to_review(self, tmp_path: Path) -> None:
         """Worktree with commits, gate passes, but no APPROVE → review (not skip)."""

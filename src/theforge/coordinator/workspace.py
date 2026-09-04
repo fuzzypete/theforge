@@ -696,6 +696,27 @@ def _count_unpublished_commits(branch_name: str, project_root: Path) -> int | No
         return None
 
 
+def _branch_contained_in(container: str, branch_name: str, project_root: Path) -> bool:
+    """Whether every commit on ``branch_name`` is already reachable from ``container``.
+
+    Paired with a zero unpublished-commit count, this is the sweep's "there is no
+    work here to lose" gate — not a landing verdict. It is deliberately narrow:
+    containment in ``origin/<base>`` says the branch's own commits are in base,
+    which a squash landing never satisfies. :func:`resolve_branch_landing` is
+    what answers whether the *work* landed.
+
+    ``git branch --merged`` prefixes the branch checked out in another worktree
+    with ``+`` and the current one with ``*``; both are stripped, so a branch
+    still checked out in the worktree being swept is recognised (#1489).
+    """
+    ok, out = _cu._run_shell(f"git branch --merged {container}", project_root)
+    if not ok:
+        return False
+    return branch_name in {
+        line.strip().lstrip("+*").strip() for line in out.splitlines() if line.strip()
+    }
+
+
 def _local_commit_note(unpublished: int | None) -> str:
     """Describe what the cheap origin probe found, for a preservation message."""
     if unpublished is None:
@@ -703,15 +724,21 @@ def _local_commit_note(unpublished: int | None) -> str:
     return f"{unpublished} local commit{'s' if unpublished != 1 else ''} not present on origin"
 
 
-def _preserve_reason(landing: BranchLanding, unpublished: int | None) -> str:
+def _preserve_reason(
+    landing: BranchLanding, unpublished: int | None, base_branch: str = "the base branch"
+) -> str:
     """Say why a worktree survived, in terms an operator can act on.
 
     An undecidable landing names the evidence that was absent, because that is
     what separates a branch holding real unlanded work from one nothing could
-    speak for — the same directory, two very different follow-ups (#2795).
+    speak for — the same directory, two very different follow-ups (#2795). An
+    unlanded one names the evidence that proved the work absent, for the same
+    reason: it is the claim an operator would contest.
     """
     if landing.undecidable:
         return f"landing undecidable — {landing.describe_absent()}"
+    if landing.source is not None:
+        return f"{landing.describe_source(base_branch)}; {_local_commit_note(unpublished)}"
     return f"no merge evidence; {_local_commit_note(unpublished)}"
 
 
@@ -826,45 +853,32 @@ def sweep_orphan_worktrees(
         if not ok_status or status_out.strip():
             continue
         # A clean tree is not evidence that the work is safe: an agent that commits
-        # as it goes leaves a clean tree with local-only history. Absence of commits
-        # missing from origin establishes the work exists elsewhere, and it also
-        # separates a never-pushed branch from one whose remote ref was deleted
-        # after merging — both of which lack refs/remotes/origin/<branch>.
-        #
-        # These local checks run first because they are cheap and they clear the
-        # ordinary merged-and-published worktree without any network call.
+        # as it goes leaves a clean tree with local-only history. The cheap local
+        # gate below asks a narrower question than "did this land" — it asks
+        # whether the worktree holds *any* work that could be lost — and it is
+        # kept only because it is free and clears the ordinary published-and-
+        # merged worktree without a single network call.
         unpublished = _count_unpublished_commits(branch_name, project_root)
-        if unpublished == 0:
-            ok_gone, gone_out = _cu._run_shell(
-                f"git rev-parse --verify --quiet refs/remotes/origin/{branch_name}", project_root
+        if unpublished == 0 and _branch_contained_in(remote_base, branch_name, project_root):
+            _remove_worktree(
+                candidate,
+                branch_name,
+                project_root,
+                f"sweep: contained in {remote_base}; no commits missing from origin",
             )
-            branch_gone = not ok_gone or not gone_out.strip()
-            ok_merged, merged_out = _cu._run_shell(
-                f"git branch --merged {remote_base}", project_root
-            )
-            merged = False
-            if ok_merged:
-                merged_branches = {
-                    line.strip().lstrip("+*").strip()
-                    for line in merged_out.splitlines()
-                    if line.strip()
-                }
-                merged = branch_name in merged_branches
-            if merged or branch_gone:
-                info = (
-                    f"sweep: merged into {remote_base}; no commits missing from origin"
-                    if merged
-                    else "sweep: remote branch gone; no commits missing from origin"
-                )
-                _remove_worktree(candidate, branch_name, project_root, info)
-                continue
+            continue
 
-        # Everything below here the commit-presence and topology checks would have
-        # preserved. That is exactly where they are too weak to decide: a squash
-        # landing rewrites the branch's commits, so its own SHAs never reach origin
-        # and it is never an ancestor of the base branch, whatever it landed
-        # (#2795). Ask the shared resolver, which reads the same evidence resume
-        # triage does, and let a landed answer clear both gates above.
+        # Every other removal is the landing question, and the shared resolver
+        # owns it. Nothing else here may decide it — a deleted
+        # refs/remotes/origin/<branch> used to be treated as proof on its own,
+        # which deleted branches whose commits merely happened to be reachable
+        # from some unrelated origin ref while their content had never reached
+        # the configured base branch (#2795, cycle 2).
+        #
+        # The resolver is also what the commit-presence gate above cannot answer:
+        # a squash landing rewrites the branch's commits, so its own SHAs never
+        # reach origin and it is never contained in the base branch, whatever it
+        # landed. Resume triage reads the same evidence through the same call.
         landing = resolve_branch_landing(branch_name, base_branch, project_root, slug=slug)
         if landing.landed:
             detail = landing.describe_source(base_branch)
@@ -874,7 +888,7 @@ def sweep_orphan_worktrees(
 
         _cu._log(
             f"⚠ WORKSPACE  preserving worktree {branch_name} — "
-            f"{_preserve_reason(landing, unpublished)}"
+            f"{_preserve_reason(landing, unpublished, base_branch)}"
         )
 
 

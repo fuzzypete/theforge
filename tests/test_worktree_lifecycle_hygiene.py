@@ -9,7 +9,7 @@ from coord_test_helpers import _make_config, _make_task
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.cli.shared import _write_audit
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.coordinator.workspace import sweep_orphan_worktrees
+from theforge.coordinator.workspace import _count_unpublished_commits, sweep_orphan_worktrees
 from theforge.sprint.audit import _write_story_audit
 from theforge.sprint.lock import _is_escalated_worktree
 
@@ -515,8 +515,41 @@ def test_sweep_preserves_local_only_commits_without_merge_evidence(
     assert (live / "work3.py").exists()
     err = capsys.readouterr().err
     assert "preserving worktree feat/issue-9999" in err
-    assert "no merge evidence" in err
+    assert "branch content is absent from main" in err
     assert "3 local commits not present on origin" in err
+
+
+def test_sweep_preserves_branch_published_only_under_an_unrelated_origin_ref(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Commits reachable from *some* origin ref are not commits that landed on base.
+
+    The branch below was pushed under another name, so nothing on it is missing
+    from origin, and its own remote-tracking ref does not exist. The sweep used
+    to read that pair — zero unpublished commits, remote ref gone — as proof the
+    work had merged and delete the worktree. It proves only that a copy exists
+    somewhere; the content never reached the configured base branch (#2795).
+    """
+    from theforge.coordinator import branch_landing
+
+    repo, config = _init_sweep_repo(tmp_path)
+    stranded = repo / ".forge" / "worktrees" / "stranded"
+    _git(repo, "worktree", "add", "-b", "forge/stranded", str(stranded), "main")
+    (stranded / "work.py").write_text("value = 1\n", encoding="utf-8")
+    _git(stranded, "add", ".")
+    _git(stranded, "commit", "-m", "wip")
+
+    # Published under an unrelated name: every commit is reachable from an
+    # origin ref, but refs/remotes/origin/forge/stranded does not exist.
+    _git(repo, "fetch", "origin", "forge/stranded:refs/remotes/origin/archive/stranded")
+    assert _count_unpublished_commits("forge/stranded", repo) == 0
+    monkeypatch.setattr(branch_landing, "_merged_pr_probe", _no_merged_pr)
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert stranded.exists()
+    assert (stranded / "work.py").exists()
+    assert "preserving worktree forge/stranded" in capsys.readouterr().err
 
 
 def test_sweep_preserves_undecidable_branch_and_names_the_absent_evidence(

@@ -454,6 +454,76 @@ def _with_pr_metadata(
     )
 
 
+def _rev_parse(project_root: Path, rev: str) -> str | None:
+    """Resolve ``rev`` to an object id, or ``None`` when git cannot."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", rev],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    oid = result.stdout.decode("utf-8", errors="replace").strip()
+    return oid or None
+
+
+def _joined_base_by_merge(
+    project_root: Path,
+    branch: str,
+    base_branch: str,
+) -> bool | None:
+    """Did ``branch`` join ``base_branch`` through a merge? ``None`` when unreadable.
+
+    Called only once ``branch`` is known to be an ancestor of ``base_branch``
+    with base ahead of it. Two very different histories produce that shape:
+
+    * a real merge — ``branch`` entered base as the *second* parent of a merge
+      commit, so it sits off base's first-parent line; and
+    * an abandoned branch that never committed anything and was simply left
+      pointing at an old base commit, which sits *on* that first-parent line.
+
+    The earlier revision of this check tried to tell them apart by asking
+    whether the branch still had commits base lacks — but once a branch is an
+    ancestor of base, base lacks nothing of it, so that count is always zero and
+    every genuine merge resolved as undecidable (#2795, cycle 2).
+
+    First-parent position separates them exactly. Walking base's first-parent
+    line down to the first commit ``branch`` already contains, the oldest commit
+    listed has ``branch`` as its own first parent precisely when the branch is a
+    plain old base commit. Anything else means base reached the branch by
+    merging it.
+    """
+    try:
+        walk = subprocess.run(
+            ["git", "rev-list", "--first-parent", f"{branch}..{base_branch}"],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if walk.returncode != 0:
+        return None
+    line = [
+        ln.strip()
+        for ln in walk.stdout.decode("utf-8", errors="replace").splitlines()
+        if ln.strip()
+    ]
+    if not line:
+        # Base is ahead by the count above yet its first-parent walk is empty:
+        # the two probes disagree, so this is not an answer.
+        return None
+    oldest_first_parent = _rev_parse(project_root, f"{line[-1]}^1")
+    branch_tip = _rev_parse(project_root, branch)
+    if oldest_first_parent is None or branch_tip is None:
+        return None
+    return oldest_first_parent != branch_tip
+
+
 def _topology_landed(
     project_root: Path,
     branch: str,
@@ -462,9 +532,10 @@ def _topology_landed(
     """Whether git topology alone proves the merge. ``None`` when unreadable.
 
     Only the regular-merge shape is provable here: the branch is an ancestor of
-    base, base has advanced past it, and the branch had unique commits of its
-    own. A fast-forward merge (same tip) and a squash merge are both invisible
-    to topology, which is why the sources after it exist.
+    base, base has advanced past it, and base reached the branch by merging it
+    rather than by leaving it behind (see :func:`_joined_base_by_merge`). A
+    fast-forward merge (same tip) and a squash merge are both invisible to
+    topology, which is why the sources after it exist.
     """
     try:
         ancestor = subprocess.run(
@@ -487,18 +558,10 @@ def _topology_landed(
         )
         ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
         if ahead_count == 0:
+            # Same tip: a fast-forward merge and a branch that never committed
+            # are identical here. The audit trail and PR record decide.
             return False
-        # Distinguish a real regular merge from an abandoned branch whose tip is
-        # merely behind base_branch. A merged branch must also have unique
-        # commits that are now reachable from base_branch.
-        unique_result = subprocess.run(
-            ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
-            cwd=str(project_root),
-            capture_output=True,
-            timeout=30,
-        )
-        unique_count = int(unique_result.stdout.decode("utf-8", errors="replace").strip() or "0")
-        return unique_count > 0
+        return _joined_base_by_merge(project_root, branch, base_branch)
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return None
 
