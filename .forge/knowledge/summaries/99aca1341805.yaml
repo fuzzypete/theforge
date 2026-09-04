@@ -1,0 +1,123 @@
+schema_version: 2
+run_id: 99aca1341805
+authoritative_run_record: .forge/audits/runs/99aca1341805.json
+generated_at: '2026-09-02T20:58:53.095424+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011025
+story:
+  slug: issue-2832
+  name: A dev invocation started right after a gate failure is killed before producing
+    output, consuming a retry for work that never ran
+  github_issue: 2832
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/agent_types.py
+- src/theforge/coordinator/agent_failure.py
+- src/theforge/runners/cli.py
+- src/theforge/runners/runner_claude.py
+- src/theforge/runners/runner_codex.py
+- src/theforge/runners/runner_gemini.py
+- src/theforge/sprint/rca.py
+- tests/fake_bin/claude
+- tests/test_agent_ended_without_result.py
+- tests/test_coord_no_judgment_seam.py
+- tests/test_process_group.py
+- tests/test_runner_claude.py
+what_changed:
+  description: The run classified agent invocations that are terminated by runner
+    or system conditions before producing a result, distinguished those terminations
+    from ordinary empty failures, and prevented those non-executed kills from consuming
+    story retry budget. It also narrowed process cleanup to owned processes so cleanup
+    from prior work does not reach later sequential invocations.
+  approach: The change introduced explicit termination/result-state plumbing across
+    runner and coordinator boundaries, then applied that state in retry accounting
+    and no-judgment handling, with regression coverage focused on sequential invocation
+    transitions, process-group ownership, and missing-result-event runner paths.
+  files_modified: *id002
+what_was_learned:
+- claim: When a runner can end without a result event or any priceable output, future
+    work should treat that as a distinct non-executed termination path rather than
+    folding it into an ordinary agent failure, because retry/budget decisions depend
+    on that distinction.
+  evidence:
+  - type: plan_step
+    step_id: '2'
+    description: This step explicitly separates runner-owned and unowned termination
+      on AgentResult, showing the run's key planning insight was that termination
+      provenance must survive into higher layers instead of being collapsed into a
+      generic failure.
+  - type: plan_step
+    step_id: '3'
+    description: This step ties classification directly to releasing retry slots for
+      non-executed system kills, demonstrating that the distinction is operationally
+      important for coordinator budgeting rather than just diagnostic detail.
+  - type: file
+    path: src/theforge/coordinator/agent_failure.py
+    description: This coordinator failure-classification path is where termination
+      state becomes retry-accounting behavior, demonstrating that preserving 'killed
+      before execution/result' semantics is necessary to avoid spending retries on
+      infrastructure terminations.
+  - type: file
+    path: tests/test_agent_ended_without_result.py
+    description: The focused test coverage around invocations ending without a result
+      event shows this was not an edge formatting issue but a reusable failure mode
+      that future runs should model explicitly.
+- claim: For sequential agent invocations, cleanup logic must be bounded by proven
+    ownership of spawned processes; otherwise late reaping from one iteration can
+    kill a later invocation that merely happens to start immediately after a failure
+    boundary.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The first plan step centers on confirming signal origin and binding
+      cleanup by ownership path, showing that the run treated ownership-scoped cleanup
+      as the core mechanism needed to stop cross-invocation kills.
+  - type: plan_step
+    step_id: '4'
+    description: This step targets the real sequential invocation transition, demonstrating
+      that the relevant lesson is specifically about handoff timing between adjacent
+      invocations, not generic subprocess cleanup.
+  - type: file
+    path: src/theforge/runners/cli.py
+    description: Runner CLI cleanup is the layer that can accidentally reap unrelated
+      descendants; its inclusion shows the fix had to constrain cleanup decisions
+      where process ownership is determined.
+  - type: file
+    path: tests/test_process_group.py
+    description: The process-group regression coverage demonstrates the failure mode
+      depends on process ancestry and group ownership, reinforcing that future work
+      in this area must verify cleanup boundaries explicitly.
+learned_patterns:
+- non-executed-agent-termination
+- ownership-bounded-cleanup
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review completed in one cycle without surfacing additional issues beyond the planned
+    classification and ownership-boundary work.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: true
+  cost_usd: 22.682786199999995
+  dominant_difficulty: Distinguishing true agent failure from runner/system termination
+    across asynchronous process cleanup and sequential invocation boundaries.
