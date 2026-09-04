@@ -187,6 +187,7 @@ def _failure_record(
     cost_provenance: str = COST_UNKNOWN,
     resolved_model_id: str | None = None,
     cache_hit: bool = False,
+    raw_output: str | None = None,
 ) -> SemanticEvaluationRecord:
     return SemanticEvaluationRecord(
         issue_ref=issue.issue_ref,
@@ -205,6 +206,7 @@ def _failure_record(
         configured_model_name=profile.model,
         resolved_model_id=resolved_model_id,
         failure_detail=failure_detail,
+        raw_output=raw_output,
     )
 
 
@@ -394,6 +396,7 @@ def review_issue_semantically(
             cost_usd=result.cost_usd,
             cost_provenance=result.cost_provenance,
             resolved_model_id=resolved_model_id,
+            raw_output=result.output,
         )
         semantic_store.append_record(record)
         return ReviewSemanticResult(

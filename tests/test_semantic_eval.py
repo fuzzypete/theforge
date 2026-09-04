@@ -346,10 +346,16 @@ class TestSemanticRunner:
         assert launch_failed.record.status == STATUS_EVALUATION_FAILED
         assert launch_failed.record.outcome is None
         assert "launch boom" in (launch_failed.record.failure_detail or "")
+        assert launch_failed.record.raw_output is None
         assert parse_failed.record.status == STATUS_EVALUATION_FAILED
         assert parse_failed.record.outcome is None
         assert parse_failed.record.findings == ()
         assert "parse failed" in (parse_failed.record.failure_detail or "")
+        assert parse_failed.record.raw_output == "plain prose, not structured"
+
+        records = SemanticReviewStore(tmp_path).iter_records()
+        assert records[0].raw_output is None
+        assert records[1].raw_output == "plain prose, not structured"
 
     def test_failed_identity_record_does_not_poison_repeat_run(self, tmp_path: Path) -> None:
         calls = 0

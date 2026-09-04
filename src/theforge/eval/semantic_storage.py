@@ -171,6 +171,7 @@ class SemanticEvaluationRecord:
     outcome: SemanticOutcome | None = None
     findings: tuple[SemanticFinding, ...] = ()
     failure_detail: str | None = None
+    raw_output: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -193,8 +194,11 @@ class SemanticEvaluationRecord:
         if self.status in (STATUS_FINDINGS, STATUS_NO_FINDINGS):
             data["outcome"] = self.outcome
             data["findings"] = [finding.to_dict() for finding in self.findings]
-        elif self.failure_detail:
-            data["failure_detail"] = self.failure_detail
+        else:
+            if self.failure_detail:
+                data["failure_detail"] = self.failure_detail
+            if self.raw_output:
+                data["raw_output"] = self.raw_output
         return data
 
     @classmethod
@@ -233,6 +237,9 @@ class SemanticEvaluationRecord:
                 None
                 if data.get("failure_detail") in (None, "")
                 else str(data.get("failure_detail"))
+            ),
+            raw_output=(
+                None if data.get("raw_output") in (None, "") else str(data.get("raw_output"))
             ),
         )
 
