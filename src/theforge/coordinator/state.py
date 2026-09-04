@@ -1005,6 +1005,9 @@ class CoordinatorState:
     # stays independently queryable from plan-review value.
     code_reviewer_value: list[dict] = field(default_factory=list)
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
+    # Latest deterministic trajectory assessment captured alongside
+    # plan_regen_disposition for auditability of regen/stop decisions.
+    plan_regen_assessment: dict = field(default_factory=dict)
     plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
