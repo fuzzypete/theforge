@@ -1,0 +1,133 @@
+schema_version: 2
+run_id: 2b2f4fcb55e4
+authoritative_run_record: .forge/audits/runs/2b2f4fcb55e4.json
+generated_at: '2026-09-04T16:59:59.948046+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01303
+story:
+  slug: issue-2714
+  name: A broken baseline blocks every sprint and can only be cleared by hand, though
+    forge has already reproduced and captured the failure
+  github_issue: 2714
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- docs/guides/controller-runbook.md
+- src/theforge/baseline_repair.py
+- src/theforge/cli/__init__.py
+- src/theforge/cli/baseline_fix.py
+- src/theforge/cli/main.py
+- src/theforge/shape_check/producer.py
+- src/theforge/sprint/runner.py
+- tests/test_baseline_repair.py
+- tests/test_cli_baseline_fix.py
+- tests/test_issue_body_producer_conformance.py
+- tests/test_sprint_baseline_gate.py
+what_changed:
+  description: This run added a baseline-fix path that turns a reproduced broken-baseline
+    sprint abort into a normal forge work item and sends it through the standard dev,
+    gate, review, and landing flow. It also documented the operator-facing command
+    and controller handling for this repair path.
+  approach: 'The change used the sprint audit and preserved reproduction artifacts
+    as the handoff point: CLI entry points read captured baseline-failure details,
+    shape them into a repair task, and run that task through the same orchestration
+    and review path as other forge work while preserving fail-closed behavior when
+    selection or repair cannot proceed.'
+  files_modified: *id002
+what_was_learned:
+- claim: A new forge run entry point has to perform the same run-context bootstrap
+    as existing entry points, or the spawned agent work becomes invisible to forge's
+    own tracking.
+  evidence:
+  - type: review_finding
+    finding_id: 306912926c21fe09
+    description: Review identified that baseline-fix invoked the coordinator without
+      exporting run context or registering subprocesses, which directly showed that
+      adding a CLI path is not enough by itself; the standard bootstrap is required
+      for observability and sidecar registration.
+  - type: diff
+    ref: a070c7f51c89d87a9660520cc3e92fe809a4135e
+    description: The follow-up diff is cited in review as resolving this by wiring
+      in the same run bootstrap pieces used elsewhere, demonstrating the concrete
+      mechanism needed for any future run entry point.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 states that the carried P2 about run bootstrap was resolved,
+      confirming that parity with the normal run-context publishing path was the condition
+      for acceptance.
+- claim: When a command derives work from stored sprint audits, default selection
+    must fail closed on multiple candidates rather than silently picking the newest
+    file.
+  evidence:
+  - type: review_finding
+    finding_id: 590db58c4b4c8b81
+    description: Review showed that the original default effectively treated the latest
+      audit as unambiguous in normal cases, creating silent stale-audit selection
+      despite operator docs promising ambiguity detection; that demonstrates the planning
+      rule to reject ambiguous stored inputs by default.
+  - type: diff
+    ref: a070c7f51c89d87a9660520cc3e92fe809a4135e
+    description: The resolving diff is the evidence that the accepted behavior changed
+      to fail closed for multi-audit selection, showing the implementation pattern
+      future runs should reuse when selecting from persisted run records.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly notes resolution of the multi-audit selection
+      P2, confirming that ambiguity handling was a meaningful correctness requirement,
+      not just a UX preference.
+- claim: For workflows that consume sprint audit data, verification should include
+    a writer-to-reader round trip using the real audit producer format rather than
+    only hand-authored fixtures.
+  evidence:
+  - type: review_finding
+    finding_id: d00e42cbfeaa82ff
+    description: Review called out that both new test modules used handcrafted sprint-audit
+      YAML, leaving untested the seam where captured baseline-gate fields are serialized
+      by the sprint audit writer and later read by the repair path; this exposes a
+      verification gap future runs should plan for.
+  - type: diff
+    ref: a070c7f51c89d87a9660520cc3e92fe809a4135e
+    description: The resolving diff is cited in review as fixing the seam-coverage
+      issue, which demonstrates that exercising the real producer/consumer boundary
+      was necessary to validate the feature path.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 records that the carried P2 about audit serialization coverage
+      was resolved, confirming that round-trip verification across the persisted audit
+      boundary mattered to completion.
+learned_patterns:
+- run-entrypoint-bootstrap
+- fail-closed-audit-selection
+- audit-roundtrip-verification
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly focused on parity with existing forge execution paths: run
+    bootstrap, ambiguity handling on persisted audits, and validating the real audit
+    serialization seam.'
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 10.274241
+  dominant_difficulty: Integrating a new repair command into forge's existing orchestration
+    without creating behavior that looked similar to normal runs but bypassed their
+    tracking, selection safeguards, or persisted-data boundaries.
