@@ -413,6 +413,64 @@ def test_cli_query_mode_force_runs_every_issue_but_warns(tmp_path: Path, capsys)
     assert "missing_ac" in err
 
 
+def test_cli_query_mode_force_banner_separates_semantic_withholdings(
+    tmp_path: Path, capsys
+) -> None:
+    """--force overrides shape refusals only, so the banner must not claim the
+    semantically withheld issue is running (#2785)."""
+    from theforge.eval.semantic_readiness import SEMANTIC_NOT_RATIFIED_CODE
+
+    config = _make_config(tmp_path)
+    args = _query_args(tmp_path, force=True)
+
+    fetched = [{"number": 2, "title": "bad"}, {"number": 3, "title": "unratified"}]
+    # apply_shape_gate already excludes the semantic withholding from runnable
+    # under --force; only the shape-flagged issue is force-admitted.
+    gated = ShapeGateResult(
+        runnable=[fetched[0]],
+        skipped=[
+            SkippedIssue(
+                issue_number=2,
+                reason_codes=("missing_ac",),
+                source="local_check",
+                title="bad",
+            ),
+            SkippedIssue(
+                issue_number=3,
+                reason_codes=(SEMANTIC_NOT_RATIFIED_CODE,),
+                source="semantic_readiness",
+                title="unratified",
+            ),
+        ],
+    )
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([2])),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", return_value=gated),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", return_value=_ok_result()),
+    ):
+        rc = cmd_sprint(args)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    force_line = next(line for line in err.splitlines() if "--force in effect" in line)
+    withheld_line = next(line for line in err.splitlines() if "remain withheld" in line)
+    # The force-override banner must name only the shape skip, and the
+    # withheld banner only the semantic one.
+    assert "shape-flagged" in force_line
+    assert "does not override semantic readiness" in withheld_line
+    assert "#2 " in err and "missing_ac" in err
+    assert "#3 " in err and SEMANTIC_NOT_RATIFIED_CODE in err
+
+
 def test_cli_remediated_issues_continue_to_run_sprint(tmp_path: Path) -> None:
     """When all issues are skipped at the entry gate but intake remediation
     successfully fixes them (REMEDIATED outcome), the sprint must continue and

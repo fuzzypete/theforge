@@ -133,6 +133,188 @@ def test_cmd_semantic_report_renders_json(capsys) -> None:
     assert json.loads(out) == {"precision": 0.5}
 
 
+def _ratify_config(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(project_root=tmp_path)
+
+
+def _seed_evaluation(tmp_path: Path, findings: tuple[SemanticFinding, ...]):
+    """Record one successful evaluation of issue #2785's current revision."""
+    from theforge.eval.semantic_input import build_semantic_evaluation_input
+    from theforge.eval.semantic_storage import SemanticReviewStore
+    from theforge.eval.semantic_types import (
+        OUTCOME_NO_FINDINGS,
+        STATUS_NO_FINDINGS,
+    )
+
+    evaluation_input = build_semantic_evaluation_input(
+        title="Add a force flag", body="## What\n\nbody", labels=("enhancement",)
+    )
+    record = SemanticEvaluationRecord(
+        issue_ref="issue-2785",
+        canonical_type="enhancement",
+        input_digest=evaluation_input.input_digest,
+        model_id="anthropic/sonnet/cli",
+        prompt_contract_version="semantic-review.v1",
+        status=STATUS_FINDINGS if findings else STATUS_NO_FINDINGS,
+        cache_hit=False,
+        duration_seconds=1.0,
+        cost_usd=0.1,
+        outcome=OUTCOME_FINDINGS if findings else OUTCOME_NO_FINDINGS,
+        findings=findings,
+    )
+    store = SemanticReviewStore(tmp_path)
+    store.append_record(record)
+    return store, evaluation_input
+
+
+def _semantic_issue():
+    return SimpleNamespace(
+        number=2785,
+        issue_ref="issue-2785",
+        title="Add a force flag",
+        body="## What\n\nbody",
+        labels=("enhancement",),
+    )
+
+
+def _ratify_args(**overrides) -> SimpleNamespace:
+    args = SimpleNamespace(
+        issue_number="2785",
+        accept=[],
+        reject=[],
+        reject_all=False,
+        input_digest=None,
+        config=None,
+    )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def test_cmd_ratify_semantic_records_decisions_and_reports_readiness(
+    tmp_path: Path, capsys
+) -> None:
+    accepted = SemanticFinding(summary="real defect", rationale="r", severity="high")
+    rejected = SemanticFinding(summary="not a defect", rationale="r", severity="low")
+    store, _ = _seed_evaluation(tmp_path, (accepted, rejected))
+
+    with (
+        patch(
+            "theforge.cli.eval_cmd._load_checked_config",
+            return_value=_ratify_config(tmp_path),
+        ),
+        patch(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            return_value=_semantic_issue(),
+        ),
+    ):
+        rc = eval_cmd.cmd_ratify_semantic(
+            _ratify_args(
+                accept=[accepted.finding_digest],
+                reject=[rejected.finding_digest],
+            )
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "semantic_state=accepted_concerns" in out
+    assert "semantic_requirement=required" in out
+    stored = store.iter_ratifications()
+    assert len(stored) == 1
+    assert stored[0].accepted_digests() == (accepted.finding_digest,)
+
+
+def test_cmd_ratify_semantic_reject_all_yields_reviewed_ready(tmp_path: Path, capsys) -> None:
+    finding = SemanticFinding(summary="not a defect", rationale="r", severity="low")
+    _seed_evaluation(tmp_path, (finding,))
+
+    with (
+        patch(
+            "theforge.cli.eval_cmd._load_checked_config",
+            return_value=_ratify_config(tmp_path),
+        ),
+        patch(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            return_value=_semantic_issue(),
+        ),
+    ):
+        rc = eval_cmd.cmd_ratify_semantic(_ratify_args(reject_all=True))
+
+    assert rc == 0
+    assert "semantic_state=reviewed_ready" in capsys.readouterr().out
+
+
+def test_cmd_ratify_semantic_refuses_an_undecided_concern(tmp_path: Path, capsys) -> None:
+    one = SemanticFinding(summary="one", rationale="r", severity="low")
+    two = SemanticFinding(summary="two", rationale="r", severity="low")
+    store, _ = _seed_evaluation(tmp_path, (one, two))
+
+    with (
+        patch(
+            "theforge.cli.eval_cmd._load_checked_config",
+            return_value=_ratify_config(tmp_path),
+        ),
+        patch(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            return_value=_semantic_issue(),
+        ),
+    ):
+        rc = eval_cmd.cmd_ratify_semantic(_ratify_args(reject=[one.finding_digest]))
+
+    assert rc == 1
+    assert "every raised concern must be accepted or rejected" in capsys.readouterr().err
+    assert store.iter_ratifications() == []
+
+
+def test_cmd_ratify_semantic_refuses_an_unknown_finding_digest(tmp_path: Path, capsys) -> None:
+    _seed_evaluation(tmp_path, ())
+
+    with (
+        patch(
+            "theforge.cli.eval_cmd._load_checked_config",
+            return_value=_ratify_config(tmp_path),
+        ),
+        patch(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            return_value=_semantic_issue(),
+        ),
+    ):
+        rc = eval_cmd.cmd_ratify_semantic(_ratify_args(accept=["deadbeef"]))
+
+    assert rc == 1
+    assert "not raised by this evaluation" in capsys.readouterr().err
+
+
+def test_cmd_ratify_semantic_refuses_without_an_evaluation(tmp_path: Path, capsys) -> None:
+    with (
+        patch(
+            "theforge.cli.eval_cmd._load_checked_config",
+            return_value=_ratify_config(tmp_path),
+        ),
+        patch(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            return_value=_semantic_issue(),
+        ),
+    ):
+        rc = eval_cmd.cmd_ratify_semantic(_ratify_args())
+
+    assert rc == 1
+    assert "no successful semantic evaluation is recorded" in capsys.readouterr().err
+
+
+def test_main_dispatches_ratify_semantic_command() -> None:
+    main_module = import_module("theforge.cli.main")
+    with (
+        patch.object(sys, "argv", ["forge", "ratify-semantic", "2785", "--reject-all"]),
+        patch("theforge.cli.main.eval_cmd.cmd_ratify_semantic", return_value=0) as mock_cmd,
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        main_module.main()
+
+    assert excinfo.value.code == 0
+    mock_cmd.assert_called_once()
+
+
 def test_main_dispatches_review_semantic_command() -> None:
     main_module = import_module("theforge.cli.main")
     with (

@@ -187,6 +187,42 @@ recorded here so the deferral is intentional rather than forgotten:
 and `forge shape` already wrote them; `What happened` / `What was expected`
 remain recognized and are rewritten to the canonical form on output.
 
+## As built (slice 6, #2685 + #2785)
+
+Clause 6 is now implemented, in two halves that were deliberately separated so
+the policy could be decided against measurements rather than ahead of them.
+#2685 built the evaluator as an audit-only instrument that changes nothing.
+#2785 decided what its output is allowed to mean and wired that decision:
+
+- **Readiness is a derived state, not a stored one.** `REVIEWED_READY` is
+  computed per document revision in `theforge.eval.semantic_readiness` from two
+  separately recorded facts — an evaluation record and an operator ratification —
+  both scoped to the same `input_digest`. Nothing writes a readiness flag, so
+  there is no state to go stale unnoticed; a changed revision simply has no
+  record and reports `unevaluated`.
+- **A clean evaluation is not readiness.** Readiness follows an operator
+  ratification (`forge ratify-semantic`) that decides every concern raised.
+  Rejecting a concern clears it for that revision; accepting one withholds
+  readiness for that revision until the document changes.
+- **Applicability and evaluation state are separate axes**, per clause 2. Policy
+  requires a ratified review for `bug`, `enhancement`, `task` and `spike` in the
+  `implementation_ready` lifecycle state, and for nothing else; a document policy
+  does not name still reports its evaluation state truthfully and keeps its
+  existing structural/lifecycle admission result.
+- **Unratified concerns are not a refusal.** `unevaluated` and
+  `awaiting_ratification` withhold admission under the same reason code —
+  `semantic_review_not_ratified` — because the withholding fact in both cases is
+  the absence of ratified readiness, not the content of any finding. This is the
+  concrete guard against clause 6's failure mode: admission never reads a
+  finding as a verdict.
+- **The structural verdict is untouched.** The overlay is consulted only after
+  `classify_admissibility` admits, it emits no `ShapeVerdict`, and a semantic
+  withholding carries semantic reason codes with no verdict claim. `--force`
+  overrides shape refusals and does not override semantic readiness, on the same
+  grounds as the `operator-action` label.
+
+The policy is stated for readers in `docs/reference/semantic-readiness.md`.
+
 ## Alternatives considered
 
 **Generate documentation from the checker.** Keeps the implementation as truth and makes

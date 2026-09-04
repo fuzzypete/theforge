@@ -140,6 +140,7 @@ def main() -> None:
         "daemon": daemon.cmd_daemon,
         "eval-preflight": eval_cmd.cmd_eval_preflight,
         "review-semantic": eval_cmd.cmd_review_semantic,
+        "ratify-semantic": eval_cmd.cmd_ratify_semantic,
         "semantic-report": eval_cmd.cmd_semantic_report,
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
