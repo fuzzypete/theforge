@@ -1,0 +1,128 @@
+schema_version: 2
+run_id: 2a3640b86cbb
+authoritative_run_record: .forge/audits/runs/2a3640b86cbb.json
+generated_at: '2026-09-02T16:58:24.584688+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011428750000000001
+story:
+  slug: issue-2687
+  name: An injected prior-run summary records what was selected but not how much prompt
+    it consumed, so the size of the knowledge treatment is unknown
+  github_issue: 2687
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- tests/fixtures/audit_record_schema_v44.json
+- tests/test_audit_storage_read_model_boundary.py
+- tests/test_context_assembler.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_generate_audit_log.py
+- tests/test_prior_run_manifest.py
+- tests/test_prior_run_selector.py
+what_changed:
+  description: This run extended prior-run context manifest records to carry a descriptive
+    rendered-size payload for injected summaries, including method identity and unavailable
+    states, and updated audit/report reading so legacy entries are treated as unmeasured
+    rather than zero-sized.
+  approach: The change was made by measuring rendered summary text at selection/assembly
+    time, threading that metadata through manifest and audit storage layers, and shaping
+    read-model/schema behavior so absent, unavailable, and legacy-unmeasured cases
+    remain distinct.
+  files_modified: *id002
+what_was_learned:
+- claim: Prompt-size telemetry on the context-assembly path has to use a deterministic
+    local counting method or a fast degradation path; relying on optional packages
+    or first-use network fetches turns descriptive measurement into a source of assembly
+    stalls or universal unmeasured results.
+  evidence:
+  - type: review_finding
+    finding_id: 5aba9b2da1802c69
+    description: Review found that delegating counting to tiktoken without a declared
+      dependency caused every non-empty summary in this checkout to record value None
+      with tiktoken_not_installed, showing that size capture can silently collapse
+      to unavailable everywhere if the method depends on undeclared tooling.
+  - type: review_finding
+    finding_id: 99c8bd898210dd3a
+    description: Review also found the tokenizer lookup could trigger an inline first-use
+      vocabulary download with no timeout on the context-assembly path, demonstrating
+      that a counting method with network dependence can block prompt assembly instead
+      of behaving as lightweight telemetry.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that the P1 was resolved by switching to a
+      deterministic stdlib estimate, showing the run's stable path came from removing
+      optional dependency and network behavior from measurement.
+- claim: When introducing a new provenance field, legacy backfill must advertise the
+    same method semantics as newly written entries, or historical and current records
+    become incomparable even if they share the same shape.
+  evidence:
+  - type: review_finding
+    finding_id: d986138951e2d81a
+    description: Review found that reader migration backfilled legacy entries with
+      method cl100k_base while the writer emitted word_punctuation_estimate_v1, which
+      would split one conceptual cohort across two methods and mislead any grouping
+      or trend analysis by counting method.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approval explicitly references resolution of the legacy backfill
+      method mismatch, showing this consistency requirement mattered at the read/write
+      boundary rather than only in writer logic.
+- claim: For derived manifest telemetry, verification needs to assert the measured
+    value is actually computed from source text, not just that metadata fields are
+    present, because fixture-only checks can let the core derivation drift unnoticed.
+  evidence:
+  - type: review_finding
+    finding_id: 85f7d38f6145f042
+    description: Review noted that available-case coverage asserted unit, method,
+      and kind but not that the integer size was derived from summary text, while
+      a hand-written audit fixture supplied the value elsewhere; this shows metadata-shape
+      tests alone do not verify the measurement computation.
+learned_patterns:
+- local-measurement-only
+- legacy-method-consistency
+- assert-derived-values
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 5aba9b2da1802c69
+    severity: P1
+    file: src/theforge/task/prior_run_selector.py
+    description: Rendered-size measurement is delegated to the tiktoken package, which
+      is not listed in any dependency group in pyproject.toml and is not present in
+      the repository venv, so exercising the helper in this checkout returns value
+      None with unavailable_reason tiktoken_not_installed for every non-empty summary,
+      meaning an injected summary's size is recorded as unavailable in every install
+      rather than as a number.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly focused on whether rendered-size telemetry remained
+    interpretable and non-disruptive across missing dependencies, legacy records,
+    and verification boundaries.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 12.6696139
+  dominant_difficulty: Keeping rendered-size telemetry descriptive, comparable over
+    time, and distinct across unavailable versus absent cases while threading it through
+    write and read paths.

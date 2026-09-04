@@ -1,0 +1,72 @@
+schema_version: 2
+run_id: 4c8e968a7629
+authoritative_run_record: .forge/audits/runs/4c8e968a7629.json
+generated_at: '2026-09-02T20:52:57.067641+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0054512499999999995
+story:
+  slug: issue-2849
+  name: Landing evidence is written per run but never indexed, so the substrate answers
+    landed queries from a completion-time snapshot instead
+  github_issue: 2849
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- database
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/plans/2598-project-memory-publication-spike.md
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/landing_evidence.py
+- tests/landing_evidence_test_helpers.py
+- tests/test_audit_landing_projection.py
+- tests/test_audit_substrate.py
+- tests/test_coord_audit.py
+- tests/test_sprint_reexec_reconcile.py
+- tests/test_sprint_resume.py
+- tests/test_sprint_runner.py
+what_changed:
+  description: This run introduced a substrate projection for landing evidence so
+    landed-state queries are answered from canonical assertion artifacts, preserving
+    assertion timestamps and distinguishing unresolved runs from recorded non-landings.
+    It also bumped the substrate schema and wired rebuilds so a fresh substrate reconstructs
+    the same landing answers from run artifacts.
+  approach: The change added dedicated storage and read-model support for projected
+    landing assertions, populated that projection during substrate writes and rebuild-from-runs,
+    then exposed substrate query paths over the projection while leaving direct readers
+    of the flattened landing_status field unchanged.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- artifact-to-projection-rebuild
+- evidence-over-snapshot-queries
+- compatibility-via-parallel-read-paths
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the projection, rebuild wiring, and projection-focused verification
+    without surfacing additional findings.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 15.413287399999996
+  dominant_difficulty: Projecting a new evidence artifact into the substrate required
+    schema-versioned rebuild parity while preserving the old flattened-column readers
+    unchanged.

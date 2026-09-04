@@ -1,0 +1,113 @@
+schema_version: 2
+run_id: babf6f177e89
+authoritative_run_record: .forge/audits/runs/babf6f177e89.json
+generated_at: '2026-09-02T16:13:24.345079+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01023
+story:
+  slug: issue-2682
+  name: forge knowledge-report prices a cohort from its successes alone and attributes
+    improvement to groups it did not assign
+  github_issue: 2682
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/knowledge_effectiveness.py
+- src/theforge/knowledge_effectiveness_render.py
+- src/theforge/knowledge_effectiveness_signals.py
+- tests/test_cli_knowledge_report.py
+- tests/test_knowledge_effectiveness.py
+- tests/test_knowledge_effectiveness_render.py
+what_changed:
+  description: The run revised knowledge-report effectiveness calculations so cost
+    metrics account for failed-run spend and so comparative verdicts are suppressed
+    for prior-summary cohorts whose membership is determined by selector outcomes
+    rather than assignment. It also updated reporting text and tests around those
+    semantics.
+  approach: 'The change adjusted the effectiveness and rendering pipeline together:
+    cohort and cost aggregation rules were tightened in the analysis layer, report
+    output was aligned to the new interpretation, and targeted tests and CLI documentation
+    were updated to lock the behavior in place.'
+  files_modified: *id002
+what_was_learned:
+- claim: When a report compares cohorts, future work needs to verify that cohort membership
+    comes from a system decision or assignment rather than from the selector outcome
+    itself; otherwise any 'improvement' verdict is compositional and should be treated
+    as non-causal.
+  evidence:
+  - type: review_finding
+    finding_id: 5c0ac59ab4b7855a
+    description: The review found the same verdict bug still present for invariant-context
+      cohorts because membership was based on whether the selector matched, demonstrating
+      that this is a reusable validation rule for every cohorted comparison, not a
+      one-off fix for prior-summary logic.
+  - type: review_cycle
+    cycle: '1'
+    description: Review accepted the prior-summary verdict suppression but simultaneously
+      flagged the parallel omission elsewhere, showing that future runs should inspect
+      each cohort source for outcome-defined grouping before considering any comparative
+      signal valid.
+  - type: file
+    path: src/theforge/knowledge_effectiveness_signals.py
+    description: This file was introduced in the fix path for emitting or suppressing
+      effectiveness signals, indicating that verdict eligibility is centralized enough
+      that future runs should enforce the 'assignment-based cohorts only' rule at
+      the signal layer across cohort types.
+- claim: 'Cost-per-outcome metrics need numerator and denominator rules that separate
+    ''failed'' from ''unmeasured'': failed runs with recorded spend belong in spend
+    totals, while runs without cost records must be excluded explicitly rather than
+    being allowed to appear free.'
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: The review summary explicitly called out that the fix correctly counts
+      failed-run spend in cost metrics, showing that the key planning constraint is
+      not merely summing costs but handling failure and measurement status as different
+      cases in the aggregation rule.
+  - type: file
+    path: src/theforge/knowledge_effectiveness.py
+    description: 'The main effectiveness logic was the locus of the cost correction,
+      which demonstrates that this lesson applies at the metric-construction stage:
+      cost accounting semantics must be encoded where cohorts and spend totals are
+      assembled, not deferred to presentation.'
+  - type: file
+    path: src/theforge/knowledge_effectiveness_render.py
+    description: Rendering changes accompanied the aggregation fix, showing that whenever
+      unmeasured runs are excluded from cost statistics, report text must surface
+      that exclusion so readers do not misread missing spend as zero-cost work.
+learned_patterns:
+- assignment-defined-cohorts-only
+- cost-metrics-distinguish-failed-vs-unmeasured
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop surfaced that fixing one selector-outcome cohort was insufficient;
+    the same causal-verdict check had to be applied consistently across parallel knowledge-report
+    comparisons.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 2.089759
+  dominant_difficulty: The hard part was preserving semantic consistency across parallel
+    report pathways so a rule corrected in one cohort or metric was not silently left
+    wrong in another.

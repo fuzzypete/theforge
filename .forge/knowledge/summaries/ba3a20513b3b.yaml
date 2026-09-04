@@ -1,0 +1,103 @@
+schema_version: 2
+run_id: ba3a20513b3b
+authoritative_run_record: .forge/audits/runs/ba3a20513b3b.json
+generated_at: '2026-09-03T18:54:53.943126+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01040375
+story:
+  slug: issue-2848
+  name: A diagnose run that reaches a confirmed, source-verified cause records nothing
+    on the issue, so completed investigation is paid for and discarded
+  github_issue: 2848
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- tests/test_diagnose_flow.py
+- tests/test_issue_body_producer_conformance.py
+what_changed:
+  description: The diagnose landing path was changed so a source-verified confirmed
+    cause is still recorded on the issue when optional scope-coverage detail is absent,
+    instead of terminating as an unlanded partial and leaving the issue unchanged.
+    Conformance and flow tests were updated to lock in that behavior at the issue-body
+    and coordinator levels.
+  approach: The run adjusted diagnosis classification and landing logic around the
+    partial/complete boundary, treating legitimately inapplicable or empty secondary
+    scope fields separately from the presence of a confirmed cause, then verified
+    the behavior end-to-end through coordinator and issue-body producer tests.
+  files_modified: *id002
+what_was_learned:
+- claim: When diagnose output contains a confirmed, source-verified cause, landing
+    logic must be driven by whether issue-writing can preserve that confirmed result,
+    not by whether every secondary diagnosis subfield is populated.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file contains the diagnose flow decision point where parsed
+      diagnosis results are classified and landed; its inclusion in the fix shows
+      the failure was in the coordinator's boundary between 'confirmed cause found'
+      and 'record result on issue', demonstrating that future runs should inspect
+      landing classification when a complete artifact is discarded.
+  - type: file
+    path: src/theforge/diagnose_types.py
+    description: This file defines the diagnosis result shapes and partial/complete
+      distinctions; changing it alongside the coordinator shows the bug depended on
+      type-level interpretation of missing optional scope data, demonstrating that
+      absent nonessential fields can wrongly downgrade a landable diagnosis unless
+      the schema distinguishes 'not applicable' from 'missing required content'.
+  - type: diff
+    ref: 0f7aa4160d728ed4ca101e83a27e7676aa8a8d9c
+    description: This diff is the implementation that corrected the discard path,
+      showing that the remedy was to realign classification and landing around preservation
+      of the confirmed cause rather than strict completeness of all fields; that causal
+      shape is reusable in future diagnose-boundary failures.
+- claim: For diagnose/reporting bugs, verification needs both flow-level checks and
+    rendered-issue-body conformance checks, because a parseable artifact can still
+    fail at the final recording boundary.
+  evidence:
+  - type: file
+    path: tests/test_diagnose_flow.py
+    description: This test file was added to exercise coordinator behavior after parsing,
+      showing that the defect lived in the transition from successful diagnosis artifact
+      to issue update, not in diagnosis generation itself; future runs on similar
+      symptoms should verify the state machine after parsing.
+  - type: file
+    path: tests/test_issue_body_producer_conformance.py
+    description: This test file was updated at the issue-body rendering layer, showing
+      that the run verified not just internal classification but the exact recorded
+      diagnosis shape that gates issue state; future runs should include output-conformance
+      checks when work appears completed but is not reflected on the issue.
+learned_patterns:
+- confirmed-cause-must-land
+- optional-field-does-not-void-result
+- verify-artifact-to-issue-boundary
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review was clean; the notable signal was gate metadata mismatch rather than a
+    code-level objection.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 1.9691530000000002
+  dominant_difficulty: A reporting-boundary misclassification discarded a completed
+    diagnosis even though the investigation artifact itself was valid and source-verified.
