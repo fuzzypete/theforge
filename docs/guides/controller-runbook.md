@@ -89,6 +89,39 @@ story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
 attributed to the credential, not FAILED — the sprint killed them, no model
 judged them, and they contribute nothing to adaptive memory.
 
+### Broken baseline recovery
+
+When a sprint aborts with `stopped_reason: broken_baseline` and the baseline
+record says `failure_reproduced: true`, route that captured failure into the
+ordinary single-story pipeline instead of fixing it by hand:
+
+```bash
+forge baseline-fix --run <sprint-run-id> --auto-merge
+```
+
+or, when you already have the exact audit file:
+
+```bash
+forge baseline-fix --sprint-audit .forge/audits/run-<sprint-run-id>-sprint-audit.yaml --auto-merge
+```
+
+The command reads the sprint audit, opens a `bug` issue containing the captured
+baseline evidence, fetches that issue back through the normal GitHub story
+source, and runs it through the standard dev, validate, review, and landing
+path. The derived work item carries the preserved baseline worktree, the gate
+output excerpt, and the extracted failing target list from the reproduced
+failure.
+
+Use `--run` or `--sprint-audit` whenever more than one sprint audit exists; the
+default only selects the latest audit when that choice is unambiguous. If the
+repair run cannot land a fix, the command exits nonzero and leaves the
+preserved evidence and reproduction worktree intact for the operator.
+
+`forge sprint --force` is **not** the recovery path here. `--force` bypasses
+the sprint-entry shape gate; it does not make a knowingly broken merge base safe
+to sprint against. Fix and land the baseline first, then resume ordinary
+sprints.
+
 ### Landing precondition — clean project root (issue #2048)
 
 Under a landing workflow (`workspace.on_approve: merge`, or `--auto-merge`), a

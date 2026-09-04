@@ -38,6 +38,7 @@ from ..coordinator.agent_failure import (
 from ..coordinator.batch_diff import BatchReviewContext, latest_dev_handoff
 from ..coordinator.cancellation import BUDGET_CANCEL_ERROR_TYPE, StopSignal, cancel_cause
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
+from ..coordinator.dev_phase import extract_failed_tests
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.landing_record import build_landing_record
@@ -1460,6 +1461,10 @@ def _run_baseline_gate(
             evidence_path=evidence_path,
             evidence_unavailable=evidence_unavailable,
         )
+        failing_target_extraction = extract_failed_tests(
+            output_tail or "",
+            config.validation.failed_test_pattern,
+        )
         # The sha names where the gate ran; only the gate's own output names what
         # must change. ``run_gate_full`` leaves ``error`` None for a plain nonzero
         # exit, so without this the operator is handed a commit to investigate
@@ -1490,6 +1495,11 @@ def _run_baseline_gate(
             "worktree": preserved_worktree,
             "evidence_path": evidence_path,
             "evidence_unavailable": evidence_unavailable,
+            "failing_targets": list(failing_target_extraction.tests),
+            "failing_target_extraction": {
+                "source": failing_target_extraction.source,
+                "format_recognized": failing_target_extraction.format_recognized,
+            },
             "message": message,
         }
     finally:
