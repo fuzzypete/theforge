@@ -110,6 +110,65 @@ def test_cmd_review_semantic_prints_findings_and_uses_default_profile(capsys) ->
     assert "use_cache" not in mock_review.call_args.kwargs
 
 
+def test_cmd_review_semantic_parse_failure_points_to_retained_raw_output(capsys) -> None:
+    config = SimpleNamespace(
+        preflight_profile=_profile(),
+        project_root=Path("/tmp/project"),
+        secrets={},
+    )
+    args = SimpleNamespace(
+        issue_number="2681",
+        profile=None,
+        prompt_contract_version=None,
+        baseline_defect_ids=["d1"],
+        freeze_empty_baseline=False,
+        config=None,
+    )
+    failed = _review_result()
+    failed = ReviewSemanticResult(
+        issue=failed.issue,
+        evaluation_input=failed.evaluation_input,
+        baseline=failed.baseline,
+        baseline_created=failed.baseline_created,
+        record=SemanticEvaluationRecord(
+            issue_ref="issue-2681",
+            canonical_type="enhancement",
+            input_digest="digest-123",
+            model_id="anthropic/sonnet/cli",
+            prompt_contract_version="semantic-review.v1",
+            status="evaluation_failed",
+            cache_hit=False,
+            duration_seconds=1.2,
+            cost_usd=0.2,
+            cost_provenance="estimated",
+            started_at="2026-09-03T00:00:00+00:00",
+            completed_at="2026-09-03T00:00:01+00:00",
+            configured_profile_name="preflight",
+            configured_model_name="sonnet",
+            resolved_model_id="anthropic/sonnet/cli",
+            failure_detail="output parse failed: expected JSON object",
+            raw_output_path=".forge/audits/semantic-review/issue-2681-2026-09-03T000001Z0000.raw.txt",
+        ),
+    )
+
+    with (
+        patch("theforge.cli.eval_cmd._load_checked_config", return_value=config),
+        patch(
+            "theforge.eval.semantic_runner.review_issue_semantically",
+            return_value=failed,
+        ),
+    ):
+        rc = eval_cmd.cmd_review_semantic(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "failure_detail=output parse failed: expected JSON object" in out
+    assert (
+        "raw_output_retained_at="
+        ".forge/audits/semantic-review/issue-2681-2026-09-03T000001Z0000.raw.txt"
+    ) in out
+
+
 def test_cmd_semantic_report_renders_json(capsys) -> None:
     config = SimpleNamespace(project_root=Path("/tmp/project"))
     args = SimpleNamespace(corpus="corpus.yaml", output_format="json", config=None)
