@@ -24,6 +24,7 @@ from theforge.eval.semantic_runner import (
     semantic_model_id,
 )
 from theforge.eval.semantic_storage import (
+    SEMANTIC_RAW_OUTPUT_TAIL_CHARS,
     FrozenSemanticBaseline,
     SemanticEvaluationRecord,
     SemanticReviewStore,
@@ -351,11 +352,55 @@ class TestSemanticRunner:
         assert parse_failed.record.outcome is None
         assert parse_failed.record.findings == ()
         assert "parse failed" in (parse_failed.record.failure_detail or "")
-        assert parse_failed.record.raw_output == "plain prose, not structured"
+        assert parse_failed.record.raw_output is None
+        assert parse_failed.record.raw_output_path
+        assert parse_failed.record.raw_output_tail == "plain prose, not structured"
 
         records = SemanticReviewStore(tmp_path).iter_records()
         assert records[0].raw_output is None
-        assert records[1].raw_output == "plain prose, not structured"
+        assert records[1].raw_output is None
+        assert records[1].raw_output_path
+        assert records[1].raw_output_tail == "plain prose, not structured"
+
+    def test_parse_failure_persists_full_output_in_sidecar_and_bounds_jsonl_record(
+        self, tmp_path: Path
+    ) -> None:
+        original = "prefix-" + ("x" * (SEMANTIC_RAW_OUTPUT_TAIL_CHARS + 50))
+
+        result = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(body="Different body"),
+            agent_runner=lambda **kwargs: _agent_result(original),
+            baseline_defect_ids=(),
+        )
+
+        persisted = SemanticReviewStore(tmp_path).iter_records()[-1]
+        assert result.record.raw_output is None
+        assert result.record.raw_output_path
+        assert result.record.raw_output_chars == len(original)
+        assert result.record.raw_output_sha256
+        assert result.record.raw_output_tail == original[-SEMANTIC_RAW_OUTPUT_TAIL_CHARS:]
+        assert persisted.raw_output is None
+        assert persisted.raw_output_path == result.record.raw_output_path
+        assert persisted.raw_output_chars == len(original)
+        assert persisted.raw_output_tail == original[-SEMANTIC_RAW_OUTPUT_TAIL_CHARS:]
+        sidecar = tmp_path / persisted.raw_output_path
+        assert sidecar.read_text(encoding="utf-8") == original
+
+        line = (
+            (tmp_path / ".forge" / "audits" / "semantic-review" / "records.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[-1]
+        )
+        payload = json.loads(line)
+        assert payload["raw_output_path"] == persisted.raw_output_path
+        assert payload["raw_output_tail"] == original[-SEMANTIC_RAW_OUTPUT_TAIL_CHARS:]
+        assert payload["raw_output_chars"] == len(original)
+        assert payload["raw_output_sha256"] == persisted.raw_output_sha256
+        assert "raw_output" not in payload
 
     def test_failed_identity_record_does_not_poison_repeat_run(self, tmp_path: Path) -> None:
         calls = 0

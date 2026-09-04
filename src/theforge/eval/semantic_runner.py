@@ -306,7 +306,7 @@ def review_issue_semantically(
             completed_at=completed_at,
             duration_seconds=time.monotonic() - start,
         )
-        semantic_store.append_record(record)
+        record = semantic_store.append_record(record)
         return ReviewSemanticResult(
             issue=issue,
             evaluation_input=evaluation_input,
@@ -343,7 +343,7 @@ def review_issue_semantically(
             completed_at=completed_at,
             failure_detail=f"agent launch failed: {exc}",
         )
-        semantic_store.append_record(record)
+        record = semantic_store.append_record(record)
         return ReviewSemanticResult(
             issue=issue,
             evaluation_input=evaluation_input,
@@ -371,7 +371,7 @@ def review_issue_semantically(
             cost_provenance=result.cost_provenance,
             resolved_model_id=resolved_model_id,
         )
-        semantic_store.append_record(record)
+        record = semantic_store.append_record(record)
         return ReviewSemanticResult(
             issue=issue,
             evaluation_input=evaluation_input,
@@ -398,7 +398,7 @@ def review_issue_semantically(
             resolved_model_id=resolved_model_id,
             raw_output=result.output,
         )
-        semantic_store.append_record(record)
+        record = semantic_store.append_record(record)
         return ReviewSemanticResult(
             issue=issue,
             evaluation_input=evaluation_input,
@@ -426,7 +426,7 @@ def review_issue_semantically(
         outcome=parsed.outcome,
         findings=parsed.findings,
     )
-    semantic_store.append_record(record)
+    record = semantic_store.append_record(record)
     return ReviewSemanticResult(
         issue=issue,
         evaluation_input=evaluation_input,

@@ -225,6 +225,10 @@ def _render_semantic_record(record) -> str:
     ]
     if record.status == "evaluation_failed":
         lines.append(f"failure_detail={record.failure_detail or 'unknown failure'}")
+        if record.raw_output_path:
+            lines.append(f"raw_output_retained_at={record.raw_output_path}")
+        elif record.raw_output:
+            lines.append("raw_output_retained_in_record=true")
         return "\n".join(lines)
     if record.outcome == "NO_FINDINGS":
         return "\n".join(lines)

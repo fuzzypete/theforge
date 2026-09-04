@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ SEMANTIC_AUDIT_DIR = Path(".forge") / "audits" / "semantic-review"
 SEMANTIC_RECORDS_PATH = SEMANTIC_AUDIT_DIR / "records.jsonl"
 SEMANTIC_BASELINES_PATH = SEMANTIC_AUDIT_DIR / "baselines.jsonl"
 SEMANTIC_RATIFICATIONS_PATH = SEMANTIC_AUDIT_DIR / "ratifications.jsonl"
+SEMANTIC_RAW_OUTPUT_TAIL_CHARS = 2000
 COST_CACHE_HIT = "cache_zero"
 
 
@@ -172,6 +174,10 @@ class SemanticEvaluationRecord:
     findings: tuple[SemanticFinding, ...] = ()
     failure_detail: str | None = None
     raw_output: str | None = None
+    raw_output_tail: str | None = None
+    raw_output_path: str | None = None
+    raw_output_chars: int = 0
+    raw_output_sha256: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -199,6 +205,14 @@ class SemanticEvaluationRecord:
                 data["failure_detail"] = self.failure_detail
             if self.raw_output:
                 data["raw_output"] = self.raw_output
+            if self.raw_output_tail:
+                data["raw_output_tail"] = self.raw_output_tail
+            if self.raw_output_path:
+                data["raw_output_path"] = self.raw_output_path
+            if self.raw_output_chars:
+                data["raw_output_chars"] = self.raw_output_chars
+            if self.raw_output_sha256:
+                data["raw_output_sha256"] = self.raw_output_sha256
         return data
 
     @classmethod
@@ -241,6 +255,22 @@ class SemanticEvaluationRecord:
             raw_output=(
                 None if data.get("raw_output") in (None, "") else str(data.get("raw_output"))
             ),
+            raw_output_tail=(
+                None
+                if data.get("raw_output_tail") in (None, "")
+                else str(data.get("raw_output_tail"))
+            ),
+            raw_output_path=(
+                None
+                if data.get("raw_output_path") in (None, "")
+                else str(data.get("raw_output_path"))
+            ),
+            raw_output_chars=int(data.get("raw_output_chars") or 0),
+            raw_output_sha256=(
+                None
+                if data.get("raw_output_sha256") in (None, "")
+                else str(data.get("raw_output_sha256"))
+            ),
         )
 
     def finding_digests(self) -> tuple[str, ...]:
@@ -263,8 +293,10 @@ class SemanticReviewStore:
         self.baselines_path = project_root / SEMANTIC_BASELINES_PATH
         self.ratifications_path = project_root / SEMANTIC_RATIFICATIONS_PATH
 
-    def append_record(self, record: SemanticEvaluationRecord) -> None:
-        self._append_jsonl(self.records_path, record.to_dict())
+    def append_record(self, record: SemanticEvaluationRecord) -> SemanticEvaluationRecord:
+        persisted = self._prepare_record_for_persistence(record)
+        self._append_jsonl(self.records_path, persisted.to_dict())
+        return persisted
 
     def append_ratification(self, ratification: SemanticRatificationRecord) -> None:
         self._append_jsonl(self.ratifications_path, ratification.to_dict())
@@ -392,6 +424,88 @@ class SemanticReviewStore:
         ensure_parent_dir(path)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n")
+
+    def _prepare_record_for_persistence(
+        self, record: SemanticEvaluationRecord
+    ) -> SemanticEvaluationRecord:
+        raw_output = record.raw_output
+        if record.status != STATUS_EVALUATION_FAILED or not raw_output:
+            return record
+
+        raw_output_chars = len(raw_output)
+        raw_output_sha256 = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
+        raw_output_tail = raw_output[-SEMANTIC_RAW_OUTPUT_TAIL_CHARS:]
+        raw_output_path = self._write_raw_output_sidecar(record, raw_output)
+        if raw_output_path is None:
+            return SemanticEvaluationRecord(
+                issue_ref=record.issue_ref,
+                canonical_type=record.canonical_type,
+                input_digest=record.input_digest,
+                model_id=record.model_id,
+                prompt_contract_version=record.prompt_contract_version,
+                status=record.status,
+                cache_hit=record.cache_hit,
+                duration_seconds=record.duration_seconds,
+                cost_usd=record.cost_usd,
+                cost_provenance=record.cost_provenance,
+                started_at=record.started_at,
+                completed_at=record.completed_at,
+                configured_profile_name=record.configured_profile_name,
+                configured_model_name=record.configured_model_name,
+                resolved_model_id=record.resolved_model_id,
+                outcome=record.outcome,
+                findings=record.findings,
+                failure_detail=record.failure_detail,
+                raw_output=raw_output,
+                raw_output_tail=raw_output_tail,
+                raw_output_chars=raw_output_chars,
+                raw_output_sha256=raw_output_sha256,
+            )
+        return SemanticEvaluationRecord(
+            issue_ref=record.issue_ref,
+            canonical_type=record.canonical_type,
+            input_digest=record.input_digest,
+            model_id=record.model_id,
+            prompt_contract_version=record.prompt_contract_version,
+            status=record.status,
+            cache_hit=record.cache_hit,
+            duration_seconds=record.duration_seconds,
+            cost_usd=record.cost_usd,
+            cost_provenance=record.cost_provenance,
+            started_at=record.started_at,
+            completed_at=record.completed_at,
+            configured_profile_name=record.configured_profile_name,
+            configured_model_name=record.configured_model_name,
+            resolved_model_id=record.resolved_model_id,
+            outcome=record.outcome,
+            findings=record.findings,
+            failure_detail=record.failure_detail,
+            raw_output_tail=raw_output_tail,
+            raw_output_path=str(raw_output_path),
+            raw_output_chars=raw_output_chars,
+            raw_output_sha256=raw_output_sha256,
+        )
+
+    def _write_raw_output_sidecar(
+        self, record: SemanticEvaluationRecord, raw_output: str
+    ) -> Path | None:
+        path = self._raw_output_path(record)
+        try:
+            ensure_parent_dir(path)
+            path.write_text(raw_output, encoding="utf-8")
+        except OSError:
+            return None
+        return path
+
+    def _raw_output_path(self, record: SemanticEvaluationRecord) -> Path:
+        slug = record.issue_ref.replace("/", "-")
+        stamp = (
+            (record.completed_at or record.started_at or "undated")
+            .replace(":", "")
+            .replace("+", "Z")
+        )
+        filename = f"{slug}-{stamp}.raw.txt"
+        return self.project_root / SEMANTIC_AUDIT_DIR / filename
 
     def _read_jsonl(self, path: Path) -> list[object]:
         if not path.exists():
