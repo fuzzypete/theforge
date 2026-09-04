@@ -932,7 +932,7 @@ class TestRenderArtifactMarkdown:
         assert "did not reach a confirmed cause" in md
         assert "budget or timeout" not in md
 
-    def test_cause_found_partial_with_confirmed_cause_uses_generic_warning(self):
+    def test_rendered_scope_coverage_section_does_not_imply_partial_warning(self):
         artifact = DiagnosisArtifact(
             issue_number=2665,
             observed_symptom="A diagnose banner contradicts the artifact beneath it.",
@@ -943,7 +943,7 @@ class TestRenderArtifactMarkdown:
                 Hypothesis(
                     "scope coverage was the only missing requirement",
                     "confirmed",
-                    "missing_required_fields returns only symptom_scope_coverage",
+                    "The audit still records symptom_scope_coverage as missing metadata.",
                     claim_verification=ClaimVerification(
                         "source", "Checked against the target repository source."
                     ),
@@ -951,20 +951,25 @@ class TestRenderArtifactMarkdown:
             ),
             confirmed_cause="The banner renderer keys only on partial_reason.",
             affected_code_path="src/theforge/diagnose_types.py",
-            fix_success_criterion="The banner describes scope coverage, not cause failure.",
-            partial=True,
-            partial_reason=DiagnosePartialReason.UNCLASSIFIED,
+            fix_success_criterion=(
+                "A landed diagnosis renders the scope section without a warning."
+            ),
             confirmed_cause_verification=ClaimVerification(
                 "source", "Checked against the target repository source."
+            ),
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=True,
+                stated_scope="every sibling renderer",
+                examined_locations=(),
             ),
         )
         rendered = render_artifact_markdown(
             artifact,
             issue_requires_categorical_scope=True,
         )
-        assert "confirmed a cause" in rendered
-        assert "diagnosis is otherwise incomplete" in rendered
-        assert "did not reach a confirmed cause" not in rendered
+        assert "### Stated symptom scope coverage" in rendered
+        assert "every sibling renderer" in rendered
+        assert "Partial diagnosis" not in rendered
 
     def test_budget_partial_artifact_names_budget(self):
         artifact = DiagnosisArtifact(

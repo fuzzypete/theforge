@@ -436,14 +436,6 @@ class DiagnosisArtifact:
             if self._is_nonblocking_missing_field(name)
         )
 
-    def missing_verification_metadata_fields(
-        self, *, issue_requires_categorical_scope: bool = False
-    ) -> tuple[str, ...]:
-        """Backward-compatible alias for callers using the legacy helper name."""
-        return self.nonblocking_missing_fields(
-            issue_requires_categorical_scope=issue_requires_categorical_scope
-        )
-
     def has_substantive_content(self) -> bool:
         """Return True when at least one required diagnosis field carries content.
 
