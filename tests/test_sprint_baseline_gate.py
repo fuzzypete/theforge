@@ -240,6 +240,33 @@ def test_baseline_gate_failure_preserves_the_worktree_that_produced_it(
     assert str(worktree) in str(baseline["message"])
 
 
+def test_baseline_gate_reproduced_failure_records_failing_target_extraction(
+    tmp_path: Path,
+) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=(
+                'python -c "import sys; '
+                "print('FAILED tests/test_storage.py::test_dates'); "
+                "print('AssertionError: dates drifted'); sys.exit(1)\""
+            ),
+            failed_test_pattern=r"^FAILED (?P<test>\S+)",
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    assert baseline["failing_targets"] == ["tests/test_storage.py::test_dates"]
+    assert baseline["failing_target_extraction"] == {
+        "source": "custom_pattern",
+        "format_recognized": True,
+    }
+
+
 def test_baseline_gate_evidence_and_worktree_survive_the_sprint_abort(
     tmp_path: Path,
 ) -> None:

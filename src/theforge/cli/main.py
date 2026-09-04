@@ -8,6 +8,7 @@ import sys
 from theforge.cli import (
     audit,
     author,
+    baseline_fix,
     batch_report,
     check_config,
     daemon,
@@ -93,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.register_parser(subparsers)
     rca.register_parser(subparsers)
     report.register_parser(subparsers)
+    baseline_fix.register_parser(subparsers)
     batch_report.register_parser(subparsers)
     knowledge_report.register_parser(subparsers)
     prior_run_replay.register_parser(subparsers)
@@ -143,6 +145,7 @@ def main() -> None:
         "diagnose": diagnose.cmd_diagnose,
         "rca": rca.cmd_rca,
         "report": report.cmd_report,
+        "baseline-fix": baseline_fix.cmd_baseline_fix,
         "batch-report": batch_report.cmd_batch_report,
         "knowledge-report": knowledge_report.cmd_knowledge_report,
         "prior-run-replay": prior_run_replay.cmd_prior_run_replay,
