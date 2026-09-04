@@ -126,6 +126,7 @@ def _fake_agent_result(
     success: bool = True,
     cost: float | None = 0.05,
     tool_trace: tuple[dict, ...] = (),
+    failure_code: str | None = None,
 ):
     from theforge.agent_types import AgentResult
 
@@ -137,6 +138,7 @@ def _fake_agent_result(
         exit_code=0 if success else 1,
         raw={},
         tool_trace=tool_trace,
+        failure_code=failure_code,
     )
 
 
@@ -626,6 +628,77 @@ class TestParseRetryRecovery:
         assert result.state.agent_failure_code == "delegated_without_observed_outcome"
         assert "described delegated work in its own output" in result.message
         assert "used Agent" not in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_failed_result_with_text_only_waiting_placeholder_is_not_retried(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """A nonzero runner exit does not hide a real delegated placeholder result."""
+        mock_fetch.return_value = _issue(431)
+        placeholder = (
+            "I'll wait for the actual completion notification from the "
+            "investigation agent rather than polling further."
+        )
+        mock_agent.return_value = _fake_agent_result(placeholder, success=False, cost=0.49)
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=431,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "delegated_without_observed_outcome"
+        assert "described delegated work in its own output" in result.message
+        assert "Skipping YAML reformat retries" in result.message
+        assert "parseable YAML block" not in result.message
+
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_delegated_placeholder_preserves_terminal_runner_failure_code(
+        self, mock_agent, mock_fetch, tmp_path
+    ):
+        """Delegation evidence must not erase a runner-reported terminal code."""
+        mock_fetch.return_value = _issue(431)
+        placeholder = (
+            "Still waiting on the investigation agent to finish examining the "
+            "history-lookup path before I can report back."
+        )
+        mock_agent.return_value = _fake_agent_result(
+            placeholder,
+            success=False,
+            cost=0.49,
+            failure_code="timeout",
+            tool_trace=({"tool": "Agent", "target": "Investigate the history-lookup path"},),
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=431,
+            config=_config(tmp_path, parse_retries=2),
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.FAILED
+        assert mock_agent.call_count == 1
+        assert result.state.parse_retries == []
+        assert result.state.agent_failure_code == "timeout"
+        assert "used Agent" in result.message
+        assert "delegation placeholder" in result.message
+        assert "Skipping YAML reformat retries" in result.message
+
+        audit = _audit_for(tmp_path, 431, result.state.run_id)
+        assert audit["agent"]["failure_code"] == "timeout"
 
 
 # ── Flow seam: recoverability when retries are exhausted ──────────────
