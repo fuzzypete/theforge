@@ -15,6 +15,15 @@ STATUS_FINDINGS = "findings"
 STATUS_NO_FINDINGS = "no_findings"
 STATUS_EVALUATION_FAILED = "evaluation_failed"
 
+# An operator's decision on one raised concern, recorded against the exact
+# revision that was evaluated. Accepting a concern says "this is a real defect
+# in this document"; rejecting it says "this concern does not stand". Neither
+# is model output: both are ratification, which is why they live beside the
+# finding types rather than inside the parser.
+DECISION_ACCEPTED = "accepted"
+DECISION_REJECTED = "rejected"
+DECISION_VALUES = (DECISION_ACCEPTED, DECISION_REJECTED)
+
 SEVERITY_LOW = "low"
 SEVERITY_MEDIUM = "medium"
 SEVERITY_HIGH = "high"
@@ -23,6 +32,7 @@ SEVERITY_VALUES = (SEVERITY_LOW, SEVERITY_MEDIUM, SEVERITY_HIGH)
 SemanticOutcome = Literal["FINDINGS", "NO_FINDINGS"]
 SemanticStatus = Literal["findings", "no_findings", "evaluation_failed"]
 SemanticSeverity = Literal["low", "medium", "high"]
+SemanticConcernDecisionValue = Literal["accepted", "rejected"]
 
 
 def _finding_digest_payload(

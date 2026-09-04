@@ -395,6 +395,36 @@ contract version.
 
 ---
 
+## `forge ratify-semantic`
+
+Record an operator ratification of one evaluated document revision.
+
+```bash
+forge ratify-semantic ISSUE [--accept DIGEST ...] [--reject DIGEST ...] [--reject-all]
+```
+
+**Use this when:** Deciding the concerns `forge review-semantic` raised. A clean
+evaluation does not produce `REVIEWED_READY` on its own — sprint admission
+consumes this ratification, never the evaluator's output. Every concern the
+evaluation raised must be accepted or rejected; the command refuses a partial
+ratification. Rejecting a concern clears it for that revision, accepting one
+withholds readiness for that revision until the document changes, and any edit
+to the document retires the ratification with it. See
+[semantic readiness](../reference/semantic-readiness.md) for the full policy.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `issue` (positional) | GitHub issue number to ratify |
+| `--accept <finding-digest>` | Accept this concern (repeatable) |
+| `--reject <finding-digest>` | Reject this concern (repeatable) |
+| `--reject-all` | Reject every concern not explicitly accepted |
+| `--input-digest <digest>` | Ratify this revision instead of the issue's current one |
+| `--config <path>` | Path to `forge.yaml` |
+
+---
+
 ## `forge semantic-report`
 
 Report corpus metrics from recorded semantic-review audits.

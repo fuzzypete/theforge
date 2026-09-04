@@ -939,6 +939,7 @@ def _run_query_mode(
     is already gone by the time this runs on the real re-exec path).
     """
     from theforge.coordinator.audit_substrate import record_shape_verdict_event
+    from theforge.eval.semantic_readiness import SEMANTIC_REASON_CODES
     from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.entry_intake import remediate_entry_skipped_issues
@@ -1091,8 +1092,16 @@ def _run_query_mode(
         # remediation under --force, which is the operator's explicit
         # escape hatch. Operator-action entries are excluded — the label is
         # the operator's deliberate signal, not a defect to remediate.
+        # Semantically withheld issues are excluded on the same grounds: their
+        # bodies are structurally fine, and the missing thing is an operator
+        # ratification no body edit produces. Editing the body would only
+        # change the revision the next evaluation has to read (#2785).
         entry_intake_outcomes: dict[int, object] = {}
-        remediation_targets = [sk for sk in gate_result.skipped]
+        remediation_targets = [
+            sk
+            for sk in gate_result.skipped
+            if not any(code in SEMANTIC_REASON_CODES for code in sk.reason_codes)
+        ]
         if remediation_targets and not force:
             entry_intake_outcomes = remediate_entry_skipped_issues(
                 remediation_targets,
