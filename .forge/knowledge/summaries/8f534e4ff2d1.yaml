@@ -1,0 +1,123 @@
+schema_version: 2
+run_id: 8f534e4ff2d1
+authoritative_run_record: .forge/audits/runs/8f534e4ff2d1.json
+generated_at: '2026-09-04T20:14:30.398384+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011918749999999999
+story:
+  slug: issue-2889
+  name: review-semantic discards a completed evaluation's findings and retains no
+    record of them
+  github_issue: 2889
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/eval_cmd.py
+- src/theforge/eval/semantic_runner.py
+- src/theforge/eval/semantic_storage.py
+- tests/test_cli_semantic_eval.py
+- tests/test_semantic_eval.py
+what_changed:
+  description: The run changed semantic-review failure persistence so unparseable
+    model output is retained in audit records instead of being lost when parsing fails.
+    It also adjusted the operator-facing CLI path around those failures.
+  approach: The implementation captured raw model responses on the parse-failure path,
+    persisted them through the audit storage layer using sidecar-backed record data
+    with collision handling and fallback behavior, and updated tests around storage
+    and CLI reporting.
+  files_modified: *id002
+what_was_learned:
+- claim: When retaining failed model outputs in append-only audit storage, sidecar
+    filenames must be unique per failure event rather than derived only from issue
+    identity and coarse timestamps, or one failed run can overwrite another's preserved
+    evidence.
+  evidence:
+  - type: review_finding
+    finding_id: 0c2aab1b589358b1
+    description: 'This finding shows the concrete failure mode: two evaluation_failed
+      records with the same issue and second-level completion time wrote to the same
+      sidecar path, causing the later persistence to overwrite the earlier raw output.'
+  - type: review_finding
+    finding_id: fc8888fc107a0fca
+    description: This finding broadens the same mechanism beyond identical retries,
+      showing that same-second completions across different model or contract identities
+      could still collide because the path key was not unique enough for per-run preservation.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 rejected the initial retention approach specifically because
+      preserved parse-failure evidence was still vulnerable to same-timestamp path
+      collisions, demonstrating that uniqueness of artifact naming was the central
+      implementation risk.
+- claim: Fallback paths that preserve evidence during storage failures need explicit
+    verification, because the only branch exercised in normal operation may hide loss
+    or unbounded persistence behavior until the filesystem refuses the primary write.
+  evidence:
+  - type: review_finding
+    finding_id: 94aad3b5bd801655
+    description: This finding identifies an OSError fallback that preserves output
+      differently from the primary path and notes it was untested, demonstrating that
+      evidence-retention guarantees depend on exceptional-path behavior that can diverge
+      silently without dedicated checks.
+- claim: 'Preserving raw failed outputs can create a storage-shape problem of its
+    own: if the retained payload is written verbatim into a JSONL audit stream, a
+    single malformed model response can expand one append-only record arbitrarily.'
+  evidence:
+  - type: review_finding
+    finding_id: fc4a4ba52decba91
+    description: 'This finding shows that retention is not only about keeping evidence
+      but about where and how it is stored: inline verbatim persistence in JSONL directly
+      couples malformed-output size to record-line size, creating a separate persistence
+      constraint future runs must account for.'
+- claim: Operator-visible failure summaries need to expose that raw model output was
+    preserved; otherwise a parse-failure run still appears non-actionable even when
+    the audit layer kept the evidence.
+  evidence:
+  - type: review_finding
+    finding_id: 389d5be9788904e0
+    description: 'This finding shows a mismatch between backend preservation and CLI
+      observability: the command still surfaced only parser exception text, so operators
+      could not tell from the summary that the full response had been retained for
+      inspection.'
+learned_patterns:
+- unique-sidecar-per-failure
+- verify-storage-fallbacks
+- bound-append-only-record-size
+- surface-retained-evidence-in-cli
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 0c2aab1b589358b1
+    severity: P1
+    file: src/theforge/eval/semantic_storage.py
+    description: When two evaluation-failed records for the same issue are persisted
+      with the same second-level completion timestamp, both records point to the same
+      raw-output sidecar and the later write overwrites the earlier run's model output.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly concentrated on evidence retention details around
+    parse-failure storage: collision-safe naming, bounded persistence shape, fallback
+    behavior, and whether operators could discover the preserved output.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: null
+  dominant_difficulty: Keeping unusable model output preserved and inspectable without
+    introducing new failure modes in audit persistence.
