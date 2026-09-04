@@ -1568,7 +1568,11 @@ def _run_plan_agent_review(
             _prior_dispositions,
         )
 
-        record_plan_attempt(state, merged_pr.findings)
+        record_plan_attempt(
+            state,
+            merged_pr.findings,
+            max_plan_regen_attempts=config.retry.max_plan_regen_attempts,
+        )
 
         if merged_pr.verdict == "APPROVE":
             state.plan_review_decision = "approve"
@@ -1740,7 +1744,9 @@ def _run_plan_agent_review(
         _patch_regen_count = state.plan_regen_count - (1 if state.plan_backtrack_used else 0)
         if _patch_regen_count > config.retry.max_plan_regen_attempts:
             _disposition_now = state.plan_regen_disposition or "patch"
-            if _disposition_now != "backtrack" or state.plan_backtrack_used:
+            if _disposition_now != "escalate" and (
+                _disposition_now != "backtrack" or state.plan_backtrack_used
+            ):
                 state.plan_review_decision = "reject"
                 state.phase = Phase.ESCALATE
                 _max_regen = config.retry.max_plan_regen_attempts
@@ -1762,11 +1768,17 @@ def _run_plan_agent_review(
         # Early escalation: disposition tracker determined the backtrack attempt
         # itself diverged — no further regen will help; escalate immediately.
         if state.plan_regen_disposition == "escalate":
+            _assessment = state.plan_regen_assessment or {}
+            _reason_code = _assessment.get("reason_code")
+            _reason_suffix = ""
+            if _reason_code in {"unassessable_no_comparable_structure", "too_few_attempts"}:
+                _reason_suffix = f" Trajectory assessment: {_reason_code}."
             state.plan_review_decision = "reject"
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Plan rejected {state.plan_regen_count} time(s)"
                 f" by agent reviewer — backtrack attempt failed to converge."
+                f"{_reason_suffix}"
                 f" Findings:\n{findings_text}"
             )
             _log(
@@ -1979,13 +1991,18 @@ def _run_human_plan_review(
             state.plan_output = updated
             state.plan_structured = parse_plan_output(updated)
             plan_text = updated
-            record_plan_attempt(state, [])
+            record_plan_attempt(
+                state,
+                [],
+                max_plan_regen_attempts=config.retry.max_plan_regen_attempts,
+                trajectory_assessable=False,
+            )
             # ── Post-plan dev-tier checkpoint (#1387) ──────────────────
             # Same demotion signal as the agent-review APPROVE path: a clean
             # human/pending-file/remote approval on a medium story de-risks the
-            # dev tier too. A human approval carries no structured findings, so
-            # record_plan_attempt(state, []) yields p1=0/p2=0 — the checkpoint
-            # gates still enforce complexity/cycle-count before firing.
+            # dev tier too. Human approvals record zero findings for the
+            # checkpoint, but the attempt is marked non-assessable so the
+            # structured trajectory classifier ignores it.
             _apply_post_plan_dev_checkpoint(state, config)
             write_trace(
                 workspace_path
@@ -2034,7 +2051,12 @@ def _run_human_plan_review(
 
         if plan_review_decision == "regenerate":
             state.plan_regen_count += 1
-            record_plan_attempt(state, [])
+            record_plan_attempt(
+                state,
+                [],
+                max_plan_regen_attempts=config.retry.max_plan_regen_attempts,
+                trajectory_assessable=False,
+            )
             if logger:
                 logger._safe_emit(
                     "phase_end",
@@ -2058,14 +2080,10 @@ def _run_human_plan_review(
                 f"(attempt {state.plan_regen_count}/{_max2})"
             )
 
-            # Human-review regen does NOT use disposition-aware prompts. The human
-            # "regenerate" decision calls record_plan_attempt(state, []) with empty
-            # findings, so there is no structured finding data to derive learned
-            # constraints or a rejected strategy from. build_disposition_context
-            # returns the trajectory table for the patch disposition (or "" if fewer
-            # than 2 attempts), which is appended unchanged. No escalation check is
-            # added here for the same reason — disposition detection requires
-            # structured findings that the human path does not provide.
+            # Human-review regen does NOT use disposition-aware prompts. These
+            # attempts stay in the trajectory table, but they are marked
+            # non-assessable so the classifier does not fabricate accumulated or
+            # unassessable stops from missing structured findings.
             _disposition_ctx = build_disposition_context(state)
             if _disposition_ctx:
                 regen_plan_prompt = plan_prompt + f"\n\n{_disposition_ctx}\n"
