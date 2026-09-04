@@ -1066,14 +1066,34 @@ def _run_query_mode(
         original_gate_skips = list(gate_result.skipped)
         original_gate_advisories = list(gate_result.advisories)
         if gate_result.skipped:
-            warning = format_skipped_warning(gate_result.skipped)
             if force:
-                print(
-                    f"[forge] --force in effect; running all issues anyway.\n{warning}",
-                    file=sys.stderr,
-                )
+                # --force overrides shape refusals, not the operator's
+                # ratification record (#2785). Report the two partitions
+                # separately so the banner does not claim semantically
+                # withheld issues are running — apply_shape_gate has already
+                # excluded them from ``runnable``.
+                semantic_skips = []
+                shape_skips = []
+                for sk in gate_result.skipped:
+                    if any(code in SEMANTIC_REASON_CODES for code in sk.reason_codes):
+                        semantic_skips.append(sk)
+                    else:
+                        shape_skips.append(sk)
+                if shape_skips:
+                    print(
+                        "[forge] --force in effect; running these shape-flagged issues anyway.\n"
+                        f"{format_skipped_warning(shape_skips)}",
+                        file=sys.stderr,
+                    )
+                if semantic_skips:
+                    print(
+                        "[forge] --force does not override semantic readiness; "
+                        "these issues remain withheld.\n"
+                        f"{format_skipped_warning(semantic_skips)}",
+                        file=sys.stderr,
+                    )
             else:
-                print(warning, file=sys.stderr)
+                print(format_skipped_warning(gate_result.skipped), file=sys.stderr)
         if gate_result.advisories:
             print(format_advisory_warning(gate_result.advisories), file=sys.stderr)
         if gate_result.operator_action:

@@ -116,6 +116,9 @@ therefore a ratification, intact.
   refusals. `unevaluated`, `awaiting_ratification`, `evaluation_failed` and
   `accepted_concerns` all stay withheld under it, on the same grounds as the
   `operator-action` label: these are operator decisions, not shape findings.
+  `forge sprint --force` reports the two partitions under separate banners —
+  shape-flagged issues as force-admitted, semantically withheld ones as still
+  withheld — so the escape hatch never reads as covering both.
 
 ## Where it is enforced
 
