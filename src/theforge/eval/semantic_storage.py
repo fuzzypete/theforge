@@ -489,22 +489,29 @@ class SemanticReviewStore:
     def _write_raw_output_sidecar(
         self, record: SemanticEvaluationRecord, raw_output: str
     ) -> Path | None:
-        path = self._raw_output_path(record)
-        try:
-            ensure_parent_dir(path)
-            path.write_text(raw_output, encoding="utf-8")
-        except OSError:
-            return None
-        return path
+        path: Path | None = None
+        for attempt in range(100):
+            path = self._raw_output_path(record, attempt=attempt)
+            try:
+                ensure_parent_dir(path)
+                with path.open("x", encoding="utf-8") as handle:
+                    handle.write(raw_output)
+            except FileExistsError:
+                continue
+            except OSError:
+                return None
+            return path
+        return None
 
-    def _raw_output_path(self, record: SemanticEvaluationRecord) -> Path:
+    def _raw_output_path(self, record: SemanticEvaluationRecord, *, attempt: int = 0) -> Path:
         slug = record.issue_ref.replace("/", "-")
         stamp = (
             (record.completed_at or record.started_at or "undated")
             .replace(":", "")
             .replace("+", "Z")
         )
-        filename = f"{slug}-{stamp}.raw.txt"
+        suffix = "" if attempt == 0 else f"-{attempt + 1}"
+        filename = f"{slug}-{stamp}{suffix}.raw.txt"
         return self.project_root / SEMANTIC_AUDIT_DIR / filename
 
     def _read_jsonl(self, path: Path) -> list[object]:

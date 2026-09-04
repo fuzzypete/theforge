@@ -402,6 +402,101 @@ class TestSemanticRunner:
         assert payload["raw_output_sha256"] == persisted.raw_output_sha256
         assert "raw_output" not in payload
 
+    def test_parse_failure_sidecars_do_not_collide_with_same_second_timestamp(
+        self, tmp_path: Path
+    ) -> None:
+        store = SemanticReviewStore(tmp_path)
+        completed_at = "2026-09-04T12:34:56+00:00"
+        first_output = "plain prose: first failure"
+        second_output = "plain prose: second failure"
+
+        first = store.append_record(
+            SemanticEvaluationRecord(
+                issue_ref="issue-1",
+                canonical_type="enhancement",
+                input_digest="digest-1",
+                model_id="anthropic/sonnet/cli",
+                prompt_contract_version="semantic-review.v1",
+                status=STATUS_EVALUATION_FAILED,
+                cache_hit=False,
+                duration_seconds=0.1,
+                cost_usd=None,
+                cost_provenance="unknown",
+                started_at=completed_at,
+                completed_at=completed_at,
+                configured_profile_name="semantic-source",
+                configured_model_name="sonnet",
+                failure_detail="parse failed",
+                raw_output=first_output,
+            )
+        )
+        second = store.append_record(
+            SemanticEvaluationRecord(
+                issue_ref="issue-1",
+                canonical_type="enhancement",
+                input_digest="digest-2",
+                model_id="anthropic/sonnet/cli",
+                prompt_contract_version="semantic-review.v1",
+                status=STATUS_EVALUATION_FAILED,
+                cache_hit=False,
+                duration_seconds=0.1,
+                cost_usd=None,
+                cost_provenance="unknown",
+                started_at=completed_at,
+                completed_at=completed_at,
+                configured_profile_name="semantic-source",
+                configured_model_name="sonnet",
+                failure_detail="parse failed",
+                raw_output=second_output,
+            )
+        )
+
+        assert first.raw_output_path
+        assert second.raw_output_path
+        assert first.raw_output_path != second.raw_output_path
+        assert (tmp_path / first.raw_output_path).read_text(encoding="utf-8") == first_output
+        assert (tmp_path / second.raw_output_path).read_text(encoding="utf-8") == second_output
+
+    def test_parse_failure_falls_back_to_inline_raw_output_when_sidecar_write_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_open = Path.open
+
+        def raising_open(self: Path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if self.suffixes[-2:] == [".raw", ".txt"] and mode == "x":
+                raise OSError("sidecar blocked")
+            return original_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", raising_open)
+
+        result = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(body="Different body"),
+            agent_runner=lambda **kwargs: _agent_result("plain prose, not structured"),
+            baseline_defect_ids=(),
+        )
+
+        persisted = SemanticReviewStore(tmp_path).iter_records()[-1]
+        assert result.record.raw_output == "plain prose, not structured"
+        assert result.record.raw_output_path is None
+        assert persisted.raw_output == "plain prose, not structured"
+        assert persisted.raw_output_path is None
+        assert persisted.raw_output_tail == "plain prose, not structured"
+
+        line = (
+            (tmp_path / ".forge" / "audits" / "semantic-review" / "records.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[-1]
+        )
+        payload = json.loads(line)
+        assert payload["raw_output"] == "plain prose, not structured"
+        assert payload["raw_output_tail"] == "plain prose, not structured"
+        assert "raw_output_path" not in payload
+
     def test_failed_identity_record_does_not_poison_repeat_run(self, tmp_path: Path) -> None:
         calls = 0
 
