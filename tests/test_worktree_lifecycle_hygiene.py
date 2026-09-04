@@ -571,3 +571,34 @@ def test_sweep_preserves_undecidable_branch_and_names_the_absent_evidence(
     assert "preserving worktree forge/unknown" in err
     assert "landing undecidable" in err
     assert "no issue reference in the branch name" in err
+
+
+def test_sweep_preserves_branch_with_merged_pr_but_content_absent_from_base(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A merged PR record does not make a worktree reclaimable on its own (#2795).
+
+    The branch below has work that is nowhere in main — the shape of a branch
+    that kept committing after its PR merged. GitHub still reports the merged
+    PR, and the sweep acted on that alone, deleting the only copy of the work.
+    """
+    from theforge.coordinator import branch_landing
+
+    repo, config = _init_sweep_repo(tmp_path)
+    live = repo / ".forge" / "worktrees" / "issue-7777"
+    _git(repo, "worktree", "add", "-b", "feat/issue-7777", str(live), "main")
+    for index in (1, 2):
+        (live / f"after_pr{index}.py").write_text(f"value = {index}\n", encoding="utf-8")
+        _git(live, "add", ".")
+        _git(live, "commit", "-m", f"work after the PR merged {index}")
+    monkeypatch.setattr(
+        branch_landing, "_merged_pr_probe", _merged_pr(4242, "https://github.com/o/r/pull/4242")
+    )
+
+    sweep_orphan_worktrees(repo, config)
+
+    assert live.exists()
+    assert (live / "after_pr2.py").exists()
+    err = capsys.readouterr().err
+    assert "preserving worktree feat/issue-7777" in err
+    assert "branch content is absent from main despite merged PR #4242" in err

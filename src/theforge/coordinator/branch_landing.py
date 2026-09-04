@@ -79,8 +79,15 @@ class BranchLanding:
 
     def describe_source(self, base_branch: str) -> str:
         """Name the evidence this verdict rests on, for an operator to contest."""
-        if self.pr_number is not None:
+        if self.pr_number is not None and self.landed:
             return f"merged PR #{self.pr_number}"
+        if self.source == "content" and self.pr_number is not None:
+            # A PR merged, and the branch still carries content base lacks. The
+            # PR number belongs in the message — it is the claim an operator
+            # would otherwise reach for — but it is not what this verdict rests
+            # on, so it cannot be reported as the deciding evidence.
+            absent_from = f"branch content is absent from {base_branch}"
+            return f"{absent_from} despite merged PR #{self.pr_number}"
         if self.source == "audit":
             return "prior APPROVE in audit trail"
         if self.source == "topology":
@@ -359,28 +366,53 @@ def _audit_contradicts_merge(project_root: Path, slug: str) -> bool:
     return outcome == 0 or verdict == "REQUEST_CHANGES"
 
 
+def _short_ref(ref: str) -> str:
+    """Reduce a ref to its bare branch name for comparison.
+
+    ``refs/heads/main``, ``origin/main`` and ``main`` all name the same branch;
+    the configured base is a local branch name while GitHub reports the branch
+    the PR merged *into*, so both spellings have to normalise before they can be
+    compared.
+    """
+    name = ref.strip()
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+    return name.removeprefix("origin/")
+
+
 def _lookup_merged_pr_for_branch(
     branch: str,
     project_root: Path,
+    base_branch: str,
 ) -> BranchLanding | None:
     """Return merged PR metadata for ``branch`` when GitHub reports one.
 
-    ``None`` covers both "GitHub reports no merged PR" and "the probe could not
-    run"; :func:`_merged_pr_probe` is what separates them for the caller that
-    has to report absent evidence.
+    ``None`` covers both "GitHub reports no merged PR into ``base_branch``" and
+    "the probe could not run"; :func:`_merged_pr_probe` is what separates them
+    for the caller that has to report absent evidence.
     """
-    landing, _probe_ok = _merged_pr_probe(branch, project_root)
+    landing, _probe_ok = _merged_pr_probe(branch, project_root, base_branch)
     return landing
 
 
 def _merged_pr_probe(
     branch: str,
     project_root: Path,
+    base_branch: str,
 ) -> tuple[BranchLanding | None, bool]:
     """Ask GitHub for a merged PR on ``branch``: (evidence, probe-succeeded).
 
     The second element is what makes a failed ``gh`` call undecidable rather
     than a statement that no PR exists. A network failure is not evidence.
+
+    A merged PR only counts when it merged into ``base_branch``. "This branch
+    was merged somewhere" is not the question — a repository with a release line
+    routinely merges branches into refs that are not the base this run was
+    configured against, and reading such a PR as a landing deleted work that had
+    never reached the configured base (#2795, cycle 3). A record with no
+    readable base ref is discarded for the same reason: an unnamed target cannot
+    be checked against the one that matters.
     """
     try:
         result = subprocess.run(
@@ -393,7 +425,7 @@ def _merged_pr_probe(
                 "--state",
                 "closed",
                 "--json",
-                "number,url,mergedAt",
+                "number,url,mergedAt,baseRefName",
             ],
             cwd=str(project_root),
             capture_output=True,
@@ -405,6 +437,7 @@ def _merged_pr_probe(
         data = json.loads(result.stdout or "[]")
         if not isinstance(data, list):
             return None, False
+        wanted_base = _short_ref(base_branch)
         merged_prs: list[tuple[str, int, str | None]] = []
         for item in data:
             if not isinstance(item, dict):
@@ -412,9 +445,12 @@ def _merged_pr_probe(
             merged_at = item.get("mergedAt")
             number = item.get("number")
             url = item.get("url")
+            base_ref = item.get("baseRefName")
             if not isinstance(merged_at, str) or not merged_at:
                 continue
             if not isinstance(number, int):
+                continue
+            if not isinstance(base_ref, str) or _short_ref(base_ref) != wanted_base:
                 continue
             merged_prs.append((merged_at, number, url if isinstance(url, str) else None))
         if not merged_prs:
@@ -438,11 +474,12 @@ def _with_pr_metadata(
     branch: str,
     project_root: Path,
     issue_number: int | None,
+    base_branch: str,
 ) -> BranchLanding:
     """Attach merged-PR metadata when GitHub can identify the landing PR."""
     if not landing.landed or issue_number is None or landing.pr_number is not None:
         return landing
-    merged_pr = _lookup_merged_pr_for_branch(branch, project_root)
+    merged_pr = _lookup_merged_pr_for_branch(branch, project_root, base_branch)
     if merged_pr is None:
         return landing
     return BranchLanding(
@@ -589,11 +626,18 @@ def resolve_branch_landing(
     1. The forge audit trail — the evidence this run recorded when it landed the
        branch. Owned evidence is consulted before any external signal.
     2. Git topology — a regular merge, provable locally.
-    3. GitHub's own record of a merged PR for the branch.
+    3. GitHub's own record of a PR from the branch merged *into this base
+       branch*, accepted only when the branch's current content does not
+       contradict it.
     4. A base commit whose message *closes* the issue. This is the weakest
        signal — prose about the code rather than the code — so it runs last,
        only once every stronger source has declined, and only when neither the
        branch's content nor the audit trail contradicts it (#2374).
+
+    Sources 3 and 4 are external claims *about* the branch, and both yield to
+    the branch's content: work that is provably not in base has not landed,
+    whoever says otherwise. Sources 1 and 2 are not claims — topology proves
+    containment, and the audit assertion is this run's own landing record.
 
     Both local sources run before the ``gh`` subprocess, so the common cases
     cost no network at all.
@@ -608,6 +652,19 @@ def resolve_branch_landing(
     if issue_number is None:
         issue_number = _issue_number_from_ref(branch)
 
+    content_absent: bool | None = None
+
+    def _content_contradicts() -> bool:
+        """Whether the branch provably carries content ``base_branch`` lacks.
+
+        Computed at most once per resolution: both external sources need it and
+        it costs a ``merge-tree`` replay.
+        """
+        nonlocal content_absent
+        if content_absent is None:
+            content_absent = _branch_adds_content_to_base(project_root, base_branch, branch)
+        return content_absent
+
     # 1. Owned evidence: the APPROVE + landed record this run wrote itself.
     if slug is not None:
         try:
@@ -617,6 +674,7 @@ def resolve_branch_landing(
                     branch,
                     project_root,
                     issue_number,
+                    base_branch,
                 )
             absent.append("no landed APPROVE in the audit trail")
         except Exception:
@@ -634,26 +692,45 @@ def resolve_branch_landing(
             branch,
             project_root,
             issue_number,
+            base_branch,
         )
     if topology is None:
         absent.append("git topology could not be read")
     else:
         absent.append(f"branch is not merged into {base_branch} by topology")
 
-    # 3. GitHub's record of the merge. Fast-forward merges at the same tip and
-    # squash merges are both invisible to topology, so they need this and the
-    # issue-commit fallback below.
+    # 3. GitHub's record of the merge, into this base branch. Fast-forward
+    # merges at the same tip and squash merges are both invisible to topology,
+    # so they need this and the issue-commit fallback below.
+    #
+    # A merged PR is *external* evidence — a claim about the branch made
+    # somewhere else — and the same rule that governs the closing reference
+    # below governs it: content beats a claim about content. A PR record is
+    # about the commits that merged, not about the branch as it stands now, so
+    # a branch that acquired further commits after its PR landed still holds
+    # work base does not have, and reclaiming its worktree destroys that work
+    # (#2795, cycle 3). The two local sources above are exempt: topology proves
+    # containment by construction, and the audit assertion is this run's own
+    # record of landing this story.
     if issue_number is None:
         absent.append(
             "no issue reference in the branch name, so the merged-PR lookup "
             "and closing-reference scan were skipped"
         )
     else:
-        merged_pr, probe_ok = _merged_pr_probe(branch, project_root)
+        merged_pr, probe_ok = _merged_pr_probe(branch, project_root, base_branch)
         if merged_pr is not None:
-            return merged_pr
+            if not _content_contradicts():
+                return merged_pr
+            return BranchLanding(
+                status=UNLANDED,
+                source="content",
+                pr_number=merged_pr.pr_number,
+                pr_url=merged_pr.pr_url,
+                absent_evidence=tuple(absent),
+            )
         absent.append(
-            "GitHub reports no merged PR for the branch"
+            f"GitHub reports no merged PR into {base_branch} for the branch"
             if probe_ok
             else "the merged-PR lookup could not run"
         )
@@ -671,7 +748,7 @@ def resolve_branch_landing(
     #    squash-merged branch and an unmerged one are topologically identical
     #    (non-ancestor, unique commits), so vetoing on that shape suppressed
     #    exactly the squash merges this source exists to detect.
-    if _branch_adds_content_to_base(project_root, base_branch, branch):
+    if _content_contradicts():
         return BranchLanding(
             status=UNLANDED,
             source="content",

@@ -588,7 +588,7 @@ class TestReadPriorSprintCost:
                 m.returncode = 0
                 m.stdout = (
                     '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
-                    '"mergedAt":"2026-05-01T12:34:56Z"}]'
+                    '"mergedAt":"2026-05-01T12:34:56Z","baseRefName":"main"}]'
                 )
             elif _is_issue_grep(cmd, 1102):
                 m.returncode = 0

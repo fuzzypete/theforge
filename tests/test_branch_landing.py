@@ -11,6 +11,7 @@ still ask through.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from theforge.coordinator.branch_landing import (
     LANDED,
     UNDECIDABLE,
     UNLANDED,
+    BranchLanding,
     _branch_adds_content_to_base,
     _has_base_commit_closing_issue,
     resolve_branch_landing,
@@ -643,7 +645,7 @@ def test_is_branch_merged_external_squash_merge_by_merged_pr_lookup(tmp_path: Pa
             m.returncode = 0
             m.stdout = (
                 '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
-                '"mergedAt":"2026-05-01T12:34:56Z"}]'
+                '"mergedAt":"2026-05-01T12:34:56Z","baseRefName":"main"}]'
             )
         else:
             m.returncode = 0
@@ -758,7 +760,7 @@ def test_branch_merge_evidence_audit_error_falls_through_to_pr_lookup(tmp_path: 
             m.returncode = 0
             m.stdout = (
                 '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
-                '"mergedAt":"2026-05-01T12:34:56Z"}]'
+                '"mergedAt":"2026-05-01T12:34:56Z","baseRefName":"main"}]'
             )
         else:
             m.returncode = 1
@@ -882,7 +884,7 @@ def _mock_gh_merged_pr(number: int, cmd: list[str]) -> MagicMock | None:
     m.returncode = 0
     m.stdout = (
         f'[{{"number":{number},"url":"https://github.com/o/r/pull/{number}",'
-        '"mergedAt":"2026-05-01T12:34:56Z"}]'
+        '"mergedAt":"2026-05-01T12:34:56Z","baseRefName":"main"}]'
     )
     return m
 
@@ -985,3 +987,118 @@ def test_topology_failure_is_undecidable_not_unlanded(tmp_path: Path) -> None:
 
     assert landing.status == UNDECIDABLE
     assert "git topology could not be read" in landing.describe_absent()
+
+
+# ── A merged PR is a claim about the branch, not proof of its content ──
+#
+# #2795 cycle 3: PR evidence was accepted on sight. Two ways that deletes work —
+# the PR merged into a different branch than the one this run is configured
+# against, and the branch has moved on since the PR merged — and the sweep acts
+# on the answer by removing the worktree.
+
+
+def _gh_merged_pr_into(base_ref: str, number: int = 77):
+    """Delegate every git call to real git, and answer ``gh`` with one merged PR."""
+    real_run = subprocess.run
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = (
+                f'[{{"number":{number},"url":"https://github.com/o/r/pull/{number}",'
+                f'"mergedAt":"2026-05-01T12:34:56Z","baseRefName":"{base_ref}"}}]'
+            )
+            return m
+        return real_run(cmd, **kwargs)
+
+    return _run
+
+
+@pytest.mark.parametrize(
+    ("base_ref", "expected_status", "expected_source"),
+    [
+        ("main", LANDED, "github_pr"),
+        # Merged, but into a release line this run was not configured against:
+        # the work is not in main, so nothing here may reclaim the worktree.
+        ("release/v0.14", UNDECIDABLE, None),
+        ("refs/heads/main", LANDED, "github_pr"),
+    ],
+)
+def test_merged_pr_counts_only_when_it_merged_into_the_configured_base(
+    tmp_path: Path, base_ref: str, expected_status: str, expected_source: str | None
+) -> None:
+    """A PR merged elsewhere is not a landing on this base branch."""
+    _squash_merged_repo(tmp_path, "feat: the thing")  # content is on main, no closing ref
+
+    with (
+        patch(
+            "theforge.coordinator.branch_landing.subprocess.run",
+            side_effect=_gh_merged_pr_into(base_ref),
+        ),
+        patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
+    ):
+        landing = resolve_branch_landing("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert landing.status == expected_status
+    assert landing.source == expected_source
+    if expected_status is UNDECIDABLE:
+        assert "no merged PR into main for the branch" in landing.describe_absent()
+
+
+def test_merged_pr_does_not_land_a_branch_whose_content_is_absent_from_base(
+    tmp_path: Path,
+) -> None:
+    """A PR record cannot speak for commits the branch acquired after it merged.
+
+    The repository here is the reported shape: five commits of work, none of it
+    in main. GitHub reports a merged PR for the branch all the same. Accepting
+    that made the sweep delete the worktree holding the only copy (#2795).
+    """
+    _unmerged_repo(tmp_path, "chore: unrelated sweep")
+
+    with (
+        patch(
+            "theforge.coordinator.branch_landing._merged_pr_probe",
+            return_value=(
+                BranchLanding(
+                    status=LANDED,
+                    source="github_pr",
+                    pr_number=999,
+                    pr_url="https://github.com/o/r/pull/999",
+                ),
+                True,
+            ),
+        ),
+        patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
+    ):
+        landing = resolve_branch_landing("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert landing.status == UNLANDED
+    assert landing.landed is False
+    assert landing.source == "content"
+    # The PR travels with the verdict so an operator can contest it, but it is
+    # not reported as what decided the verdict.
+    assert landing.pr_number == 999
+    assert landing.describe_source("main") == (
+        "branch content is absent from main despite merged PR #999"
+    )
+
+
+def test_merged_pr_still_lands_a_squash_merge_whose_content_reached_base(
+    tmp_path: Path,
+) -> None:
+    """The content guard must not suppress the squash landings this fix exists for."""
+    _squash_merged_repo(tmp_path, "feat: the thing")
+
+    with (
+        patch(
+            "theforge.coordinator.branch_landing.subprocess.run",
+            side_effect=_gh_merged_pr_into("main", number=2577),
+        ),
+        patch("theforge.coordinator.branch_landing.has_review_approve", return_value=False),
+    ):
+        landing = resolve_branch_landing("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+    assert landing.status == LANDED
+    assert landing.pr_number == 2577

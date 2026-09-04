@@ -641,6 +641,14 @@ the base branch that closes the issue. That covers a squash landing, where the
 branch's own commits never reach origin and so the branch is preserved forever
 on commit presence alone.
 
+The two external sources — a merged PR and a closing reference — yield to the
+branch's own content. A PR counts only when it merged into the base branch this
+run is configured against, and only when replaying the branch onto that base is
+a no-op; a branch that kept committing after its PR landed still holds work the
+base does not have, and its worktree is preserved. The two local sources are not
+subject to that check: topology proves containment outright, and the audit
+assertion is forge's own record of landing this story.
+
 One narrower reclamation stays local and free: a branch with no commits missing
 from origin that is also *contained in* `origin/<base>` holds nothing to lose.
 Note the second half — commits reachable from some unrelated origin ref are not
@@ -652,11 +660,14 @@ Anything else is preserved, and the log says which:
 ```
 ✓ WORKSPACE  feat/issue-2553 landed via merged PR #2577 — reclaimable
 ⚠ WORKSPACE  preserving worktree feat/issue-9999 — branch content is absent from main; 3 local commits not present on origin
+⚠ WORKSPACE  preserving worktree feat/issue-7777 — branch content is absent from main despite merged PR #4242; 2 local commits not present on origin
 ⚠ WORKSPACE  preserving worktree feat/issue-8888 — landing undecidable — the merged-PR lookup could not run; ...
 ```
 
 `branch content is absent from main` means the branch's work is provably not in
-the base branch — real unlanded work, and the case preservation exists for.
+the base branch — real unlanded work, and the case preservation exists for. When
+a merged PR exists anyway, the message names it, because that PR is the claim
+you would otherwise reach for when the preservation looks wrong.
 `landing undecidable` means nothing could speak for the branch either way; the
 message names the evidence that was missing, so a failed `gh` call is not read
 as proof that no PR merged. Neither is ever deleted automatically.
