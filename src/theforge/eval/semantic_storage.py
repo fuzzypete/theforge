@@ -10,10 +10,13 @@ from pathlib import Path
 from theforge.agent_types import COST_UNKNOWN
 from theforge.artifacts import ensure_parent_dir
 from theforge.eval.semantic_types import (
+    DECISION_ACCEPTED,
+    DECISION_VALUES,
     OUTCOME_NO_FINDINGS,
     STATUS_EVALUATION_FAILED,
     STATUS_FINDINGS,
     STATUS_NO_FINDINGS,
+    SemanticConcernDecisionValue,
     SemanticFinding,
     SemanticOutcome,
     SemanticStatus,
@@ -22,6 +25,7 @@ from theforge.eval.semantic_types import (
 SEMANTIC_AUDIT_DIR = Path(".forge") / "audits" / "semantic-review"
 SEMANTIC_RECORDS_PATH = SEMANTIC_AUDIT_DIR / "records.jsonl"
 SEMANTIC_BASELINES_PATH = SEMANTIC_AUDIT_DIR / "baselines.jsonl"
+SEMANTIC_RATIFICATIONS_PATH = SEMANTIC_AUDIT_DIR / "ratifications.jsonl"
 COST_CACHE_HIT = "cache_zero"
 
 
@@ -61,6 +65,87 @@ class FrozenSemanticBaseline:
             ),
             defect_ids=tuple(sorted({str(item) for item in defect_ids if str(item)})),
             frozen_at=str(data.get("frozen_at") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class SemanticConcernDecision:
+    """One operator decision about one raised concern."""
+
+    finding_digest: str
+    decision: SemanticConcernDecisionValue
+
+    def __post_init__(self) -> None:
+        if self.decision not in DECISION_VALUES:
+            raise ValueError(
+                f"concern decision must be one of {DECISION_VALUES!r}, got {self.decision!r}"
+            )
+
+    def to_dict(self) -> dict[str, str]:
+        return {"finding_digest": self.finding_digest, "decision": self.decision}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "SemanticConcernDecision":
+        return cls(
+            finding_digest=str(data.get("finding_digest") or ""),
+            decision=str(data.get("decision") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class SemanticRatificationRecord:
+    """An operator's ratification of one evaluation, scoped to one revision.
+
+    ``input_digest`` is the document revision the decision was made against.
+    A ratification never speaks for any other revision: readiness derived from
+    it is discarded the moment the document changes (#2785).
+    """
+
+    issue_ref: str
+    input_digest: str
+    model_id: str
+    prompt_contract_version: str
+    ratified_at: str
+    decisions: tuple[SemanticConcernDecision, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "issue_ref": self.issue_ref,
+            "input_digest": self.input_digest,
+            "model_id": self.model_id,
+            "prompt_contract_version": self.prompt_contract_version,
+            "ratified_at": self.ratified_at,
+            "decisions": [decision.to_dict() for decision in self.decisions],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "SemanticRatificationRecord":
+        decisions_raw = data.get("decisions") or []
+        if not isinstance(decisions_raw, list):
+            raise ValueError("ratification.decisions must be a list")
+        return cls(
+            issue_ref=str(data.get("issue_ref") or ""),
+            input_digest=str(data.get("input_digest") or ""),
+            model_id=str(data.get("model_id") or ""),
+            prompt_contract_version=str(data.get("prompt_contract_version") or ""),
+            ratified_at=str(data.get("ratified_at") or ""),
+            decisions=tuple(
+                SemanticConcernDecision.from_dict(item)
+                for item in decisions_raw
+                if isinstance(item, dict)
+            ),
+        )
+
+    def decision_by_digest(self) -> dict[str, str]:
+        return {decision.finding_digest: decision.decision for decision in self.decisions}
+
+    def accepted_digests(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                decision.finding_digest
+                for decision in self.decisions
+                if decision.decision == DECISION_ACCEPTED
+            )
         )
 
 
@@ -169,9 +254,35 @@ class SemanticReviewStore:
         self.project_root = project_root
         self.records_path = project_root / SEMANTIC_RECORDS_PATH
         self.baselines_path = project_root / SEMANTIC_BASELINES_PATH
+        self.ratifications_path = project_root / SEMANTIC_RATIFICATIONS_PATH
 
     def append_record(self, record: SemanticEvaluationRecord) -> None:
         self._append_jsonl(self.records_path, record.to_dict())
+
+    def append_ratification(self, ratification: SemanticRatificationRecord) -> None:
+        self._append_jsonl(self.ratifications_path, ratification.to_dict())
+
+    def iter_ratifications(self) -> list[SemanticRatificationRecord]:
+        return [
+            SemanticRatificationRecord.from_dict(item)
+            for item in self._read_jsonl(self.ratifications_path)
+            if isinstance(item, dict)
+        ]
+
+    def ratifications_for_digest(
+        self, *, issue_ref: str, input_digest: str
+    ) -> list[SemanticRatificationRecord]:
+        return [
+            ratification
+            for ratification in self.iter_ratifications()
+            if ratification.issue_ref == issue_ref and ratification.input_digest == input_digest
+        ]
+
+    def latest_ratification(
+        self, *, issue_ref: str, input_digest: str
+    ) -> SemanticRatificationRecord | None:
+        matches = self.ratifications_for_digest(issue_ref=issue_ref, input_digest=input_digest)
+        return matches[-1] if matches else None
 
     def append_baseline(self, baseline: FrozenSemanticBaseline) -> None:
         self._append_jsonl(self.baselines_path, baseline.to_dict())
@@ -203,6 +314,24 @@ class SemanticReviewStore:
                 record.input_digest == input_digest
                 and record.model_id == model_id
                 and record.prompt_contract_version == prompt_contract_version
+                and record.status in (STATUS_FINDINGS, STATUS_NO_FINDINGS)
+            ):
+                match = record
+        return match
+
+    def latest_successful_record(
+        self, *, issue_ref: str, input_digest: str
+    ) -> SemanticEvaluationRecord | None:
+        """Return the most recent successful evaluation of one exact revision.
+
+        Scoped to ``input_digest`` so a run that completes after the document
+        has moved on cannot speak for the revision that superseded it.
+        """
+        match = None
+        for record in self.iter_records():
+            if (
+                record.issue_ref == issue_ref
+                and record.input_digest == input_digest
                 and record.status in (STATUS_FINDINGS, STATUS_NO_FINDINGS)
             ):
                 match = record

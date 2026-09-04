@@ -30,6 +30,7 @@ then [vision.md](vision.md) for the philosophy and reading order.
 - **[reference/](reference/)** — mechanical contracts
   ([issue shape](reference/issue-shape.md),
   [bug shape](reference/bug-shape.md),
+  [semantic readiness](reference/semantic-readiness.md),
   [preflight partial evidence](reference/preflight-partial-evidence.md)).
 - **[vision/](vision/)** — doctrine
   ([refusal-capability](vision/refusal-capability.md),

@@ -350,6 +350,30 @@ def _isolate_log_level():
 
 
 @pytest.fixture(autouse=True)
+def _neutral_semantic_readiness_overlay(monkeypatch):
+    """Leave #2785's semantic readiness overlay out of unrelated admission tests.
+
+    Sprint admission consults recorded, operator-ratified semantic review state
+    after the structural verdict admits. No fixture in the suite has such a
+    record, so leaving the live derivation in place would withhold every
+    well-shaped issue in every gate/queue/manifest test for a reason those tests
+    are not about. Each admission surface resolves its derivation at call time
+    for exactly this reason, so the neutral form is a patch rather than a flag
+    in production code.
+
+    Tests that ARE about semantic readiness pass the derivation explicitly
+    through the same seam — see ``tests/test_semantic_readiness.py``.
+    """
+    from theforge import ready_queue as _ready_queue
+    from theforge.sprint import manifest as _manifest
+    from theforge.sprint import shape_gate as _shape_gate
+
+    monkeypatch.setattr(_shape_gate, "_default_semantic_readiness", lambda **kwargs: None)
+    monkeypatch.setattr(_ready_queue, "_semantic_readiness", lambda **kwargs: None)
+    monkeypatch.setattr(_manifest, "semantic_manifest_admission", lambda *args: None)
+
+
+@pytest.fixture(autouse=True)
 def _block_real_notifications():
     """Prevent any test from firing real OS or ntfy notifications.
 

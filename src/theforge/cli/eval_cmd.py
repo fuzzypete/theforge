@@ -284,6 +284,114 @@ def cmd_review_semantic(args: object) -> int:
     return 0
 
 
+def _resolve_ratification_decisions(record, accepted: list[str], rejected: list[str]):
+    """Validate operator accept/reject choices against one evaluation's findings.
+
+    The operator decides every concern the evaluation raised, or the command
+    refuses: a partial ratification would leave admission reading undecided
+    model output, which is exactly what ADR-0009 clause 6 rules out.
+    """
+    from theforge.eval.semantic_storage import SemanticConcernDecision  # noqa: PLC0415
+    from theforge.eval.semantic_types import (  # noqa: PLC0415
+        DECISION_ACCEPTED,
+        DECISION_REJECTED,
+    )
+
+    findings = set(record.finding_digests())
+    accepted_set = set(accepted)
+    rejected_set = set(rejected)
+
+    both = accepted_set & rejected_set
+    if both:
+        raise ValueError(f"finding(s) both accepted and rejected: {sorted(both)}")
+    unknown = (accepted_set | rejected_set) - findings
+    if unknown:
+        raise ValueError(f"finding digest(s) not raised by this evaluation: {sorted(unknown)}")
+    undecided = findings - accepted_set - rejected_set
+    if undecided:
+        raise ValueError(
+            f"every raised concern must be accepted or rejected; undecided: {sorted(undecided)}"
+        )
+
+    return tuple(
+        SemanticConcernDecision(
+            finding_digest=digest,
+            decision=DECISION_ACCEPTED if digest in accepted_set else DECISION_REJECTED,
+        )
+        for digest in sorted(findings)
+    )
+
+
+def cmd_ratify_semantic(args: object) -> int:
+    """Record an operator ratification of one evaluated document revision."""
+    from theforge.eval.semantic_input import build_semantic_evaluation_input  # noqa: PLC0415
+    from theforge.eval.semantic_readiness import (  # noqa: PLC0415
+        derive_semantic_readiness,
+    )
+    from theforge.eval.semantic_runner import load_semantic_issue  # noqa: PLC0415
+    from theforge.eval.semantic_storage import (  # noqa: PLC0415
+        SemanticRatificationRecord,
+        SemanticReviewStore,
+        utc_now_iso,
+    )
+
+    config = _load_checked_config(args)
+    if config is None:
+        return 1
+
+    store = SemanticReviewStore(config.project_root)
+    try:
+        issue = load_semantic_issue(
+            issue_number=int(getattr(args, "issue_number")),
+            project_root=config.project_root,
+        )
+        evaluation_input = build_semantic_evaluation_input(
+            title=issue.title,
+            body=issue.body,
+            labels=issue.labels,
+        )
+        digest = getattr(args, "input_digest", None) or evaluation_input.input_digest
+        record = store.latest_successful_record(issue_ref=issue.issue_ref, input_digest=digest)
+        if record is None:
+            raise ValueError(
+                f"no successful semantic evaluation is recorded for {issue.issue_ref} "
+                f"at revision {digest}; run `forge review-semantic` first"
+            )
+        accepted = list(getattr(args, "accept", ()) or ())
+        rejected = list(getattr(args, "reject", ()) or ())
+        if getattr(args, "reject_all", False):
+            rejected = [found for found in record.finding_digests() if found not in set(accepted)]
+        decisions = _resolve_ratification_decisions(record, accepted, rejected)
+        ratification = SemanticRatificationRecord(
+            issue_ref=issue.issue_ref,
+            input_digest=digest,
+            model_id=record.model_id,
+            prompt_contract_version=record.prompt_contract_version,
+            ratified_at=utc_now_iso(),
+            decisions=decisions,
+        )
+        store.append_ratification(ratification)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ratify-semantic] {exc}", file=sys.stderr)
+        return 1
+
+    readiness = derive_semantic_readiness(
+        issue_ref=issue.issue_ref,
+        title=issue.title,
+        body=issue.body,
+        labels=issue.labels,
+        store=store,
+    )
+    print(f"ratified_revision={digest}")
+    print(f"ratified_at={ratification.ratified_at}")
+    print(f"accepted={len(ratification.accepted_digests())} of {len(decisions)}")
+    print(f"current_revision={readiness.input_digest}")
+    print(f"semantic_requirement={readiness.requirement}")
+    print(f"semantic_state={readiness.state}")
+    print(f"detail={readiness.detail}")
+    return 0
+
+
 def cmd_semantic_report(args: object) -> int:
     """Report semantic-evaluation corpus metrics from recorded audits."""
     from theforge.eval.semantic_report import (
@@ -384,6 +492,43 @@ def register_parser(subparsers: object) -> None:
         help="Freeze an empty human baseline before revealing evaluator output",
     )
     review.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    ratify = subparsers.add_parser(
+        "ratify-semantic",
+        help="Record an operator ratification of an evaluated document revision",
+    )
+    ratify.add_argument("issue_number", metavar="ISSUE")
+    ratify.add_argument(
+        "--accept",
+        action="append",
+        default=[],
+        metavar="FINDING_DIGEST",
+        help="Accept this raised concern; it withholds readiness for this revision",
+    )
+    ratify.add_argument(
+        "--reject",
+        action="append",
+        default=[],
+        metavar="FINDING_DIGEST",
+        help="Reject this raised concern; it passes without further challenge",
+    )
+    ratify.add_argument(
+        "--reject-all",
+        dest="reject_all",
+        action="store_true",
+        help="Reject every concern not explicitly accepted",
+    )
+    ratify.add_argument(
+        "--input-digest",
+        dest="input_digest",
+        metavar="DIGEST",
+        help="Ratify this revision instead of the issue's current one",
+    )
+    ratify.add_argument(
         "--config",
         metavar="PATH",
         help="Path to forge.yaml (default: auto-detect)",

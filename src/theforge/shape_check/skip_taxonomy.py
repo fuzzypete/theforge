@@ -115,6 +115,13 @@ SEMANTIC_GATE_CODES: frozenset[str] = frozenset(
         "diagnosis_cause_unknown",
         "reopened_stale_contract",
         "criterion_needs_live_evidence",
+        # Ratified semantic readiness (#2785). These withhold sprint entry
+        # without any structural finding — the document's shape is runnable and
+        # what is missing is a recorded operator ratification of its semantic
+        # review — so they belong in the semantic class, not the malformed one.
+        "semantic_review_not_ratified",
+        "semantic_concerns_accepted",
+        "semantic_evaluation_failed",
     }
 )
 
@@ -126,6 +133,9 @@ AXIS_BY_CODE: dict[str, FourQuestionAxis] = {
     "diagnosis_cause_unknown": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
     "reopened_stale_contract": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
     "criterion_needs_live_evidence": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
+    "semantic_review_not_ratified": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
+    "semantic_concerns_accepted": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
+    "semantic_evaluation_failed": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
 }
 
 
