@@ -93,6 +93,11 @@ _WAITING_PLACEHOLDER_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bwait(?:ing)? for the (?:investigation|exploration|sub-?agent)\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\bwait(?:ing)? for the .*?\bcompletion notification from the "
+        r"(?:investigation|exploration|sub-?agent)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bi['’]ll be notified when (?:it|they) complete", re.IGNORECASE),
 )
 _DEFERRED_OUTCOME_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -156,8 +161,6 @@ def _ended_on_delegated_waiting_placeholder(result: object) -> str:
     work, while its own terminal text says that work is still in flight. A
     reformat retry cannot recover a diagnosis that was never emitted.
     """
-    if not bool(getattr(result, "success", False)):
-        return ""
     output = str(getattr(result, "output", "") or "").strip()
     if not output:
         return ""
