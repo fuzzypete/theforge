@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from theforge import detach as _detach
 from theforge.baseline_repair import (
     BaselineRepairError,
     load_baseline_repair_evidence,
@@ -25,6 +26,7 @@ from theforge.cli.shared import (
 from theforge.config import load_config
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
+from theforge.coordinator.util import _generate_run_id
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
@@ -125,41 +127,58 @@ def cmd_baseline_fix(args: argparse.Namespace) -> int:
         )
         return 1
 
-    result = run_task(
-        config,
-        task,
-        interactive=bool(getattr(args, "interactive", False)),
-        auto_merge=auto_merge,
-        notify=not bool(getattr(args, "no_notify", False)),
-        no_pull=bool(getattr(args, "no_pull", False)),
-    )
-    audit_record_path = _write_audit(result, config, task, auto_merge=auto_merge)
+    run_id = _generate_run_id()
+    _detach.export_run_context(run_id, config.project_root)
+    _detach.write_pid(run_id, task.slug, config.project_root)
 
-    if result.success:
-        try:
-            source.on_complete(task, result, config)
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[forge] WARN on_complete callback failed for {task.slug}: {exc}",
-                file=sys.stderr,
-            )
-    elif result.phase == Phase.ESCALATE and not getattr(result, "infrastructure_failure", False):
-        try:
-            source.on_escalate(task, result.state, config)
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[forge] WARN on_escalate callback failed for {task.slug}: {exc}",
-                file=sys.stderr,
-            )
+    outcome = "completed"
+    cause: str | None = None
+    try:
+        result = run_task(
+            config,
+            task,
+            interactive=bool(getattr(args, "interactive", False)),
+            auto_merge=auto_merge,
+            notify=not bool(getattr(args, "no_notify", False)),
+            run_id=run_id,
+            no_pull=bool(getattr(args, "no_pull", False)),
+        )
+        audit_record_path = _write_audit(result, config, task, auto_merge=auto_merge)
 
-    _print_summary(
-        result=result,
-        audit_path=audit_record_path,
-        issue_number=issue_number,
-        issue_url=issue_url,
-        baseline=baseline,
-    )
-    return 0 if result.success else 1
+        if result.success:
+            try:
+                source.on_complete(task, result, config)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[forge] WARN on_complete callback failed for {task.slug}: {exc}",
+                    file=sys.stderr,
+                )
+        elif result.phase == Phase.ESCALATE and not getattr(
+            result, "infrastructure_failure", False
+        ):
+            try:
+                source.on_escalate(task, result.state, config)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[forge] WARN on_escalate callback failed for {task.slug}: {exc}",
+                    file=sys.stderr,
+                )
+
+        _print_summary(
+            result=result,
+            audit_path=audit_record_path,
+            issue_number=issue_number,
+            issue_url=issue_url,
+            baseline=baseline,
+        )
+        return 0 if result.success else 1
+    except BaseException as exc:
+        outcome = "failed"
+        cause = _detach.format_exception_cause(exc)
+        raise
+    finally:
+        _detach.write_run_ended(run_id, config.project_root, outcome, cause=cause)
+        _detach.remove_pid(run_id, config.project_root)
 
 
 def register_parser(subparsers: object) -> None:
@@ -251,18 +270,17 @@ def _resolve_sprint_audit_path(args: argparse.Namespace, project_root: Path) -> 
         )
         return None
 
-    latest = candidates[0]
-    latest_mtime = latest.stat().st_mtime_ns
-    equally_recent = [path for path in candidates if path.stat().st_mtime_ns == latest_mtime]
-    if len(equally_recent) > 1:
-        paths = ", ".join(path.name for path in equally_recent)
+    if len(candidates) > 1:
+        preview = ", ".join(path.name for path in candidates[:3])
+        if len(candidates) > 3:
+            preview += ", ..."
         print(
             "forge baseline-fix: latest sprint audit is ambiguous "
-            f"({paths}); pass --sprint-audit or --run.",
+            f"({preview}); pass --sprint-audit or --run.",
             file=sys.stderr,
         )
         return None
-    return latest
+    return candidates[0]
 
 
 def _per_run_sprint_audits(audits_dir: Path) -> list[Path]:

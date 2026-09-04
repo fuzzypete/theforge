@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -143,6 +142,7 @@ def test_cmd_baseline_fix_creates_issue_fetches_story_and_runs_task(
 
     with (
         patch("theforge.cli.baseline_fix.load_config", return_value=config),
+        patch("theforge.cli.baseline_fix._generate_run_id", return_value="run-123"),
         patch(
             "theforge.cli.baseline_fix._create_issue",
             return_value=(2714, "https://github.com/acme/repo/issues/2714"),
@@ -157,6 +157,10 @@ def test_cmd_baseline_fix_creates_issue_fetches_story_and_runs_task(
             return_value=tmp_path / ".forge" / "audits" / "forge_audit.yaml",
         ) as mock_write_audit,
         patch("theforge.cli.baseline_fix.GitHubIssueSource.on_complete") as mock_complete,
+        patch("theforge.cli.baseline_fix._detach.export_run_context") as mock_export_context,
+        patch("theforge.cli.baseline_fix._detach.write_pid") as mock_write_pid,
+        patch("theforge.cli.baseline_fix._detach.write_run_ended") as mock_write_ended,
+        patch("theforge.cli.baseline_fix._detach.remove_pid") as mock_remove_pid,
     ):
         rc = cmd_baseline_fix(_make_args(tmp_path, sprint_audit=str(audit_path)))
 
@@ -167,8 +171,18 @@ def test_cmd_baseline_fix_creates_issue_fetches_story_and_runs_task(
     assert mock_fetch.call_args.args == ("2714", config.project_root)
     assert mock_run.call_args.args == (config, task)
     assert mock_run.call_args.kwargs["auto_merge"] is False
+    assert mock_run.call_args.kwargs["run_id"] == "run-123"
     assert mock_write_audit.call_args.kwargs["auto_merge"] is False
     mock_complete.assert_called_once_with(task, result, config)
+    mock_export_context.assert_called_once_with("run-123", config.project_root)
+    mock_write_pid.assert_called_once_with("run-123", task.slug, config.project_root)
+    mock_write_ended.assert_called_once_with(
+        "run-123",
+        config.project_root,
+        "completed",
+        cause=None,
+    )
+    mock_remove_pid.assert_called_once_with("run-123", config.project_root)
     assert "Created baseline repair issue #2714" in capsys.readouterr().err
 
 
@@ -228,11 +242,8 @@ def test_cmd_baseline_fix_failure_prints_preserved_evidence_and_escalates_issue(
 
 def test_cmd_baseline_fix_refuses_ambiguous_latest_audit(tmp_path: Path, capsys) -> None:
     config = _make_config(tmp_path, on_approve="merge")
-    first_audit, _worktree, _evidence_path = _write_sprint_audit(tmp_path, run_id="first")
-    second_audit, _worktree2, _evidence_path2 = _write_sprint_audit(tmp_path, run_id="second")
-    shared_time = 1_700_000_000
-    os.utime(first_audit, (shared_time, shared_time))
-    os.utime(second_audit, (shared_time, shared_time))
+    _write_sprint_audit(tmp_path, run_id="first")
+    _write_sprint_audit(tmp_path, run_id="second")
 
     with patch("theforge.cli.baseline_fix.load_config", return_value=config):
         rc = cmd_baseline_fix(_make_args(tmp_path))
