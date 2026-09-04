@@ -698,7 +698,63 @@ class TestPlanReview:
 
         assert result.success is False
         assert result.phase == Phase.PLAN_REVIEW
+
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_human_regen_attempts_do_not_trigger_unassessable_escalation(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_run_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+    ):
+        config = dataclasses.replace(
+            _make_plan_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=4,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_run_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nInitial plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nRegen 1.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nRegen 2.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nRegen 3.", cost_usd=0.10),
+        ]
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.side_effect = ["regenerate", "regenerate", "regenerate", "approve"]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_regen_disposition == "patch"
+        assert result.state.plan_regen_assessment["reason_code"] == "too_few_attempts"
+        assert result.state.plan_regen_assessment["attempt_count"] == 0
+        assert result.state.plan_regen_assessment["recorded_attempt_count"] == 4
+        assert "| Attempt |" in mock_run_agent.call_args_list[2].kwargs["prompt"]
         assert result.phase != Phase.ESCALATE
+        assert mock_human_review.called
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

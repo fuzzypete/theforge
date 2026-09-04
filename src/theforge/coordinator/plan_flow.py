@@ -1995,13 +1995,14 @@ def _run_human_plan_review(
                 state,
                 [],
                 max_plan_regen_attempts=config.retry.max_plan_regen_attempts,
+                trajectory_assessable=False,
             )
             # ── Post-plan dev-tier checkpoint (#1387) ──────────────────
             # Same demotion signal as the agent-review APPROVE path: a clean
             # human/pending-file/remote approval on a medium story de-risks the
-            # dev tier too. A human approval carries no structured findings, so
-            # record_plan_attempt(state, []) yields p1=0/p2=0 — the checkpoint
-            # gates still enforce complexity/cycle-count before firing.
+            # dev tier too. Human approvals record zero findings for the
+            # checkpoint, but the attempt is marked non-assessable so the
+            # structured trajectory classifier ignores it.
             _apply_post_plan_dev_checkpoint(state, config)
             write_trace(
                 workspace_path
@@ -2054,6 +2055,7 @@ def _run_human_plan_review(
                 state,
                 [],
                 max_plan_regen_attempts=config.retry.max_plan_regen_attempts,
+                trajectory_assessable=False,
             )
             if logger:
                 logger._safe_emit(
@@ -2078,14 +2080,10 @@ def _run_human_plan_review(
                 f"(attempt {state.plan_regen_count}/{_max2})"
             )
 
-            # Human-review regen does NOT use disposition-aware prompts. The human
-            # "regenerate" decision calls record_plan_attempt(state, []) with empty
-            # findings, so there is no structured finding data to derive learned
-            # constraints or a rejected strategy from. build_disposition_context
-            # returns the trajectory table for the patch disposition (or "" if fewer
-            # than 2 attempts), which is appended unchanged. No escalation check is
-            # added here for the same reason — disposition detection requires
-            # structured findings that the human path does not provide.
+            # Human-review regen does NOT use disposition-aware prompts. These
+            # attempts stay in the trajectory table, but they are marked
+            # non-assessable so the classifier does not fabricate accumulated or
+            # unassessable stops from missing structured findings.
             _disposition_ctx = build_disposition_context(state)
             if _disposition_ctx:
                 regen_plan_prompt = plan_prompt + f"\n\n{_disposition_ctx}\n"

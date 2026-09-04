@@ -30,12 +30,14 @@ def _meta(
     p1_count: int = 0,
     p2_count: int = 0,
     finding_themes: list[str] | None = None,
+    trajectory_assessable: bool = True,
 ) -> dict:
     return {
         "files_touched": files_touched,
         "p1_count": p1_count,
         "p2_count": p2_count,
         "finding_themes": finding_themes or [],
+        "trajectory_assessable": trajectory_assessable,
     }
 
 
@@ -274,6 +276,44 @@ def test_unassessable_history_stops_after_threshold():
     assert assessment["disposition"] == "escalate"
     assert assessment["reason_code"] == "unassessable_no_comparable_structure"
     assert assessment["comparable_pair_count"] == 0
+
+
+def test_non_assessable_attempts_do_not_trigger_unassessable_escalation():
+    history = [
+        _meta(
+            files_touched=3,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=3,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=4,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=4,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "patch"
+    assert assessment["reason_code"] == "too_few_attempts"
+    assert assessment["attempt_count"] == 0
+    assert assessment["recorded_attempt_count"] == 4
 
 
 def test_low_max_plan_regen_keeps_escalation_reachable():

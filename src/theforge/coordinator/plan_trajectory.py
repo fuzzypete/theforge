@@ -112,18 +112,24 @@ def assess_plan_trajectory(
 
     Args:
         metadata_history: Full list of plan_attempt_metadata dicts. Each entry has
-            files_touched (int), p1_count (int), p2_count (int), finding_themes (list[str]).
+            files_touched (int), p1_count (int), p2_count (int),
+            finding_themes (list[str]), and trajectory_assessable (bool).
         max_plan_regen_attempts: Configured patch-loop ceiling. Used to keep the
             non-convergence threshold reachable when projects lower the default.
 
     Returns:
         Dict with disposition and supporting evidence for audit/reporting.
     """
-    attempt_count = len(metadata_history)
+    assessable_history = [
+        entry for entry in metadata_history if entry.get("trajectory_assessable", True)
+    ]
+    attempt_count = len(assessable_history)
+    recorded_attempt_count = len(metadata_history)
     min_attempts_for_stop = max(3, min(4, max_plan_regen_attempts + 1))
     assessment: dict[str, object] = {
         "disposition": "patch",
         "attempt_count": attempt_count,
+        "recorded_attempt_count": recorded_attempt_count,
         "reason_code": "too_few_attempts",
         "min_attempts_for_stop": min_attempts_for_stop,
         "qualifying_historical_pairs": [],
@@ -138,8 +144,8 @@ def assess_plan_trajectory(
     if attempt_count < 2:
         return assessment
 
-    prev = metadata_history[-2]
-    curr = metadata_history[-1]
+    prev = assessable_history[-2]
+    curr = assessable_history[-1]
     trend = _surface_trend(prev, curr)
     assessment["surface_trend"] = trend
 
@@ -147,7 +153,7 @@ def assess_plan_trajectory(
     qualifying_pairs: list[dict[str, object]] = []
     comparable_pair_count = 0
 
-    for idx, entry in enumerate(metadata_history, start=1):
+    for idx, entry in enumerate(assessable_history, start=1):
         for theme in entry.get("finding_themes", []):
             if not _is_file_path_anchor(theme):
                 theme_counts[theme] += 1
@@ -155,7 +161,7 @@ def assess_plan_trajectory(
         if idx == 1:
             continue
 
-        prev_entry = metadata_history[idx - 2]
+        prev_entry = assessable_history[idx - 2]
         curr_entry = entry
         prev_themes = prev_entry.get("finding_themes", [])
         curr_themes = curr_entry.get("finding_themes", [])
@@ -251,6 +257,7 @@ def record_plan_attempt(
     findings: "Iterable[PlanReviewFinding]",
     *,
     max_plan_regen_attempts: int = 3,
+    trajectory_assessable: bool = True,
 ) -> None:
     """Append per-attempt metadata to state and update plan_regen_disposition.
 
@@ -277,6 +284,7 @@ def record_plan_attempt(
             "p1_count": p1_count,
             "p2_count": p2_count,
             "finding_themes": finding_themes,
+            "trajectory_assessable": trajectory_assessable,
         }
     )
     state.plan_regen_assessment = assess_plan_trajectory(
