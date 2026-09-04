@@ -144,11 +144,41 @@ def _label_names(issue: dict) -> list[str]:
     return names
 
 
+def _semantic_readiness(
+    *,
+    issue_number: int,
+    title: str,
+    body: str,
+    labels: list[str],
+    project_root: Path,
+):
+    """Derive semantic readiness for one listed issue, or ``None`` on failure.
+
+    Imported lazily so this low-dependency surface keeps its stdlib +
+    ``shape_check`` import cost for the structural answer. Best-effort like the
+    rest of this module: a store read failure degrades the listing to the
+    structural verdict rather than crashing ``forge status --ready``.
+    """
+    try:
+        from .eval.semantic_readiness import semantic_readiness_for_issue  # noqa: PLC0415
+
+        return semantic_readiness_for_issue(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            labels=labels,
+            project_root=project_root,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_ready_queue(
     project_root: Path,
     *,
     milestone: str | None = None,
     fetch_issues: Callable[[], list[dict]] | None = None,
+    semantic_readiness: Callable[..., object] | None = None,
 ) -> list[ReadyEntry]:
     """Return the ``ready``-labeled issue set with each entry's gate verdict.
 
@@ -158,29 +188,56 @@ def build_ready_queue(
     rather than being presented as sprint-ready.
 
     ``milestone`` optionally scopes the listing to one GitHub milestone.
-    ``fetch_issues`` is an injection seam for testing; it defaults to the
-    gh-backed implementation. Entries are sorted by issue number for stable,
-    tooling-friendly output.
+    An admissible entry is then checked against its recorded, operator-ratified
+    semantic readiness through the same derivation the sprint gate uses
+    (#2785), so a revision whose policy-required review is unevaluated or
+    unratified is not advertised as ready here either.
+
+    ``fetch_issues`` and ``semantic_readiness`` are injection seams for
+    testing; both default to the live implementations. Entries are sorted by
+    issue number for stable, tooling-friendly output.
     """
+
     fetch_issues = fetch_issues or (lambda: _gh_list_ready_issues(project_root, milestone))
+    semantic_readiness = semantic_readiness or _semantic_readiness
 
     issues = fetch_issues()
     entries: list[ReadyEntry] = []
     for issue in issues:
         labels = _label_names(issue)
         title = str(issue.get("title", "") or "")
+        body = str(issue.get("body", "") or "")
+        number = int(issue["number"])
         # No llm_caller here: a status listing must not spend agent budget, and
         # the gate's own _resolve_classifier falls back to the heuristic
         # classifier without a caller, so both sides evaluate identically.
-        verdict = classify_admissibility(title, str(issue.get("body", "") or ""), labels)
+        verdict = classify_admissibility(title, body, labels)
+        admissible = verdict.admissible
+        entry_verdict = verdict.verdict
+        detail = verdict.detail
+        if admissible:
+            # Same overlay, same order as the sprint gate: consulted only once
+            # the structural verdict admits, and reading the ratified state
+            # rather than evaluator output.
+            readiness = semantic_readiness(
+                issue_number=number,
+                title=title,
+                body=body,
+                labels=labels,
+                project_root=project_root,
+            )
+            if readiness is not None and readiness.withholds_admission:
+                admissible = False
+                entry_verdict = readiness.reason_code
+                detail = readiness.detail
         entries.append(
             ReadyEntry(
-                issue_number=int(issue["number"]),
+                issue_number=number,
                 title=title,
                 type_label=_issue_type_label(labels),
-                admissible=verdict.admissible,
-                verdict=verdict.verdict,
-                detail=verdict.detail,
+                admissible=admissible,
+                verdict=entry_verdict,
+                detail=detail,
             )
         )
     entries.sort(key=lambda entry: entry.issue_number)

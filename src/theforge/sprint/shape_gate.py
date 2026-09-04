@@ -47,6 +47,34 @@ VerdictEmitter = Callable[[dict], None]
 
 REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
 
+
+def _default_semantic_readiness(
+    *,
+    issue_number: int,
+    title: str,
+    body: str,
+    labels: list[str],
+    project_root: Path | None,
+):
+    """Derive semantic readiness for an issue the structural gate already admits.
+
+    Imported lazily: the semantic overlay is consumed only after the structural
+    verdict is runnable, and the gate's structural path must not pay for the
+    eval package's imports to reach that answer.
+    """
+    from theforge.eval.semantic_readiness import (  # noqa: PLC0415
+        semantic_readiness_for_issue,
+    )
+
+    return semantic_readiness_for_issue(
+        issue_number=issue_number,
+        title=title,
+        body=body,
+        labels=labels,
+        project_root=project_root or Path("."),
+    )
+
+
 # Aliases for helpers that moved to ``admissibility``: the gate stays the
 # import site callers already know.
 _has_acceptance_criteria = has_acceptance_criteria
@@ -332,6 +360,7 @@ def apply_shape_gate(
     llm_caller=None,
     emit_verdict: VerdictEmitter = _noop_emit_verdict,
     intake_remediated_numbers: "set[int] | frozenset[int] | None" = None,
+    semantic_readiness=None,
 ) -> ShapeGateResult:
     """Partition issues into runnable vs skipped before preflight runs.
 
@@ -350,6 +379,17 @@ def apply_shape_gate(
 
     ``force=True`` returns every input issue as runnable but still populates
     ``skipped`` so the CLI can surface a prominent warning listing reasons.
+    ``--force`` is an escape hatch over *structural* refusals only: the
+    ``operator-action`` label and semantic readiness withholdings are operator
+    decisions, not shape findings, and stay refused.
+
+    5. An issue the structural check admits is then checked against its
+       recorded, operator-ratified semantic readiness (#2785). This is an
+       overlay, not a second structural rule: it is consulted only after step 4
+       passes, it never changes the ``ShapeVerdict``, and it consumes the
+       ratified state rather than any evaluator output. Where policy requires
+       a ratified review and this revision has none, the issue is withheld with
+       a semantic reason code and no verdict claim.
 
     ``intake_remediated_numbers`` lists issues whose bodies this run just
     authoritatively edited via intake remediation. The async ``needs-grooming``
@@ -360,6 +400,9 @@ def apply_shape_gate(
     just-remediated issue on the post-re-exec gate pass.
     """
     remediated = frozenset(intake_remediated_numbers or ())
+    # Resolved at call time (not as a default argument) so the derivation is a
+    # patchable seam for callers that exercise the structural gate alone.
+    derive_readiness = semantic_readiness or _default_semantic_readiness
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
     advisories: list[SkippedIssue] = []
@@ -370,6 +413,11 @@ def apply_shape_gate(
     # label is the operator's deliberate signal that no dev cycle should
     # run for this issue, not a guard --force can override.
     operator_action_label_numbers: set[int] = set()
+    # Issues the structural gate admits but whose policy-required semantic
+    # readiness is not ratified for the current revision. Like the
+    # operator-action label, these are operator decisions rather than shape
+    # findings, so --force must not run them either.
+    semantic_withheld_numbers: set[int] = set()
 
     def _safe_emit(payload: dict) -> None:
         # Substrate emission is observability, not gating: a write failure
@@ -509,10 +557,65 @@ def apply_shape_gate(
             )
             continue
 
+        # Structurally runnable. The semantic overlay is consulted only from
+        # here down: it reads the recorded, operator-ratified review state for
+        # the current revision and never the evaluator's raw findings. The
+        # ShapeVerdict below is unaffected either way.
+        readiness = None
+        if derive_readiness is not None:
+            try:
+                readiness = derive_readiness(
+                    issue_number=number,
+                    title=title,
+                    body=body,
+                    labels=labels,
+                    project_root=project_root,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Fail-open, consistent with this gate's other unreachable-data
+                # paths: a store read failure must not become a new silent drop.
+                _log.warning("semantic readiness derivation failed for issue=%s: %s", number, exc)
+                readiness = None
+
+        if readiness is not None and readiness.withholds_admission:
+            semantic_withheld_numbers.add(number)
+            skipped.append(
+                SkippedIssue(
+                    issue_number=number,
+                    reason_codes=readiness.reason_codes,
+                    source="local_check",
+                    title=title_short,
+                    detail=readiness.detail,
+                    # No verdict claim: the structural verdict is RUNNABLE and
+                    # this refusal is not structural. Emitting the structural
+                    # verdict here would report a shape refusal that did not
+                    # happen.
+                    verdict="",
+                    verdict_description="",
+                )
+            )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": ShapeVerdict.RUNNABLE.value,
+                    "source": "local_check",
+                    "reason_codes": [],
+                    "semantic_requirement": readiness.requirement,
+                    "semantic_state": readiness.state,
+                    "semantic_input_digest": readiness.input_digest,
+                    "semantic_withheld": True,
+                    "semantic_reason_codes": list(readiness.reason_codes),
+                }
+            )
+            continue
+
         # Runnable: attach the verdict to the dict so downstream audit/summary
         # can render it (instrumentation per CONVENTIONS rule 6).
         issue_with_verdict = dict(issue)
         issue_with_verdict["shape_verdict"] = ShapeVerdict.RUNNABLE.value
+        if readiness is not None:
+            issue_with_verdict["semantic_requirement"] = readiness.requirement
+            issue_with_verdict["semantic_state"] = readiness.state
         if local_advisory is not None:
             advisories.append(local_advisory)
             issue_with_verdict["shape_advisories"] = list(local_advisory.reason_codes)
@@ -523,6 +626,9 @@ def apply_shape_gate(
                 "verdict": ShapeVerdict.RUNNABLE.value,
                 "source": "local_check",
                 "reason_codes": [],
+                "semantic_requirement": (readiness.requirement if readiness is not None else None),
+                "semantic_state": readiness.state if readiness is not None else None,
+                "semantic_withheld": False,
             }
         )
 
@@ -534,10 +640,13 @@ def apply_shape_gate(
         # type-label conflict, and operator-action without an AC section all
         # remain refused. The label is a deliberate operator signal, not a
         # guard --force can override. CLI still renders the
-        # operator_action banner and the skipped warning.
-        force_runnable = [
-            issue for issue in issues if int(issue["number"]) not in operator_action_label_numbers
-        ]
+        # operator_action banner and the skipped warning. Semantic readiness
+        # withholdings are excluded on the same grounds (#2785): unevaluated,
+        # awaiting-ratification, failed and accepted-concern revisions all
+        # lack the ratified state admission consumes, and --force overrides
+        # shape refusals, not the operator's ratification record.
+        force_excluded = operator_action_label_numbers | semantic_withheld_numbers
+        force_runnable = [issue for issue in issues if int(issue["number"]) not in force_excluded]
         return ShapeGateResult(
             runnable=force_runnable,
             skipped=skipped,
