@@ -1897,7 +1897,8 @@ def _run_diagnose_flow_body(
     if parsed.artifact is None:
         delegated_observation = _ended_on_delegated_waiting_placeholder(agent_result)
         if delegated_observation:
-            state.agent_failure_code = _DELEGATED_WAITING_FAILURE_CODE
+            if state.agent_failure_code is None:
+                state.agent_failure_code = _DELEGATED_WAITING_FAILURE_CODE
             state.error = (
                 "INVESTIGATE did not produce an observed outcome: the investigative "
                 f"agent {delegated_observation} and ended its billed turn on a "
