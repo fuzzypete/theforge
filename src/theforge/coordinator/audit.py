@@ -1154,6 +1154,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "regenerated": state.plan_regen_count > 0,
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
+                "trajectory_assessment": (state.plan_regen_assessment or None),
                 # Same measured source of truth as phases.plan_review.cost_usd, so
                 # the two plan_review surfaces can never diverge on kill-path runs:
                 # an unmeasured (None) cost stays null here too, never coerced 0.0.

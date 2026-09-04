@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from theforge.coordinator.plan_trajectory import (
     _has_sufficient_overlap,
     _is_file_path_anchor,
+    assess_plan_trajectory,
     build_disposition_context,
     classify_disposition,
     collect_all_surviving_themes,
@@ -29,12 +30,14 @@ def _meta(
     p1_count: int = 0,
     p2_count: int = 0,
     finding_themes: list[str] | None = None,
+    trajectory_assessable: bool = True,
 ) -> dict:
     return {
         "files_touched": files_touched,
         "p1_count": p1_count,
         "p2_count": p2_count,
         "finding_themes": finding_themes or [],
+        "trajectory_assessable": trajectory_assessable,
     }
 
 
@@ -212,13 +215,116 @@ def test_surviving_themes_and_growing_files_returns_backtrack():
     assert classify_disposition(history) == "backtrack"
 
 
-def test_escalate_after_backtrack_with_surviving_themes():
+def test_three_matching_attempts_remain_backtrack_before_stop_threshold():
     history = [
         _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
         _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
         _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
     ]
-    assert classify_disposition(history) == "escalate"
+    assert classify_disposition(history) == "backtrack"
+
+
+def test_alternating_history_escalates_after_accumulated_non_convergence():
+    history = [
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=4, p1_count=1, finding_themes=["fresh_theme"]),
+        _meta(files_touched=4, p1_count=1, finding_themes=["load_config"]),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "escalate"
+    assert assessment["reason_code"] == "accumulated_non_convergence"
+    assert assessment["qualifying_pair_count"] == 1
+    assert assessment["surface_trend"] == "flat"
+
+
+def test_single_fresh_latest_attempt_does_not_reset_accumulated_non_convergence():
+    history = [
+        _meta(files_touched=3, p1_count=2, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=2, finding_themes=["load_config"]),
+        _meta(files_touched=4, p1_count=2, finding_themes=["other_theme"]),
+        _meta(files_touched=4, p1_count=2, finding_themes=["other_theme"]),
+        _meta(files_touched=5, p1_count=2, finding_themes=["fresh_theme"]),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "escalate"
+    assert assessment["reason_code"] == "accumulated_non_convergence"
+    assert assessment["qualifying_pair_count"] == 2
+    assert assessment["latest_pair_comparable"] is False
+
+
+def test_majority_recurring_theme_escalates_even_without_two_qualifying_pairs():
+    history = [
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=4, p1_count=1, finding_themes=["other_theme", "load_config"]),
+        _meta(files_touched=4, p1_count=1, finding_themes=["fresh_theme"]),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "escalate"
+    assert assessment["majority_recurring_themes"] == ["load_config"]
+
+
+def test_unassessable_history_stops_after_threshold():
+    history = [
+        _meta(files_touched=2, p1_count=1, finding_themes=["plan_flow.py"]),
+        _meta(files_touched=2, p1_count=1, finding_themes=["plan_flow.py"]),
+        _meta(files_touched=2, p1_count=1, finding_themes=["state.py"]),
+        _meta(files_touched=2, p1_count=1, finding_themes=["config.py"]),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "escalate"
+    assert assessment["reason_code"] == "unassessable_no_comparable_structure"
+    assert assessment["comparable_pair_count"] == 0
+
+
+def test_non_assessable_attempts_do_not_trigger_unassessable_escalation():
+    history = [
+        _meta(
+            files_touched=3,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=3,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=4,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+        _meta(
+            files_touched=4,
+            p1_count=0,
+            p2_count=0,
+            finding_themes=[],
+            trajectory_assessable=False,
+        ),
+    ]
+    assessment = assess_plan_trajectory(history)
+    assert assessment["disposition"] == "patch"
+    assert assessment["reason_code"] == "too_few_attempts"
+    assert assessment["attempt_count"] == 0
+    assert assessment["recorded_attempt_count"] == 4
+
+
+def test_low_max_plan_regen_keeps_escalation_reachable():
+    history = [
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=4, p1_count=1, finding_themes=["load_config"]),
+    ]
+    assessment = assess_plan_trajectory(history, max_plan_regen_attempts=2)
+    assert assessment["disposition"] == "escalate"
+    assert assessment["min_attempts_for_stop"] == 3
 
 
 def test_empty_themes_returns_patch():
@@ -272,6 +378,7 @@ def test_record_plan_attempt_sets_disposition():
     state.plan_structured = {"approach": "x", "steps": []}
     record_plan_attempt(state, [_finding("load_config issue")])
     assert state.plan_regen_disposition == "patch"  # single attempt
+    assert state.plan_regen_assessment["reason_code"] == "too_few_attempts"
 
 
 def test_record_plan_attempt_no_plan_structured():
@@ -509,8 +616,8 @@ def test_dominant_surviving_theme_prefers_latest_pair_over_older_resolved():
 # ── Early escalation integration test ────────────────────────────────
 
 
-def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
-    """When disposition becomes 'escalate', coordinator escalates without re-running plan agent."""
+def test_agent_review_escalates_immediately_on_accumulated_non_convergence(tmp_path):
+    """Accumulated non-convergence escalates without re-running the plan agent."""
     from theforge.agent_types import AgentResult
     from theforge.config import (
         DEFAULT_DEV_PROFILE,
@@ -536,16 +643,16 @@ def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
     state = CoordinatorState()
     state.phase = Phase.PLAN_REVIEW
     state.plan_output = "plan: {}"
-    # Plan proposes 3 files so record_plan_attempt records files_touched=3 (flat → escalate)
-    state.plan_structured = {"steps": [{"files": ["a.py", "b.py", "c.py"]}]}
-    # Pre-seed 2 "backtrack-pattern" entries; a 3rd matching entry → disposition="escalate".
-    # p1_count=1 matches the mock finding count so the count doesn't decrease (which would
-    # trigger patch disposition instead of escalate).
+    state.plan_structured = {"steps": [{"files": ["a.py", "b.py", "c.py", "d.py"]}]}
+    # Pre-seed an alternating history whose accumulated evidence should escalate
+    # on the next recurring rejection even though the latest pair alone was not
+    # enough to stop previously.
     state.plan_attempt_metadata = [
         _meta(files_touched=3, p1_count=1, p2_count=0, finding_themes=["load_config"]),
         _meta(files_touched=3, p1_count=1, p2_count=0, finding_themes=["load_config"]),
+        _meta(files_touched=4, p1_count=1, p2_count=0, finding_themes=["fresh_theme"]),
     ]
-    state.plan_regen_disposition = "backtrack"
+    state.plan_regen_disposition = "patch"
     state.plan_regen_count = 0
 
     review_profile = ModelProfile(
@@ -594,7 +701,8 @@ def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
     mock_logger = MagicMock()
     mock_run_agent = MagicMock()
 
-    # Review returns REQUEST_CHANGES with load_config finding (same theme → 3rd entry → escalate)
+    # Review returns REQUEST_CHANGES with load_config finding, creating a second
+    # historical qualifying pair and triggering the accumulated stop.
     review_result = PlanReviewResult(
         verdict="REQUEST_CHANGES",
         findings=[
@@ -648,6 +756,7 @@ def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
     assert result is not None
     assert result.phase == Phase.ESCALATE
     assert result.success is False
+    assert state.plan_regen_assessment["reason_code"] == "accumulated_non_convergence"
     # The plan regen agent must NOT have been called — escalation was immediate
     mock_run_agent.assert_not_called()
 

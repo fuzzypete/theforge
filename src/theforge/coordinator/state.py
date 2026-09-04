@@ -988,7 +988,7 @@ class CoordinatorState:
     )  # per-reviewer failures: {"attempt": int, "reviewer": str, "errors": list[str], ...}
     plan_attempt_metadata: list[dict] = field(
         default_factory=list
-    )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes}
+    )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes, trajectory_assessable}
     # Per-plan-reviewer mechanical value telemetry (#1443). One dict per (reviewer,
     # pool attempt): {attempt, reviewer, complexity, unique_p1_count, total_p1_count,
     # latency_s, parse_error_count, actual_model, provider, cli}. Uniqueness is the
@@ -1005,6 +1005,9 @@ class CoordinatorState:
     # stays independently queryable from plan-review value.
     code_reviewer_value: list[dict] = field(default_factory=list)
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
+    # Latest deterministic trajectory assessment captured alongside
+    # plan_regen_disposition for auditability of regen/stop decisions.
+    plan_regen_assessment: dict = field(default_factory=dict)
     plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None

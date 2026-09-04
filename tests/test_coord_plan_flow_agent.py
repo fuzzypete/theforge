@@ -510,6 +510,100 @@ findings:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
+    def test_accumulated_non_convergence_beats_counter_exhaustion(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Alternating history must stop via failed-to-converge, not the generic ceiling branch."""
+        reject_load_config = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P0
+    description: "Plan still relies on load_config() in the wrong layer"
+    suggestion: "Move config loading to the coordinator boundary"
+```
+"""
+        reject_fresh_theme = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P0
+    description: "Plan introduces a fresh validate_schema() failure"
+    suggestion: "Rework the validation flow"
+```
+"""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=2
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nAttempt 1.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nAttempt 2.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nAttempt 3.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nAttempt 4.", cost_usd=0.10),
+        ]
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_load_config,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_load_config,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_fresh_theme,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_load_config,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "failed to converge" in result.message
+        assert "max_plan_regen_attempts" not in result.message
+        assert result.state.plan_regen_assessment["reason_code"] == "accumulated_non_convergence"
+        assert result.state.plan_regen_assessment["qualifying_pair_count"] == 1
+        assert result.state.plan_regen_assessment["majority_recurring_themes"] == ["load_config"]
+        assert mock_pool.call_count == 4
+
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
     def test_plan_decompose_signal_escalates_before_dev(
         self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
