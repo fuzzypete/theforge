@@ -1,0 +1,139 @@
+schema_version: 2
+run_id: 4b0e22d515e5
+authoritative_run_record: .forge/audits/runs/4b0e22d515e5.json
+generated_at: '2026-09-02T19:19:30.519923+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012706249999999999
+story:
+  slug: issue-2847
+  name: A landed story is written out of its own sprint's record, so its spend is
+    counted in the total while no per-story row explains it
+  github_issue: 2847
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/troubleshooting.md
+- src/theforge/cli/sprint.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/budget_runtime.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/prior_landing.py
+- src/theforge/sprint/query.py
+- src/theforge/sprint/runner.py
+- tests/test_sprint_reexec_closed_issue_record.py
+what_changed:
+  description: The run corrected sprint auditing so stories completed by the sprint
+    remain represented in the final sprint audit and substrate even if a re-exec no
+    longer returns them from the live issue query because they closed during the run.
+    It also aligned publication and runtime accounting so sprint totals and per-story
+    records stay attributable together.
+  approach: The change carried forward prior landed story state through re-exec, taught
+    audit assembly to emit accountable rows from accumulated sprint state rather than
+    only the final live query result, and threaded that preserved story information
+    through query, manifest, runner, budget, and publishing paths with a focused regression
+    scenario for closed-issue re-execution.
+  files_modified: *id002
+what_was_learned:
+- claim: For re-executed sprint accounting, the authoritative set of stories cannot
+    be derived only from the final issue query snapshot; audit generation has to preserve
+    and replay accumulated story state for stories that the sprint already executed,
+    or a story can disappear from per-story records while its spend still remains
+    in the sprint total.
+  evidence:
+  - type: review_finding
+    finding_id: e0110b7ace3ff506
+    description: 'The finding identifies the exact failure mode: after a story completed
+      before re-exec, it no longer appeared in the re-exec query, and the final audit
+      still reported the full total while omitting that story from specs, showing
+      that final-query-only audit assembly is insufficient.'
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes because the story could still be omitted
+      when carried only in accumulated story state, demonstrating that preserving
+      execution history through re-exec is the key correctness condition, not just
+      handling the final queried issue set.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the restored story flowed into both audit
+      rows and the substrate, confirming that replaying preserved sprint story state
+      is what closes the accountability gap.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: This file is where the omission was corrected, showing that audit
+      construction had to consume preserved sprint story state so previously executed
+      stories still produce individual records even when absent from the terminal
+      query results.
+  - type: file
+    path: src/theforge/sprint/prior_landing.py
+    description: 'The dedicated prior-landing handling demonstrates the mechanism
+      needed for this class of bug: retaining knowledge of earlier in-sprint landings
+      so they remain auditable after later re-exec passes.'
+- claim: When a sprint total includes measured spend for a story, publication must
+    treat the existence of an individually addressable story record as part of the
+    same invariant; otherwise downstream audit and knowledge surfaces can present
+    a complete total assembled from an incomplete story set.
+  evidence:
+  - type: review_finding
+    finding_id: e0110b7ace3ff506
+    description: 'The finding ties together the inconsistent state the run addressed:
+      the full measured total was reported as complete while a story row was missing,
+      showing that cost aggregation and story-record publication must be validated
+      together.'
+  - type: review_cycle
+    cycle: '2'
+    description: Approval explicitly noted that the restored story now reaches both
+      audit rows and the substrate, demonstrating that correctness was judged on preserving
+      the link between spend accountability and published per-story records.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: This publication path was updated because fixing the bug required
+      not just computing the right internal story set but also ensuring that set is
+      emitted into the substrate readers consume.
+  - type: file
+    path: src/theforge/sprint/budget_runtime.py
+    description: Changes in runtime budget accounting alongside audit logic show that
+      the run treated spend attribution and story record emission as a coupled concern
+      rather than separate calculations.
+learned_patterns:
+- reexec-state-over-final-query
+- cost-row-accountability-invariant
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: e0110b7ace3ff506
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: 'When a story completed before a re-exec no longer appears in the
+      re-exec''s issue query, the final sprint audit can still report the full measured
+      total as complete while specs: omits that story.'
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly surfaced the same risk: a story preserved only in
+    accumulated sprint state could still be dropped unless audit and substrate publication
+    read from that preserved state rather than the final re-exec query.'
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 8.1280344
+  dominant_difficulty: Preserving a stable, accountable story identity across re-execution
+    when the live issue set changes because the sprint itself closed the issue.

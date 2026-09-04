@@ -1,0 +1,171 @@
+schema_version: 2
+run_id: 6da89cc79223
+authoritative_run_record: .forge/audits/runs/6da89cc79223.json
+generated_at: '2026-09-02T20:12:08.562250+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012669
+story:
+  slug: issue-2684
+  name: A review finding that repeats a claim already injected into the same run is
+    indistinguishable from a novel one, so the knowledge loop cannot be observed missing
+    its target
+  github_issue: 2684
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/cli-reference.md
+- docs/knowledge-uptake-labels.yaml
+- src/theforge/cli/knowledge_report.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/review_phase.py
+- src/theforge/coordinator/review_pool.py
+- src/theforge/coordinator/state.py
+- src/theforge/finding_classifier.py
+- src/theforge/knowledge_uptake.py
+- src/theforge/knowledge_uptake_render.py
+- src/theforge/sprint/audit.py
+- src/theforge/task/context_assembler.py
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- tests/fixtures/audit_record_schema_v45.json
+- tests/test_coord_claim_exposure_seam.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_knowledge_uptake.py
+- tests/test_knowledge_uptake_render.py
+- tests/test_prior_run_manifest.py
+what_changed:
+  description: This run added a knowledge-uptake comparison that links injected prior-run
+    claims to later review findings only when eligibility can be determined from recorded
+    phase, role, iteration, and timing data. It also records comparison provenance,
+    validation status, and renders per-run reports that distinguish correspondence,
+    non-correspondence, and no-comparison cases.
+  approach: The implementation extended audit and prior-run context records with claim
+    exposure metadata and finding timestamps, then computed deterministic claim-to-finding
+    correspondences under phase/author/time eligibility rules and rendered the results
+    with method metadata and agreement information.
+  files_modified: *id002
+what_was_learned:
+- claim: Run-level eligibility for claim-to-finding comparison must be computed against
+    each finding's timestamp, not from the mere presence of development-phase claims
+    somewhere in the run, or late-arriving claims will incorrectly make a run appear
+    compared.
+  evidence:
+  - type: review_finding
+    finding_id: 8327f10315a64f3b
+    description: The finding reports a concrete failure mode where a development claim
+      rendered only after the review finding was recorded still caused the report
+      to count an eligible claim and classify the finding as unmatched, showing that
+      eligibility must be evaluated relative to finding time.
+  - type: review_cycle
+    cycle: '1'
+    description: The first review explicitly states that temporal eligibility was
+      counted at the run level before finding times were considered, identifying the
+      mechanism by which post-finding claims produced a false compared state.
+  - type: review_cycle
+    cycle: '2'
+    description: The approval confirms that after checking claim eligibility against
+      finding times, late-only development claims produced no correspondence, demonstrating
+      the corrected per-finding temporal rule.
+  - type: diff
+    ref: dbf363dce14e76b73bccb40b2d7516f4c3f16b02
+    description: This revision is the one the second review approved as fixing the
+      defect, tying the lesson to the change that removed false compared-and-unmatched
+      outcomes caused by late-only claims.
+- claim: When comparing injected knowledge with review findings, authorship and exposure
+    provenance must be recorded at claim level, because a reviewer can repeat a claim
+    from their own prompt and that must not be attributed as missed uptake by development.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The plan begins by extending records to capture claim-level exposure,
+      reflecting that eligibility depends on knowing exactly which phase, role, and
+      iteration received each claim.
+  - type: file
+    path: src/theforge/task/prior_run_manifest.py
+    description: Changes in the prior-run manifest are evidence for preserving per-claim
+      exposure details in persisted records, which is the information needed to determine
+      whether the finding author actually saw the claim.
+  - type: file
+    path: src/theforge/task/prior_run_selector.py
+    description: Selector changes demonstrate that rendered claims are tracked with
+      enough provenance to distinguish delivery to development from delivery to review,
+      which is required to exclude reviewer-self-primed findings from missed-uptake
+      correspondence.
+  - type: file
+    path: tests/test_coord_claim_exposure_seam.py
+    description: The seam-level exposure tests show that claim provenance is treated
+      as a boundary condition worth verifying, supporting the lesson that authorship/exposure
+      data is essential rather than incidental.
+- claim: Outputs for this kind of correspondence analysis need an explicit 'no correspondence
+    because comparison was ineligible or absent' state separate from 'compared and
+    unmatched', or reports will collapse different mechanisms into the same result.
+  evidence:
+  - type: plan_step
+    step_id: '2'
+    description: The plan step to persist finding time and expose old runs as uncomparable
+      shows that some runs cannot legitimately be compared, so reporting must distinguish
+      absence of comparison from a completed comparison with no matches.
+  - type: plan_step
+    step_id: '5'
+    description: The reporting step demonstrates that the artifact was designed to
+      surface comparison outcomes, including none-versus-unmatched distinctions, not
+      just raw matches.
+  - type: review_finding
+    finding_id: 8327f10315a64f3b
+    description: The flagged bug arose because a run with no temporally eligible claims
+      was reported as compared and unmatched, directly illustrating why 'none' and
+      'unmatched' must remain distinct states.
+  - type: file
+    path: src/theforge/knowledge_uptake_render.py
+    description: Rendering changes are evidence that these distinct comparison states
+      are surfaced in the run report itself, which is where conflation would otherwise
+      hide the mechanism.
+learned_patterns:
+- per-finding-temporal-eligibility
+- claim-exposure-provenance
+- none-vs-unmatched-reporting
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 8327f10315a64f3b
+    severity: P1
+    file: src/theforge/knowledge_uptake.py
+    description: When the only dev claim in a run was rendered after the review finding
+      was recorded, the uptake report still counted one eligible claim, entered status
+      compared, and classified the finding as not matched to an eligible injected
+      claim.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop concentrated on temporal eligibility semantics, specifically whether
+    late-rendered claims could wrongly make a run look compared and a finding look
+    unmatched.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 44.113744999999994
+  dominant_difficulty: Defining correspondence required combining phase, role, iteration,
+    and timestamp provenance so eligibility could be decided from records alone without
+    conflating reviewer exposure, development exposure, and event order.

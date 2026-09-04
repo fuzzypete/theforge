@@ -1,0 +1,147 @@
+schema_version: 2
+run_id: 09992ae2fa64
+authoritative_run_record: .forge/audits/runs/09992ae2fa64.json
+generated_at: '2026-09-03T18:29:45.525073+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.009374500000000001
+story:
+  slug: issue-2685
+  name: Semantic evaluation runs as an audit-only instrument, so its usefulness is
+    measured before any readiness policy consumes it
+  github_issue: 2685
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/main.py
+- src/theforge/eval/__init__.py
+- src/theforge/eval/semantic_input.py
+- src/theforge/eval/semantic_parser.py
+- src/theforge/eval/semantic_prompt.py
+- src/theforge/eval/semantic_report.py
+- src/theforge/eval/semantic_runner.py
+- src/theforge/eval/semantic_storage.py
+- src/theforge/eval/semantic_types.py
+- src/theforge/sprint/live_stories.py
+- tests/test_cli_semantic_eval.py
+- tests/test_semantic_eval.py
+what_changed:
+  description: Added a manual, audit-only semantic evaluation flow that reads an issue,
+    produces structured outcomes or failure states, records run identity and metrics,
+    and reports corpus-level measurement data without affecting readiness or mutating
+    the document.
+  approach: 'The change was built as a separate evaluator pipeline: canonicalized
+    semantic input and prompt contract, parsed model output into typed result states,
+    persisted records keyed by digest/model/prompt version, exposed operator CLI entrypoints,
+    and generated reports from the stored audit history.'
+  files_modified: *id002
+what_was_learned:
+- claim: When caching evaluation results by identity, failed attempts must be excluded
+    from satisfying the cache; otherwise a transient transport or parse failure becomes
+    a sticky terminal outcome for that identity and suppresses later successful evaluation.
+  evidence:
+  - type: review_finding
+    finding_id: 9d470b979549cf0c
+    description: The review found that identity lookup returned the most recent record
+      without filtering on status, which caused later invocations for the same digest/model/prompt
+      triple to reuse EVALUATION_FAILED instead of attempting evaluation again; this
+      demonstrates that cache eligibility must distinguish successful outcomes from
+      failed runs.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly records that the prior P1 was resolved by excluding
+      failed records from identity lookup, confirming that this status filter was
+      necessary to preserve correct rerun behavior.
+- claim: Operator-facing cache bypasses can violate behavioral contracts even when
+    storage keys are correct; repeat-run semantics need to be enforced at the command
+    path as well as in persistence.
+  evidence:
+  - type: review_finding
+    finding_id: ad903e01c041fb46
+    description: The review found that --no-cache let an operator force a fresh model
+      call for an already-recorded digest/model/prompt identity, directly breaking
+      the contract that exact-identity repeats return the stored outcome; this shows
+      contract enforcement must include CLI control flow, not just backend keying.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that same-identity bypass was fixed, showing the issue
+      was not with identity definition itself but with an alternate invocation path
+      escaping the intended repeat-run rule.
+- claim: Freezing a human baseline before reveal is not enough by itself; invocation
+    paths also need explicit mismatch handling so operator-supplied baseline inputs
+    cannot be silently discarded before consistency checks run.
+  evidence:
+  - type: review_finding
+    finding_id: dc639598f7f5d121
+    description: The review found that when a frozen baseline already existed, invocation-supplied
+      defect ids were dropped without any message and the store-level mismatch guard
+      was never reached, demonstrating that baseline integrity depends on surfacing
+      disagreements at the first point they can be observed.
+- claim: Metrics that rely on independent repeated live evaluations can be invalidated
+    by deduplication semantics that serve same-identity repeats from storage, so report
+    design must align stability measurements with the actual execution model.
+  evidence:
+  - type: review_finding
+    finding_id: 27dd70223834a851
+    description: The review found that once same-identity repeats are always served
+      from the record store, two live records with the same digest/model/prompt triple
+      no longer arise in normal use, leaving repeat-stability counters at zero; this
+      demonstrates that measurement logic must account for how caching constrains
+      observable repeats.
+learned_patterns:
+- status-aware-identity-cache
+- cli-path-contract-enforcement
+- baseline-mismatch-must-surface
+- metrics-must-match-execution-model
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: ad903e01c041fb46
+    severity: P1
+    file: src/theforge/cli/eval_cmd.py
+    description: When an operator repeats review-semantic with --no-cache for an input
+      digest, model id, and prompt contract version that already have a record, the
+      command disables the cache path and the runner invokes the agent again.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 9d470b979549cf0c
+    severity: P1
+    file: src/theforge/eval/semantic_storage.py
+    description: "The identity cache lookup returns the most recent record for a (digest,\
+      \ model id, prompt contract version) triple without filtering on status, so\
+      \ once a run fails to reach a model or fails to parse, every later default invocation\
+      \ for that identity is served the EVALUATION_FAILED record without invoking\
+      \ a model \u2014 and when a valid FINDINGS or NO_FINDINGS record was already\
+      \ stored for that same identity, the later failure record shadows it and is\
+      \ returned in its place."
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly surfaced contract breaks at execution edges: cache
+    eligibility, cache bypass paths, baseline consistency handling, and report assumptions
+    about what the runtime can actually produce.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 15.3657409
+  dominant_difficulty: Preserving audit-only semantics while making identity, caching,
+    failure handling, and measurement behavior all agree across CLI, storage, runner,
+    and reporting paths.

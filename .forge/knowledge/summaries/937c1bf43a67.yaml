@@ -1,0 +1,115 @@
+schema_version: 2
+run_id: 937c1bf43a67
+authoritative_run_record: .forge/audits/runs/937c1bf43a67.json
+generated_at: '2026-09-03T19:57:39.957791+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0089625
+story:
+  slug: issue-2866
+  name: Whether an agent acted on injected prior-run knowledge is never recorded,
+    so the loop can be seen delivering and seen being ignored but never seen landing
+  github_issue: 2866
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/cli-reference.md
+- src/theforge/cli/knowledge_report.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/review_pool.py
+- src/theforge/coordinator/state.py
+- src/theforge/knowledge_receipts.py
+- src/theforge/knowledge_receipts_report.py
+- src/theforge/schemas.py
+- src/theforge/task/debrief_prompts.py
+- src/theforge/task/dev_prompts.py
+- src/theforge/task/plan_prompts.py
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- src/theforge/task/review_prompts.py
+- tests/fixtures/audit_record_schema_v46.json
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_knowledge_receipt_seam.py
+- tests/test_knowledge_receipts.py
+- tests/test_knowledge_receipts_report.py
+what_changed:
+  description: This run added per-phase knowledge receipt/debrief capture, verification,
+    audit storage, and report surfacing for prior-run knowledge injections, including
+    explicit handling for unmatched citations, unaddressed claims, undebriefed phases,
+    and separate corroborated versus uncorroborated use counts.
+  approach: The change introduced a dedicated receipt/verifier model, rendered stable
+    claim references into injected context, required debrief output only for phases
+    that received knowledge, persisted verified receipt data into the audit schema,
+    and built reporting paths from audit records through the CLI knowledge report.
+  files_modified: *id002
+what_was_learned:
+- claim: Evidence-pointer corroboration for claimed knowledge use must resolve against
+    specific artifact containment, not broad category matches or token overlap, or
+    unrelated artifacts will be miscounted as corroborated use.
+  evidence:
+  - type: review_finding
+    finding_id: 232d7ffaf9cff8c6
+    description: The finding shows that a use claim was incorrectly corroborated when
+      the cited commit only touched a broad rebuild entry point category, demonstrating
+      that loose pointer matching creates false-positive corroboration.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle reports that the first fix still allowed
+      corroboration from a single overlapping token, showing that partial narrowing
+      is insufficient and that matching must require stronger containment to avoid
+      unrelated evidence being accepted.
+  - type: review_cycle
+    cycle: '3'
+    description: Approval in cycle 3 attributes the fix to containment matching, demonstrating
+      the level of pointer resolution that prevented the repeated false-positive corroboration
+      issue.
+  - type: diff
+    ref: ccd77626c19e4fdd687a59f8d577d3496edf8b6b
+    description: This final diff is the revision accepted after repeated review on
+      the same failure mode, evidencing that the durable fix was in the corroboration-matching
+      logic rather than elsewhere in the feature.
+learned_patterns:
+- strict-evidence-containment
+- phase-scoped-knowledge-receipts
+review_insights:
+  recurring_findings:
+  - &id003
+    finding_id: 232d7ffaf9cff8c6
+    severity: P1
+    file: src/theforge/knowledge_receipts.py
+    description: A use-asserting debrief that cited a commit touching a rebuild entry
+      point was counted as a corroborated use claim even when the only recorded commit
+      was an unrelated README update.
+    cycles_seen: 2
+    disposition: fixed
+  resolved_findings:
+  - *id003
+  observations:
+  - Review repeatedly surfaced false-positive corroboration from overly broad evidence-pointer
+    matching until containment-based resolution closed the gap.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 59.52022790000001
+  dominant_difficulty: Defining verification strict enough to measure claimed knowledge
+    use without inflating corroboration from ambiguous artifact pointers.

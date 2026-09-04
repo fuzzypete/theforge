@@ -1,0 +1,131 @@
+schema_version: 2
+run_id: dfc3745d3a81
+authoritative_run_record: .forge/audits/runs/dfc3745d3a81.json
+generated_at: '2026-09-03T18:21:33.693185+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00812025
+story:
+  slug: issue-2600
+  name: A spike can close without producing either a recorded decision or a follow-on
+    work item, so its result survives only in operator memory
+  github_issue: 2600
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- ci
+- backend
+- api
+domains_provenance: *id001
+changed_files: &id002
+- .github/workflows/close-epic-on-last-subissue.yml
+- .github/workflows/close-on-merge.yml
+- .github/workflows/enforce-spike-outcome.yml
+- CONVENTIONS.md
+- docs/guides/authoring.md
+- docs/reference/issue-shape.md
+- src/theforge/cli/todo.py
+- src/theforge/coordinator/completion.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/triage_ratification_flow.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/issue_spec.py
+- src/theforge/spike_guard/__init__.py
+- src/theforge/spike_guard/__main__.py
+- src/theforge/spike_guard/guard.py
+- src/theforge/spike_guard/outcome.py
+- src/theforge/sprint/sources.py
+- tests/gh_stub.py
+- tests/spike_outcome_fixtures.py
+- tests/test_cli_author.py
+- tests/test_cli_todo.py
+- tests/test_close_epic_workflow.py
+- tests/test_close_on_merge_workflow.py
+- tests/test_enforce_spike_outcome_workflow.py
+- tests/test_intake/test_author_flow.py
+- tests/test_operator_action_lifecycle.py
+- tests/test_spike_guard_boundary.py
+- tests/test_spike_guard_outcome.py
+- tests/test_story_sources.py
+- tests/test_story_type.py
+- tests/test_triage_ratification_flow.py
+what_changed:
+  description: 'This run made spike closure conditional on a recorded outcome: either
+    a decision not to proceed or a linked follow-on work item that carries any conditional
+    trigger. It also propagated that rule into authoring guidance, issue-shape validation,
+    operator flows, CLI surfaces, and GitHub close paths.'
+  approach: The change combined a dedicated spike-outcome guard with schema and workflow
+    integration, so the same closure rule is checked both in repository automation
+    and in TheForge's own intake, completion, and story-sourcing paths.
+  files_modified: *id002
+what_was_learned:
+- claim: When a governance rule is about whether work may close, enforcing it only
+    in human-facing guidance is insufficient; the close path itself has to reject
+    invalid terminal states across every automation route that can mark work complete.
+  evidence:
+  - type: file
+    path: .github/workflows/enforce-spike-outcome.yml
+    description: This workflow adds an explicit repository-side gate on spike closure,
+      showing the rule was enforced where closure happens rather than left as advisory
+      prose.
+  - type: file
+    path: .github/workflows/close-on-merge.yml
+    description: This close path was updated alongside the dedicated enforcement workflow,
+      demonstrating that merge-driven closure is one of the concrete routes that must
+      participate in the same terminal-state check.
+  - type: file
+    path: .github/workflows/close-epic-on-last-subissue.yml
+    description: This second automated close path was also changed, showing that closure
+      enforcement has to be applied per closing mechanism rather than assumed from
+      a single centralized rule.
+  - type: file
+    path: src/theforge/coordinator/completion.py
+    description: Coordinator completion logic was updated too, indicating that repository
+      workflows alone do not cover all closure entry points inside TheForge's own
+      execution paths.
+- claim: For spikes with conditional answers, the durable artifact has to encode the
+    trigger and how it becomes observable; leaving the condition only in narrative
+    text on the closed spike does not preserve an actionable next step.
+  evidence:
+  - type: file
+    path: src/theforge/spike_guard/outcome.py
+    description: The outcome logic was substantial and separate from basic closure
+      checks, showing that conditional outcomes required structured parsing/validation
+      rather than relying on freeform closing prose.
+  - type: file
+    path: docs/reference/issue-shape.md
+    description: Issue-shape reference changes show the condition was modeled as part
+      of the follow-on artifact's required shape, making it machine-visible instead
+      of merely descriptive.
+  - type: file
+    path: src/theforge/sprint/sources.py
+    description: Story sourcing was updated so follow-on artifacts remain visible
+      in normal pipeline views, demonstrating that preserving a conditional spike
+      result depends on representing it as pipeline work rather than archival text.
+learned_patterns:
+- closure-gated-governance
+- conditional-outcome-as-artifact
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review completed without surfacing blocking issues after the spike-closure rule
+    was wired through all identified close paths.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 21.1654012
+  dominant_difficulty: Applying one outcome rule consistently across multiple independent
+    closure mechanisms in both GitHub automation and TheForge's internal flows.
