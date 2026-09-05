@@ -15,6 +15,7 @@ from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.process_group import ProcessTeardown
+from theforge.story_run_artifacts import story_run_artifact_dirt_only
 from theforge.task import TaskStory
 from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
@@ -397,6 +398,33 @@ def project_root_dirty_status(project_root: Path) -> str:
     return out.strip()
 
 
+def project_root_dirt_is_story_run_artifacts_only(project_root: Path) -> bool:
+    """Whether the project root's *only* dirt is pending story-run artifacts.
+
+    Asks git with ``-uall`` rather than reading the landing check's own status
+    text: the default porcelain output collapses a wholly-untracked tree to its
+    top directory (``?? .forge/``), which names something broader than the
+    artifact trees and could not be attributed to a sibling. Expanding the entry
+    is what lets a first-ever sprint — one with no committed artifacts yet — get
+    the same tolerance as a steady-state one.
+
+    Lives beside ``project_root_dirty_status`` since #2775 rather than in
+    ``sprint.audit_publish``, which is where it started. Both the entry-time
+    landing precondition below and the publisher's merge-time retry need this
+    answer, and the publisher already imports this module — so putting the git
+    probe on the coordinator side is what lets them share one implementation
+    instead of closing an import cycle to reach it. ``audit_publish`` re-exports
+    it under the same name, so its callers are unaffected.
+
+    Fails closed: a root git cannot describe is not a root to retry a landing
+    into.
+    """
+    ok, out = _cu._run_shell("git status --porcelain -uall", project_root)
+    if not ok:
+        return False
+    return story_run_artifact_dirt_only(out.strip())
+
+
 def landing_blocking_dirt(project_root: Path) -> str:
     """Project-root dirt that actually blocks a landing; ``""`` when nothing does.
 
@@ -422,10 +450,6 @@ def landing_blocking_dirt(project_root: Path) -> str:
     dirty = project_root_dirty_status(project_root)
     if not dirty:
         return ""
-    from ..sprint.audit_publish import (  # noqa: PLC0415 — audit_publish imports this module
-        project_root_dirt_is_story_run_artifacts_only,
-    )
-
     if project_root_dirt_is_story_run_artifacts_only(project_root):
         return ""
     return dirty
