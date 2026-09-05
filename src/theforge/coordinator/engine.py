@@ -1307,6 +1307,7 @@ def run_task(
         if err:
             state.phase = Phase.ESCALATE
             state.error = err
+            _log(f"✗ ESCALATE   {state.error}")
             logger._safe_emit("phase_end", phase="WORKSPACE", outcome="escalate")
             logger._safe_emit("escalate", reason=state.error, phase="WORKSPACE")
             logger._safe_emit(
