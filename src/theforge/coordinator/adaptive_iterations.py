@@ -130,9 +130,14 @@ def _read_history_tail(project_root: Path) -> list[dict]:
     an empty list — adaptive iteration falls back to complexity-only
     scaling. Otherwise ``require_substrate`` is the source of truth:
     a missing substrate with audit inputs on disk surfaces
-    ``SubstrateMissingError`` (operator-facing), and a corrupt index
-    surfaces ``SubstrateCorruptError``. Neither is caught here — silent
-    no-history routing is exactly what the spec forbids.
+    ``SubstrateMissingError`` (operator-facing), a corrupt index surfaces
+    ``SubstrateCorruptError``, and a substrate still held by a concurrent
+    sibling worker after the bounded lock wait surfaces
+    ``SubstrateLockTimeoutError`` (#2906). None of the three is caught here —
+    silent no-history routing is exactly what the spec forbids. The lock case
+    is transient where the other two are not, but the difference is drawn at
+    the sprint worker boundary, which attributes it to shared infrastructure;
+    swallowing it here would route the story without history instead.
     """
     from theforge.coordinator import audit_substrate
 
