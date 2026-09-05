@@ -1,0 +1,115 @@
+schema_version: 2
+run_id: 0b8095402c1d
+authoritative_run_record: .forge/audits/runs/0b8095402c1d.json
+generated_at: '2026-09-05T21:52:36.650897+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0105875
+story:
+  slug: issue-2775
+  name: A sprint refuses its own stories at entry for artifacts a sibling landing
+    has not finished committing
+  github_issue: 2775
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/controller-runbook.md
+- docs/guides/troubleshooting.md
+- src/theforge/coordinator/workspace.py
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/memory_publication.py
+- src/theforge/story_run_artifacts.py
+- tests/test_coord_landing_precondition.py
+- tests/test_protected_base_publication_poc.py
+- tests/test_story_run_artifacts.py
+what_changed:
+  description: The run changed workspace dirtiness checks so TheForge's own per-run
+    publication artifacts are treated separately from operator-owned root changes
+    during entry, resume, sprint-entry, and landing preconditions. It also moved audit
+    and memory publication onto a shared story-run artifact path and documented the
+    resulting behavior and troubleshooting.
+  approach: The change introduced a dedicated artifact classifier for run-generated
+    files, then routed both publication code and workspace precondition checks through
+    that shared distinction so bookkeeping artifacts could be reconciled as Forge-owned
+    state while unrelated root dirt still blocks work.
+  files_modified: *id002
+what_was_learned:
+- claim: When a workspace precondition is intended to be an early form of a later
+    landing/worktree refusal, future changes need the entry, resume, sprint-entry,
+    and merge-time checks to share the same blocking predicate; otherwise concurrency
+    exposes mismatches where earlier checks reject work that the coordinated path
+    would accept.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: The approval explicitly calls out that entry, resume, sprint-entry,
+      and merge-time landing checks now share one artifact-tolerant blocking predicate,
+      showing the important reusable lesson was consistency across all admission points
+      rather than a one-off fix in only the failing path.
+  - type: file
+    path: src/theforge/coordinator/workspace.py
+    description: This is where workspace admissibility is decided; its centralization
+      of the blocking logic demonstrates that the failure mode came from precondition
+      policy living at multiple call sites and needing one shared decision rule.
+  - type: diff
+    ref: caca638ad7bb79f88372e02736fbbe4bb9a62b88
+    description: The diff ties the same tolerance rule into multiple workspace/landing
+      checks, demonstrating that preventing divergent accept/refuse behavior required
+      unifying predicates across phases, not just adjusting one command.
+- claim: Future work that reasons about repository cleanliness in Forge runs should
+    distinguish run-owned publication artifacts from operator-owned uncommitted changes,
+    because both appear as root dirt in git status but they carry different admissibility
+    semantics.
+  evidence:
+  - type: file
+    path: src/theforge/story_run_artifacts.py
+    description: A dedicated artifact module was introduced specifically to identify
+      the run-generated files as a separate class, demonstrating that plain git dirt
+      was too coarse a signal for correct scheduling decisions.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: Audit publication was moved onto the shared story-run artifact handling
+      path, showing that these files are produced as normal Forge bookkeeping and
+      therefore must be recognized differently from user edits.
+  - type: file
+    path: src/theforge/sprint/memory_publication.py
+    description: Memory publication now participates in the same artifact treatment
+      as audit publication, demonstrating that the lesson applies across multiple
+      Forge-generated root artifacts rather than a single file family.
+  - type: file
+    path: tests/test_coord_landing_precondition.py
+    description: The focused landing-precondition scenarios separate tolerated Forge
+      artifacts from blocking operator dirt, demonstrating the behavioral distinction
+      a future run must preserve when touching cleanliness checks.
+learned_patterns:
+- shared-precondition-predicate
+- forge-owned-artifact-classification
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on ensuring every admission and landing path used the same artifact-aware
+    workspace blocking rule.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 13.0731667
+  dominant_difficulty: Reconciling concurrent workspace safety checks with shared
+    root artifacts so transient or resting Forge bookkeeping did not diverge from
+    true operator dirt.
