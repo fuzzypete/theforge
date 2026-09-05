@@ -31,7 +31,9 @@ from typing import Any
 
 from ..config import ForgeConfig
 from ..coordinator import workspace as coordinator_workspace
+from ..coordinator.workspace import project_root_dirt_is_story_run_artifacts_only
 from ..log_util import _log_line
+from ..story_run_artifacts import story_run_artifact_dirt_only
 from .audit import _write_sprint_audit, _write_sprint_summary
 from .manifest import SprintResult
 from .memory_publication import (
@@ -41,13 +43,21 @@ from .memory_publication import (
     MEMORY_PUBLISH_PUSHED_NO_PR,
     MEMORY_PUBLISH_STAGED_ONLY,
     PROJECT_MEMORY_DIRS,
-    porcelain_paths,
     stage_and_publish_project_memory,
 )
 
+# Re-exported, not defined here. The dirt attribution moved out to
+# ``theforge.story_run_artifacts`` (the pure predicate) and
+# ``coordinator.workspace`` (the git probe) under #2775, so the coordinator's
+# landing precondition could reuse it without importing this module and closing
+# a cycle. They stay named here because ``sprint.runner`` and this module's
+# tests reach for them at this address, and because a publisher that could not
+# say what it publishes would be the wrong place to have hidden them.
+__all__ = ["project_root_dirt_is_story_run_artifacts_only", "story_run_artifact_dirt_only"]
+
 # The tracked project-memory trees this module publishes. Owned by
-# ``memory_publication`` so the transport and the dirt attribution below can
-# never disagree about what "a story-run artifact" is (#2598).
+# ``memory_publication`` so the transport and the dirt attribution can never
+# disagree about what "a story-run artifact" is (#2598).
 _STORY_RUN_ARTIFACT_DIRS = PROJECT_MEMORY_DIRS
 _STORY_RUN_AUDIT_COMMIT_MESSAGE = "chore(audit): record sprint run audits"
 
@@ -96,64 +106,6 @@ def _story_run_artifact_label(artifact_dir: str) -> str:
     if artifact_dir == ".forge/audits/landing":
         return "landing evidence"
     return f"story run artifacts under {artifact_dir}"
-
-
-def _porcelain_paths(dirty_status: str) -> list[str]:
-    """Paths named by a ``git status --porcelain`` block, one per entry.
-
-    Delegates to the transport's parser, which does not slice a fixed status
-    column: the status text reaching this function has already been stripped by
-    ``_run_shell``, so a fixed slice ate the first character of the first path
-    whenever that path's status was worktree-only (``" M "``). Attribution then
-    failed to recognise forge's own artifact and the landing refused instead of
-    republishing (#2598).
-    """
-    return porcelain_paths(dirty_status)
-
-
-def story_run_artifact_dirt_only(dirty_status: str) -> bool:
-    """Whether every path in a porcelain status block is a story-run artifact.
-
-    A dirty project root refuses a landing, and under ``max_parallel > 1`` the
-    dirt is routinely a *sibling* story's own canonical run record and knowledge
-    summary, written between the losing story's entry check and its merge
-    (#2602). Distinguishing that from operator dirt is what lets the integration
-    seam republish and retry instead of discarding approved, paid-for work —
-    while operator dirt still refuses exactly as before.
-
-    Returns ``False`` for a clean status: there is nothing to attribute.
-    """
-    paths = _porcelain_paths(dirty_status)
-    if not paths:
-        return False
-    return all(
-        any(
-            path == artifact_dir or path.startswith(f"{artifact_dir}/")
-            for artifact_dir in _STORY_RUN_ARTIFACT_DIRS
-        )
-        for path in paths
-    )
-
-
-def project_root_dirt_is_story_run_artifacts_only(project_root: Path) -> bool:
-    """Whether the project root's *only* dirt is pending story-run artifacts.
-
-    Asks git with ``-uall`` rather than reading the landing check's own status
-    text: the default porcelain output collapses a wholly-untracked tree to its
-    top directory (``?? .forge/``), which names something broader than the
-    artifact trees and could not be attributed to a sibling. Expanding the entry
-    is what lets a first-ever sprint — one with no committed artifacts yet — get
-    the same tolerance as a steady-state one.
-
-    Fails closed: a root git cannot describe is not a root to retry a landing
-    into.
-    """
-    from ..coordinator import util as _cu  # noqa: PLC0415
-
-    ok, out = _cu._run_shell("git status --porcelain -uall", project_root)
-    if not ok:
-        return False
-    return story_run_artifact_dirt_only(out.strip())
 
 
 def read_audit_publish_state(project_root: Path) -> str | None:

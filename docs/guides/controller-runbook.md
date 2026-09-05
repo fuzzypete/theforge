@@ -142,6 +142,23 @@ entry, so dirtying the root mid-sprint stops the *next* story rather than
 costing it — that story escalates in WORKSPACE with the message above instead
 of running.
 
+**Forge's own bookkeeping is never grounds for a refusal (issue #2775).** A run
+writes its canonical run audit, landing evidence and knowledge summary into the
+shared project-root checkout as an ordinary consequence of finishing, and those
+files stand uncommitted until the next publish — which is deliberately deferred
+while any worker is still active, so under `--parallel N` they can stand for the
+rest of the sprint. Paths under `.forge/audits/runs/`, `.forge/audits/landing/`
+and `.forge/knowledge/summaries/` are therefore excluded from the blocking
+condition at every point it is evaluated: sprint entry, each story's WORKSPACE
+entry, resume entry, and the landing itself. They are not the operator's to
+commit, stash or revert — they exist only inside a window the operator never
+sees, and the run that wrote them is the one that publishes them.
+
+A root carrying *both* forge artifacts and operator changes still refuses, and
+the message still lists everything it saw. If you are looking at a
+`LANDING PRECONDITION` refusal, the actionable paths are the ones outside those
+three directories.
+
 Whether a story lands locally is decided per story, not per config value. A
 **dependency parent carried by this sprint** is merged locally to unblock its
 child, so those parents carry the precondition even under `on_approve: none` or

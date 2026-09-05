@@ -417,6 +417,12 @@ reaches `MERGE_FAILED` means the root was dirtied after that story entered, or
 the landing failed for a genuine reason (e.g. a real conflict with the base
 branch).
 
+Forge's own pending bookkeeping does *not* count as dirt (#2775). Paths under
+`.forge/audits/runs/`, `.forge/audits/landing/` and `.forge/knowledge/summaries/`
+are written by a run as it finishes and published by that run, so they are
+excluded from the condition everywhere it is evaluated. If a refusal names a
+mix, only the paths outside those three directories are yours to clear.
+
 **Fix:**
 ```bash
 git status                        # in the project root, not the worktree
