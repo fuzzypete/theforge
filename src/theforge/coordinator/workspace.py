@@ -15,6 +15,7 @@ from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.process_group import ProcessTeardown
+from theforge.story_run_artifacts import story_run_artifact_dirt_only
 from theforge.task import TaskStory
 from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
@@ -397,6 +398,63 @@ def project_root_dirty_status(project_root: Path) -> str:
     return out.strip()
 
 
+def project_root_dirt_is_story_run_artifacts_only(project_root: Path) -> bool:
+    """Whether the project root's *only* dirt is pending story-run artifacts.
+
+    Asks git with ``-uall`` rather than reading the landing check's own status
+    text: the default porcelain output collapses a wholly-untracked tree to its
+    top directory (``?? .forge/``), which names something broader than the
+    artifact trees and could not be attributed to a sibling. Expanding the entry
+    is what lets a first-ever sprint — one with no committed artifacts yet — get
+    the same tolerance as a steady-state one.
+
+    Lives beside ``project_root_dirty_status`` since #2775 rather than in
+    ``sprint.audit_publish``, which is where it started. Both the entry-time
+    landing precondition below and the publisher's merge-time retry need this
+    answer, and the publisher already imports this module — so putting the git
+    probe on the coordinator side is what lets them share one implementation
+    instead of closing an import cycle to reach it. ``audit_publish`` re-exports
+    it under the same name, so its callers are unaffected.
+
+    Fails closed: a root git cannot describe is not a root to retry a landing
+    into.
+    """
+    ok, out = _cu._run_shell("git status --porcelain -uall", project_root)
+    if not ok:
+        return False
+    return story_run_artifact_dirt_only(out.strip())
+
+
+def landing_blocking_dirt(project_root: Path) -> str:
+    """Project-root dirt that actually blocks a landing; ``""`` when nothing does.
+
+    ``project_root_dirty_status`` answers "is anything uncommitted here", which
+    is not the same question. A sprint writes its own canonical bookkeeping —
+    story run audits, landing evidence, knowledge summaries — into the shared
+    project-root checkout as an ordinary consequence of running, and those files
+    stand uncommitted until a publish that is deliberately deferred while any
+    worker is active. Counting them as dirt made forge refuse its own stories
+    for artifacts the operator cannot commit, stash or revert, because they
+    exist only inside a window the operator never sees (#2775).
+
+    So the blocking condition excludes them: what a run writes into the checkout
+    is the run's to reconcile, and a refusal derived from it reports a state
+    that was never the operator's. Everything else — an edited ``forge.yaml``, a
+    stray scratch file, a half-finished change — blocks exactly as before, and a
+    root carrying *both* blocks too: the operator's dirt is still there and is
+    still theirs to clear.
+
+    Fails closed on an unattributable status: a root git cannot describe in full
+    is not a root to excuse dirt in.
+    """
+    dirty = project_root_dirty_status(project_root)
+    if not dirty:
+        return ""
+    if project_root_dirt_is_story_run_artifacts_only(project_root):
+        return ""
+    return dirty
+
+
 def story_lands_in_project_root(
     config: ForgeConfig,
     *,
@@ -441,8 +499,12 @@ def landing_precondition_error(
     returns ``None``.
 
     The dirty condition mirrors ``_merge_branch`` exactly — untracked files
-    included — so anything refused here is something that would have been
-    refused at landing anyway.
+    included, forge's own pending story-run artifacts excluded (see
+    ``landing_blocking_dirt``) — so anything refused here is something that
+    would have been refused at landing anyway. That equivalence is the whole
+    warrant for checking early: a precondition that rejects what the later
+    operation would have tolerated is not a cheaper form of the same answer,
+    it is an independent way to fail work that would have succeeded (#2775).
     """
     if not story_lands_in_project_root(
         config, auto_merge=auto_merge, lands_in_project_root=lands_in_project_root
@@ -450,7 +512,7 @@ def landing_precondition_error(
         return None
     if not (config.project_root / ".git").exists():
         return None
-    dirty = project_root_dirty_status(config.project_root)
+    dirty = landing_blocking_dirt(config.project_root)
     if not dirty:
         return None
     files = ", ".join(line.strip() for line in dirty.splitlines())[:_DIRTY_ROOT_SUMMARY_LIMIT]
@@ -490,7 +552,13 @@ def _merge_branch(
         _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    dirty = project_root_dirty_status(project_root)
+    # The same condition ``landing_precondition_error`` evaluates at entry, from
+    # the same helper, so the early refusal and this one can never disagree about
+    # what a blocking root is (#2775). Forge's own pending story-run artifacts are
+    # excluded from both: they are untracked or index-clean records under
+    # ``.forge/`` that no merge of a story branch touches, and refusing over them
+    # would strand approved work for bookkeeping the sprint itself wrote.
+    dirty = landing_blocking_dirt(project_root)
     if dirty:
         info["error"] = f"Uncommitted changes in project root: {dirty[:_DIRTY_ROOT_SUMMARY_LIMIT]}"
         _cu._log(f"Auto-merge skipped: {info['error']}")

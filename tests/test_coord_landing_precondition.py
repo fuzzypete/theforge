@@ -14,6 +14,12 @@ condition being evaluated at the points where the spend can still be avoided:
   before the baseline gate
 - ``_merge_branch``: still refuses on the same condition (parity — the entry
   check must not be able to drift away from the landing check)
+
+And they pin what is *not* dirt (#2775): a sprint's own canonical run audits,
+landing evidence and knowledge summaries stand uncommitted in the shared project
+root between a story finishing and the next publish, which under
+``max_parallel > 1`` can be the rest of the sprint. Refusing over them failed a
+sprint's own stories for artifacts no operator can commit, stash or revert.
 """
 
 from __future__ import annotations
@@ -35,12 +41,26 @@ from theforge.coordinator.logging import StructuredLogger
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.coordinator.workspace import (
     _merge_branch,
+    landing_blocking_dirt,
     landing_precondition_error,
     project_root_dirty_status,
     story_lands_in_project_root,
 )
 
 DIRTY = " M forge.yaml"
+
+# The three trees a run writes into the shared checkout as it finishes — the
+# exact paths quoted in #2775's refusals, keyed to one landed story's run id.
+ARTIFACT_DIRT = "\n".join(
+    (
+        "?? .forge/audits/landing/817ecdc3d187.landed.json",
+        "?? .forge/audits/runs/817ecdc3d187.json",
+        "?? .forge/knowledge/summaries/817ecdc3d187.yaml",
+    )
+)
+
+# A root carrying forge's bookkeeping *and* an operator edit. Still refuses.
+MIXED_DIRT = f"{ARTIFACT_DIRT}\n{DIRTY}"
 
 
 def _merge_config(tmp_path: Path, *, on_approve: str = "merge") -> ForgeConfig:
@@ -56,6 +76,24 @@ def _shell(status_out: str):
     def _side_effect(cmd, cwd, **kwargs):
         if "status --porcelain" in cmd:
             return (True, status_out)
+        return (True, "")
+
+    return _side_effect
+
+
+def _split_shell(*, plain: str, uall: tuple[bool, str]):
+    """_run_shell stub answering the plain and ``-uall`` status probes apart.
+
+    Attribution asks with ``-uall`` because the default porcelain output
+    collapses a wholly-untracked tree to ``?? .forge/``; the two answers are
+    separable here so a test can make attribution fail while dirt is visible.
+    """
+
+    def _side_effect(cmd, cwd, **kwargs):
+        if "status --porcelain -uall" in cmd:
+            return uall
+        if "status --porcelain" in cmd:
+            return (True, plain)
         return (True, "")
 
     return _side_effect
@@ -137,6 +175,87 @@ class TestLandingPreconditionError:
         assert landing_precondition_error(config, lands_in_project_root=False) is None
 
 
+# ── Forge's own bookkeeping is not dirt (#2775) ───────────────────────
+
+
+class TestStoryRunArtifactDirt:
+    """A sprint's own pending artifacts must not refuse that sprint's stories."""
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_artifact_only_dirt_does_not_block(self, mock_shell, tmp_path):
+        mock_shell.side_effect = _shell(ARTIFACT_DIRT)
+        assert landing_blocking_dirt(tmp_path) == ""
+        assert landing_precondition_error(_merge_config(tmp_path)) is None
+
+    @pytest.mark.parametrize(
+        "artifact_path",
+        [
+            "?? .forge/audits/runs/817ecdc3d187.json",
+            "?? .forge/audits/landing/817ecdc3d187.landed.json",
+            "?? .forge/knowledge/summaries/817ecdc3d187.yaml",
+        ],
+    )
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_each_artifact_tree_is_excluded(self, mock_shell, tmp_path, artifact_path):
+        """Every tree named in the refusals, not just the set together."""
+        mock_shell.side_effect = _shell(artifact_path)
+        assert landing_precondition_error(_merge_config(tmp_path)) is None
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_collapsed_untracked_forge_tree_is_still_attributed(self, mock_shell, tmp_path):
+        """A first-ever sprint's ``?? .forge/`` expands before it is attributed.
+
+        Plain porcelain collapses a wholly-untracked tree to its top directory,
+        which names something broader than the artifact trees; the ``-uall``
+        probe is what lets that root be excused rather than refused.
+        """
+        mock_shell.side_effect = _split_shell(plain="?? .forge/", uall=(True, ARTIFACT_DIRT))
+        assert landing_precondition_error(_merge_config(tmp_path)) is None
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_operator_dirt_alongside_artifacts_still_refuses(self, mock_shell, tmp_path):
+        """The exclusion is not a blanket waiver — operator dirt is still theirs."""
+        mock_shell.side_effect = _shell(MIXED_DIRT)
+        err = landing_precondition_error(_merge_config(tmp_path))
+        assert err is not None
+        assert "forge.yaml" in err
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_unattributable_status_fails_closed(self, mock_shell, tmp_path):
+        """A root git cannot describe in full is not a root to excuse dirt in."""
+        mock_shell.side_effect = _split_shell(
+            plain=ARTIFACT_DIRT, uall=(False, "fatal: not a git repository")
+        )
+        assert landing_blocking_dirt(tmp_path) == ARTIFACT_DIRT
+        assert landing_precondition_error(_merge_config(tmp_path)) is not None
+
+    @patch("theforge.coordinator.workspace._cu._log")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_merge_branch_tolerates_the_same_dirt(self, mock_shell, _mock_log, tmp_path):
+        """Parity in the new direction: what entry excuses, landing must too.
+
+        Otherwise the entry check stops being a cheaper form of the landing
+        answer and becomes an independent way to fail — here in reverse, paying
+        for dev and review and then refusing at the merge anyway.
+        """
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "branch --list" in cmd:
+                return (True, "  main\n")
+            if "status --porcelain" in cmd:
+                return (True, ARTIFACT_DIRT)
+            if "log main..forge/x" in cmd:
+                return (True, "abc1234 work\n")
+            return (True, "")
+
+        mock_shell.side_effect = _side_effect
+
+        info = _merge_branch(tmp_path, "main", "forge/x", "x", tmp_path / "wt")
+
+        assert info["error"] is None
+        assert info["merged"] is True
+
+
 # ── Parity with the landing-time refusal ──────────────────────────────
 
 
@@ -214,6 +333,27 @@ class TestRunTaskEntry:
         mock_create.assert_called_once()
         assert "stop here" in result.message
 
+    @patch("theforge.coordinator.engine._create_workspace")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_sibling_run_artifacts_do_not_escalate_at_workspace(
+        self, mock_shell, mock_create, tmp_path
+    ):
+        """The #2775 symptom, at the site that produced it.
+
+        A sibling story landed seconds ago and its own run record, landing
+        evidence and knowledge summary stand uncommitted in the shared root.
+        This story has nothing to do with them and must reach its workspace.
+        """
+        mock_shell.side_effect = _shell(ARTIFACT_DIRT)
+        mock_create.return_value = (None, None, "stop here")
+        config = _merge_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        result = run_task(config, task)
+
+        mock_create.assert_called_once()
+        assert "LANDING PRECONDITION" not in (result.message or "")
+
 
 # ── Resume entry: same refusal before re-running dev/review ───────────
 
@@ -258,6 +398,53 @@ class TestResumeEntry:
         assert result.phase is Phase.ESCALATE
         assert "forge.yaml" in result.message
 
+    @patch("theforge.coordinator.engine._make_story_log_dir")
+    @patch("theforge.coordinator.engine._setup_resume_entry")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    def test_sibling_run_artifacts_do_not_escalate_at_resume(
+        self, mock_shell, mock_setup, mock_log_dir, tmp_path
+    ):
+        """The resume entry point carries the same exclusion (#2775).
+
+        A resumed story is refused by the identical call; artifacts left
+        standing by a run that has already finished refuse it on the same terms
+        as a live sibling's, which is why serializing readers alone would not
+        close this.
+        """
+        mock_shell.side_effect = _shell(ARTIFACT_DIRT)
+        mock_log_dir.side_effect = RuntimeError("past the landing check")
+        config = _merge_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir(exist_ok=True)
+
+        state = CoordinatorState(phase=Phase.REVIEW)
+        logger = StructuredLogger(
+            run_id="r1",
+            project="test",
+            task=task.slug,
+            log_file=None,
+            enabled=False,
+            project_root=tmp_path,
+        )
+        mock_setup.return_value = (state, logger, "forge/test-task", "story", 0.0)
+
+        with pytest.raises(RuntimeError, match="past the landing check"):
+            _run_resume_coordinator(
+                config,
+                task,
+                workspace,
+                initial_phase=Phase.REVIEW,
+                skip_dev_first_iter=True,
+                interactive=False,
+                auto_merge=False,
+                notify=False,
+                run_id="r1",
+                sprint_name=None,
+                state_update_fn=None,
+                no_pull=True,
+            )
+
 
 # ── Sprint entry: refuse before pull and before the baseline gate ─────
 
@@ -289,8 +476,16 @@ def test_run_sprint_dirty_root_aborts_before_pull_and_baseline(tmp_path: Path) -
     mock_baseline.assert_not_called()
 
 
-def test_run_sprint_clean_root_proceeds(tmp_path: Path) -> None:
-    """The entry check must not block a sprint whose project root is clean."""
+@pytest.mark.parametrize("root_status", ["", ARTIFACT_DIRT], ids=["clean", "leftover-artifacts"])
+def test_run_sprint_clean_root_proceeds(tmp_path: Path, root_status: str) -> None:
+    """The entry check must not block a sprint whose project root is clean.
+
+    ``leftover-artifacts`` is the same requirement one step further out (#2775):
+    a prior run's own bookkeeping, still untracked at rest when nothing is
+    running, refused the *first* story of the next sprint before it started.
+    Excluding it is what makes admissibility independent of what an earlier run
+    happened to leave behind.
+    """
     config = _sprint_config(tmp_path)
     resolved = _make_empty_resolved()
 
@@ -300,7 +495,7 @@ def test_run_sprint_clean_root_proceeds(tmp_path: Path) -> None:
         patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
         patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
-        patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell("")),
+        patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell(root_status)),
         patch("theforge.coordinator.workspace.pull_base_branch") as mock_pull,
         patch(
             "theforge.sprint.runner._run_baseline_gate",
