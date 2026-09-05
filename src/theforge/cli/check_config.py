@@ -444,6 +444,23 @@ def _collapse_complexity_labels(mapping: dict[str, str]) -> str:
     return ("\n" + " " * 16).join(parts)
 
 
+def _format_auth_status(profile, ready, reason, config) -> str:
+    if ready is None:
+        auth_str = "unverified"
+        unconfirmed = _unconfirmed_identity_models(config)
+        model_val = getattr(profile, "model", None)
+        model_key_val = getattr(profile, "model_key", None)
+        is_unconfirmed = False
+        if model_val and (model_val in unconfirmed or any(model_val in u for u in unconfirmed) or any(u in model_val for u in unconfirmed)):
+            is_unconfirmed = True
+        if model_key_val and (model_key_val in unconfirmed or any(model_key_val in u for u in unconfirmed) or any(u in model_key_val for u in unconfirmed)):
+            is_unconfirmed = True
+        if is_unconfirmed:
+            auth_str += " (never checked against the provider's published model list)"
+        return auth_str
+    return "✓ ready" if ready else f"✗ {reason}"
+
+
 def _format_config(
     config: ForgeConfig,
     auth_results: AuthResults,
@@ -627,7 +644,7 @@ def _format_config(
     for profile in config.review_pool:
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("review", profile.name), (True, ""))
-        auth_str = "✓ ready" if ready else f"✗ {reason}"
+        auth_str = _format_auth_status(profile, ready, reason, config)
         role_str = f"  role={profile.review_role}" if profile.review_role else ""
         lines.append(
             f"  {profile.name:<22}{transport:<30}{role_str}  budget=${profile.budget_usd:.2f}"
@@ -640,7 +657,7 @@ def _format_config(
         profile = config.synthesis_profile
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("synthesis", profile.name), (True, ""))
-        auth_str = "✓ ready" if ready else f"✗ {reason}"
+        auth_str = _format_auth_status(profile, ready, reason, config)
         lines.append(
             f"  {profile.name:<22}{transport:<30}  (synthesis)  budget=${profile.budget_usd:.2f}"
             f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -655,7 +672,7 @@ def _format_config(
         for profile in config.plan_agent_review.profiles:
             transport = _transport_label(profile)
             ready, reason = auth_results.get(_auth_key("plan_review", profile.name), (True, ""))
-            auth_str = "✓ ready" if ready else f"✗ {reason}"
+            auth_str = _format_auth_status(profile, ready, reason, config)
             lines.append(
                 f"  {profile.name:<22}{transport:<30}  budget=${profile.budget_usd:.2f}"
                 f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -673,7 +690,7 @@ def _format_config(
             )
             transport_str = f"{provider_label:<10}{transport_label:<10}{agent.model}"
             ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
-            auth_str = "✓ ready" if ready else f"✗ {reason}"
+            auth_str = _format_auth_status(profile, ready, reason, config)
             lines.append(f"  {agent.name:<22}{transport_str:<30}  tier={agent.tier:<8}{auth_str}")
             if not ready:
                 warnings_list.append(f"{agent.name}: {reason} — will be skipped at runtime")

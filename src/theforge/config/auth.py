@@ -133,9 +133,9 @@ def sandbox_containment_mode(profile: ModelProfile) -> str:
     return "mechanical" if _host_sandbox_available() else "unavailable"
 
 
-def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
+def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool | None, str]:
     """CLI launchers are always auth-ready; binary presence checked separately."""
-    return (True, "")
+    return (None, "unverified")
 
 
 # ── Claude CLI credential store ──────────────────────────────────────────
@@ -285,7 +285,7 @@ def check_agent_auth(
     *,
     include_sandbox_readiness: bool = True,
     include_credential_probe: bool = False,
-) -> tuple[bool, str]:
+) -> tuple[bool | None, str]:
     """Return ``(ready, reason)`` for *profile*.
 
     ``ready`` is True when the profile has the credentials/binaries it needs.
@@ -329,13 +329,13 @@ def check_agent_auth(
                 return (False, "npx not found in PATH")
             if include_sandbox_readiness:
                 return _launcher_sandbox_readiness(profile)
-            return (True, "")
+            return (None, "unverified")
         # ghaw dispatches through the `gh` binary; the agent executes remotely
         # on GitHub Actions, so local sandbox readiness does not apply.
         if profile.cli == "ghaw":
             if shutil.which("gh") is None:
                 return (False, "'gh' not found in PATH (required for cli: ghaw)")
-            return (True, "")
+            return (None, "unverified")
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")
@@ -345,7 +345,7 @@ def check_agent_auth(
                 return (False, cred_reason)
         if include_sandbox_readiness:
             return _launcher_sandbox_readiness(profile)
-        return (True, "")
+        return (None, "unverified")
 
     # ── API profiles ──────────────────────────────────────────────────
     if profile.provider is not None:
