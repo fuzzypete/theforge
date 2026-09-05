@@ -35,6 +35,8 @@ from ..coordinator.agent_failure import (
     is_infrastructure_abort,
     mark_infrastructure_abort,
 )
+from ..coordinator.audit_storage import SubstrateLockTimeoutError
+from ..coordinator.audit_storage import substrate_path as audit_substrate_path
 from ..coordinator.batch_diff import BatchReviewContext, latest_dev_handoff
 from ..coordinator.cancellation import BUDGET_CANCEL_ERROR_TYPE, StopSignal, cancel_cause
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
@@ -2372,6 +2374,46 @@ def _run_single_story(
         _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
         message = f"Shared infrastructure failure (advisory artifact): {exc}"
         failure_record = exc.as_failure_record()
+        failure_state = CoordinatorState(
+            phase=Phase.ESCALATE,
+            started_at=started_at.isoformat(),
+            workspace_path=workspace_path,
+            log_dir=_make_story_log_dir(config, task.slug, sprint_name),
+            error=message,
+            error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
+        )
+        failure_state.infrastructure_failure = {"message": message, **failure_record}
+        failure_state.shared_infrastructure_failures.append(failure_record)
+        failure_state.run_id = failure_state.run_id or _generate_run_id()
+        failure_state.abnormal_termination = build_abnormal_cause(
+            kind=ABNORMAL_SHARED_INFRASTRUCTURE,
+            cause=message,
+            error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
+            run_id=failure_state.run_id,
+            source="sprint.runner:worker-shared-infrastructure",
+        )
+        result = CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=failure_state,
+            message=message,
+            infrastructure_failure=True,
+        )
+    except SubstrateLockTimeoutError as exc:
+        # The sprint decided how many workers run at once, so the contention
+        # that decision creates on the shared audit substrate is the sprint's,
+        # not this story's (#2906). Without this clause the exception falls
+        # into the blanket handler below and reaches the operator as
+        # `unknown_needs_rca` — a claim that no cause was determined, about a
+        # failure that arrived carrying its own description.
+        _log(f"ERROR {task.slug}: shared infrastructure failure: {exc}")
+        message = f"Shared infrastructure failure (audit substrate lock contention): {exc}"
+        failure_record = {
+            "component": "audit_substrate_lock",
+            "path": str(audit_substrate_path(config.project_root)),
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
         failure_state = CoordinatorState(
             phase=Phase.ESCALATE,
             started_at=started_at.isoformat(),

@@ -263,6 +263,7 @@ class TestFacadeCompatibility:
             "SubstrateError",
             "SubstrateMissingError",
             "SubstrateCorruptError",
+            "SubstrateLockTimeoutError",
             # storage
             "create_or_open",
             "require_substrate",

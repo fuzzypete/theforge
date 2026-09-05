@@ -241,6 +241,18 @@ class SubstrateCorruptError(SubstrateError):
     """Raised when the substrate file exists but cannot be opened/queried."""
 
 
+class SubstrateLockTimeoutError(SubstrateError):
+    """Raised when the substrate is held by a concurrent reader or writer (#2906).
+
+    Distinct from :class:`SubstrateCorruptError` on purpose. A locked substrate
+    is a *transient* condition of shared storage — a sibling sprint worker holds
+    it and will release it — while a corrupt one is damage that does not resolve
+    on its own. Reporting the first as the second sent operators at
+    ``forge audits rebuild``: a long, destructive-looking repair of a store that
+    was working. Nothing raising this error may name that remedy.
+    """
+
+
 # ── Path helpers ─────────────────────────────────────────────────────────
 
 
@@ -1188,6 +1200,93 @@ def sync_landing_evidence(
 
 # ── Connection management ────────────────────────────────────────────────
 
+# Lock-wait policy (#2906).
+#
+# SQLite's stdlib default is a flat 5 seconds, which three workers resuming
+# within a few seconds of one another against a 51 MB substrate routinely
+# exceed — and exceeding it was being reported as corruption. The budget below
+# is deliberately derived rather than another fixed constant:
+#
+#   wait = clamp(FLOOR + size_mb * PER_MB, FLOOR, CEILING)
+#
+# so a bigger store (whose readers hold the file longer) waits longer, and the
+# ceiling stops an unbounded wait on a pathological store. Inside a sprint
+# worker the result is clamped again to what the *enclosing* story deadline
+# still has left minus a tail reserve, so waiting on a lock can never be what
+# runs a story out of its own ceiling.
+_LOCK_WAIT_FLOOR_SECONDS = 30.0
+_LOCK_WAIT_PER_MB_SECONDS = 1.0
+_LOCK_WAIT_CEILING_SECONDS = 300.0
+#: Left to the story after the wait, so a timeout is still reportable.
+_LOCK_WAIT_TAIL_RESERVE_SECONDS = 15.0
+#: Never wait less than this, even on an almost-expired worker deadline.
+_LOCK_WAIT_MINIMUM_SECONDS = 1.0
+
+# SQLite primary result codes for contention. Present as module constants from
+# Python 3.11; the literals are the fallback for older interpreters.
+_SQLITE_BUSY = getattr(sqlite3, "SQLITE_BUSY", 5)
+_SQLITE_LOCKED = getattr(sqlite3, "SQLITE_LOCKED", 6)
+
+
+def _lock_wait_budget(path: Path) -> float:
+    """Seconds to wait for a held substrate lock before giving up.
+
+    Sized from the substrate itself, then bounded by the enclosing sprint
+    worker's remaining deadline when there is one (``None`` outside a sprint —
+    ``forge run``, CLI rebuilds — in which case only the size term applies).
+    """
+    try:
+        size_mb = path.stat().st_size / (1024 * 1024)
+    except OSError:
+        size_mb = 0.0
+    budget = _LOCK_WAIT_FLOOR_SECONDS + size_mb * _LOCK_WAIT_PER_MB_SECONDS
+    budget = max(_LOCK_WAIT_FLOOR_SECONDS, min(_LOCK_WAIT_CEILING_SECONDS, budget))
+
+    from theforge import worker_budget as _worker_budget
+
+    enclosing = _worker_budget.current_worker_budget()
+    if enclosing is not None:
+        allowed = enclosing.remaining() - _LOCK_WAIT_TAIL_RESERVE_SECONDS
+        budget = min(budget, max(_LOCK_WAIT_MINIMUM_SECONDS, allowed))
+    return max(_LOCK_WAIT_MINIMUM_SECONDS, budget)
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    """True when *exc* is SQLite contention rather than a damaged database."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int) and (code & 0xFF) in (_SQLITE_BUSY, _SQLITE_LOCKED):
+        return True
+    text = str(exc).lower()
+    return "database is locked" in text or "database table is locked" in text
+
+
+def _lock_timeout_error(
+    path: Path, budget: float, exc: BaseException
+) -> SubstrateLockTimeoutError:
+    """Build the operator-facing lock-contention error — never rebuild advice."""
+    return SubstrateLockTimeoutError(
+        f"audit substrate at {path} is held by another forge process and did not "
+        f"become available within {budget:.1f}s: {exc}. This is transient lock "
+        "contention between concurrent readers/writers, not damage to the "
+        "substrate — the store is intact and the operation can be retried."
+    )
+
+
+def _connect(path: Path, budget: float, *, dsn: str | None = None, uri: bool = False):
+    """Open *path* with a lock wait of *budget* seconds applied both ways.
+
+    ``timeout=`` installs SQLite's busy handler for this connection; the
+    ``busy_timeout`` PRAGMA pins the same value for statements issued later on
+    it. Both are set so a lock encountered at open and one encountered mid-read
+    wait the same amount.
+    """
+    conn = sqlite3.connect(dsn if dsn is not None else str(path), timeout=budget, uri=uri)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {int(budget * 1000)}")
+    return conn
+
 
 def create_or_open(project_root: Path) -> sqlite3.Connection:
     """Open (creating if missing) the substrate. Use for write/rebuild paths.
@@ -1198,10 +1297,17 @@ def create_or_open(project_root: Path) -> sqlite3.Connection:
     """
     path = substrate_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    _apply_schema(conn)
-    sync_landing_evidence(conn, project_root)
+    budget = _lock_wait_budget(path)
+    try:
+        conn = _connect(path, budget)
+        _apply_schema(conn)
+        sync_landing_evidence(conn, project_root)
+    except sqlite3.OperationalError as exc:
+        # Contention on the write path is the same transient condition the read
+        # path sees (#2906) — it is reported as such, not as a broken store.
+        if _is_lock_error(exc):
+            raise _lock_timeout_error(path, budget, exc) from exc
+        raise
     return conn
 
 
@@ -1290,16 +1396,28 @@ def open_readonly(project_root: Path) -> sqlite3.Connection:
     :func:`~theforge.coordinator.audit_read_model.landing_projection_status`
     reports both, so a reader can tell "no evidence" from "not re-indexed since
     the evidence was written" and knows to run ``forge audits rebuild``.
+
+    Lock contention is separated from corruption here on the same terms as
+    :func:`_open_validated` (#2906). A read-only surface has no more business
+    calling a busy store damaged than a sprint worker does, so it takes the same
+    derived wait budget and raises :class:`SubstrateLockTimeoutError` rather
+    than sending an operator running ``forge explain`` at ``forge audits
+    rebuild``. The budget is applied as ``busy_timeout`` on the connection, not
+    only at open: a ``mode=ro`` connect touches no lock, so contention on this
+    surface surfaces on the caller's first SELECT, and that is the statement
+    that has to wait.
     """
     path = substrate_path(project_root)
     if not path.exists():
         raise SubstrateMissingError(
             f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
         )
+    budget = _lock_wait_budget(path)
     try:
-        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = _connect(path, budget, dsn=f"{path.as_uri()}?mode=ro", uri=True)
     except sqlite3.DatabaseError as exc:
+        if _is_lock_error(exc):
+            raise _lock_timeout_error(path, budget, exc) from exc
         raise SubstrateCorruptError(
             f"audit substrate at {path} could not be opened read-only: {exc}. "
             "Run `forge audits rebuild [--include-legacy-history]` to recover."
@@ -1308,10 +1426,18 @@ def open_readonly(project_root: Path) -> sqlite3.Connection:
 
 
 def _open_validated(path: Path) -> sqlite3.Connection:
-    """Connect, run integrity_check, apply schema (idempotent)."""
+    """Connect, run integrity_check, apply schema (idempotent).
+
+    Lock contention is separated from corruption here (#2906): a substrate held
+    by a concurrent reader or writer is waited on for :func:`_lock_wait_budget`
+    seconds and, if it still has not cleared, raises
+    :class:`SubstrateLockTimeoutError` — never
+    :class:`SubstrateCorruptError`, which stays reserved for a failed
+    ``integrity_check`` and for non-lock database errors.
+    """
+    budget = _lock_wait_budget(path)
     try:
-        conn = sqlite3.connect(str(path))
-        conn.row_factory = sqlite3.Row
+        conn = _connect(path, budget)
         row = conn.execute("PRAGMA integrity_check").fetchone()
         if not row or (row[0] != "ok"):
             detail = row[0] if row else "no result"
@@ -1321,6 +1447,8 @@ def _open_validated(path: Path) -> sqlite3.Connection:
             )
         _apply_schema(conn)
     except sqlite3.DatabaseError as exc:
+        if _is_lock_error(exc):
+            raise _lock_timeout_error(path, budget, exc) from exc
         raise SubstrateCorruptError(
             f"audit substrate at {path} could not be opened: {exc}. "
             "Run `forge audits rebuild [--include-legacy-history]` to recover."
@@ -2995,9 +3123,8 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     legacy_import_done: str | None = None
     if path.exists():
         try:
-            existing_conn = sqlite3.connect(str(path))
+            existing_conn = _connect(path, _lock_wait_budget(path))
             try:
-                existing_conn.row_factory = sqlite3.Row
                 # Best-effort schema apply so the SELECT below works on
                 # older substrates that pre-date columns we touch.
                 _apply_schema(existing_conn)
