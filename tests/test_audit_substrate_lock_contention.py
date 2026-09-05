@@ -6,7 +6,9 @@ answered the *operator* with ``SubstrateCorruptError ... run forge audits
 rebuild`` — a destructive-looking repair of a store whose ``integrity_check``
 said ``ok``. These tests pin the split: wait for a lock that clears, name a lock
 that does not as its own transient condition, and keep genuine corruption
-reporting exactly as before.
+reporting exactly as before. The read-only query surface (``forge explain``)
+draws the same distinction: it has no more business calling a busy store
+damaged than a sprint worker does.
 """
 
 from __future__ import annotations
@@ -117,6 +119,73 @@ def test_write_path_lock_is_contention_not_a_raw_sqlite_error(
         holder.execute("ROLLBACK")
         holder.close()
     assert "forge audits rebuild" not in str(exc_info.value)
+
+
+def test_readonly_surface_waits_on_contention_instead_of_calling_it_corruption(
+    substrate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``forge explain`` and friends get the same lock/corruption split (#2906).
+
+    A ``mode=ro`` connect takes no lock, so the contention lands on the caller's
+    first SELECT — which is exactly why the budget has to reach the connection
+    as ``busy_timeout`` and not only guard the open.
+    """
+    monkeypatch.setattr(audit_storage, "_lock_wait_budget", lambda path: 0.05)
+    holder = _exclusive_holder(substrate)
+    try:
+        conn = audit_storage.open_readonly(tmp_path)
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 50
+        with pytest.raises(sqlite3.OperationalError) as exc_info:
+            conn.execute("SELECT COUNT(*) FROM audit_records").fetchone()
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    # The read surface still reports contention as SQLite's own error rather
+    # than dressing it as damage; what it must never do is name the rebuild.
+    assert audit_storage._is_lock_error(exc_info.value)
+    assert "forge audits rebuild" not in str(exc_info.value)
+
+
+def test_readonly_non_lock_open_error_still_raises_corrupt(
+    substrate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only contention is re-routed on the read-only surface; damage still says so."""
+
+    def boom(path: Path, budget: float, **kwargs: object):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(audit_storage, "_connect", boom)
+    with pytest.raises(audit_storage.SubstrateCorruptError) as exc_info:
+        audit_storage.open_readonly(tmp_path)
+    assert "read-only" in str(exc_info.value)
+    assert "forge audits rebuild" in str(exc_info.value)
+
+
+def test_readonly_lock_error_at_open_is_contention_not_corruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The open-time guard itself splits the two, matching _open_validated."""
+    conn = audit_storage.create_or_open(tmp_path)
+    conn.close()
+
+    def locked(path: Path, budget: float, **kwargs: object):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(audit_storage, "_connect", locked)
+    with pytest.raises(audit_storage.SubstrateLockTimeoutError) as exc_info:
+        audit_storage.open_readonly(tmp_path)
+    assert not isinstance(exc_info.value, audit_storage.SubstrateCorruptError)
+    assert "forge audits rebuild" not in str(exc_info.value)
+
+
+def test_readonly_connection_still_refuses_writes(substrate: Path, tmp_path: Path) -> None:
+    """Routing through the shared helper must not have relaxed ``mode=ro``."""
+    conn = audit_storage.open_readonly(tmp_path)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE scribble (a)")
+    finally:
+        conn.close()
 
 
 def test_corrupt_substrate_still_raises_corrupt_with_rebuild_advice(tmp_path: Path) -> None:

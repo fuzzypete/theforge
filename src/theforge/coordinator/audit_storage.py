@@ -1396,22 +1396,28 @@ def open_readonly(project_root: Path) -> sqlite3.Connection:
     :func:`~theforge.coordinator.audit_read_model.landing_projection_status`
     reports both, so a reader can tell "no evidence" from "not re-indexed since
     the evidence was written" and knows to run ``forge audits rebuild``.
+
+    Lock contention is separated from corruption here on the same terms as
+    :func:`_open_validated` (#2906). A read-only surface has no more business
+    calling a busy store damaged than a sprint worker does, so it takes the same
+    derived wait budget and raises :class:`SubstrateLockTimeoutError` rather
+    than sending an operator running ``forge explain`` at ``forge audits
+    rebuild``. The budget is applied as ``busy_timeout`` on the connection, not
+    only at open: a ``mode=ro`` connect touches no lock, so contention on this
+    surface surfaces on the caller's first SELECT, and that is the statement
+    that has to wait.
     """
     path = substrate_path(project_root)
     if not path.exists():
         raise SubstrateMissingError(
             f"audit substrate not found at {path}. Run `forge audits rebuild` to create it."
         )
-    # Deliberately NOT routed through the lock-wait connection helper or the
-    # lock/corruption split that _open_validated applies (#2906). That fix is
-    # scoped to the sprint-worker path, and #2906's diagnosis holds this
-    # read-only surface open as a separate finding to triage: a locked
-    # substrate reached through `forge explain` still reports as corruption
-    # here. The asymmetry is known, not an oversight.
+    budget = _lock_wait_budget(path)
     try:
-        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+        conn = _connect(path, budget, dsn=f"{path.as_uri()}?mode=ro", uri=True)
     except sqlite3.DatabaseError as exc:
+        if _is_lock_error(exc):
+            raise _lock_timeout_error(path, budget, exc) from exc
         raise SubstrateCorruptError(
             f"audit substrate at {path} could not be opened read-only: {exc}. "
             "Run `forge audits rebuild [--include-legacy-history]` to recover."
