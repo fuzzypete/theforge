@@ -12,7 +12,13 @@ models:
     - anthropic/sonnet/cli        # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
     - anthropic/opus/cli          # CLI alias auto-tracks: claude-opus-5 as of 2026-08 (#2207; audit
     #                                 records show claude-opus-5, not the Opus 4.8 this line claimed)
-    - openai/gpt-5.4/cli          # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
+    # - openai/gpt-5.4/cli        # REMOVED 2026-09-05: retired from Codex under ChatGPT-account
+    #                               auth. `codex debug models` on this account no longer lists it,
+    #                               and dev dispatch returns 400 "The 'gpt-5.4' model is not
+    #                               supported when using Codex with a ChatGPT account"
+    #                               (theforge#2909). API-key auth is unaffected. The earlier
+    #                               "still served, no deprecation (verified 2026-07-07)" note was
+    #                               true when written. Was: value strong tier ($2.50/$15).
     - openai/gpt-5.4-mini/cli     # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
     #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
