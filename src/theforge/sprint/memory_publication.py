@@ -55,20 +55,17 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..coordinator.landing_evidence import (
-    LANDING_EVIDENCE_RELPATH,
-    PROJECT_MEMORY_STAGING_RELPATH,
-)
+from ..coordinator.landing_evidence import PROJECT_MEMORY_STAGING_RELPATH
 from ..log_util import _log_line
+from ..story_run_artifacts import STORY_RUN_ARTIFACT_DIRS, porcelain_paths
 
-# The tracked project-memory trees, repo-relative. Adding a tree here is what
-# makes it publishable; it must also be re-included by the generated
-# ``.gitignore`` or git will never see it as pending in the first place.
-PROJECT_MEMORY_DIRS: tuple[str, ...] = (
-    ".forge/audits/runs",
-    ".forge/knowledge/summaries",
-    "/".join(LANDING_EVIDENCE_RELPATH),
-)
+# The tracked project-memory trees this transport publishes. Defined in
+# ``theforge.story_run_artifacts`` rather than here since #2775: the
+# coordinator's landing precondition has to excuse exactly these trees, and it
+# cannot import the publisher without closing a cycle. The alias keeps this
+# module's own vocabulary — what it publishes is project memory — over a name
+# chosen for the shared boundary.
+PROJECT_MEMORY_DIRS: tuple[str, ...] = STORY_RUN_ARTIFACT_DIRS
 
 # Ignored by ``.forge/**``, so staging never dirties the checkout it drains.
 # Owned by ``coordinator.landing_evidence`` because the evidence readers have to
@@ -121,34 +118,6 @@ class StagedMemory:
 
     def __bool__(self) -> bool:
         return bool(self.paths)
-
-
-def porcelain_paths(output: str) -> list[str]:
-    """Paths named by a ``git status --porcelain`` block, one per entry.
-
-    Deliberately does *not* slice a fixed two-character status column. Every
-    caller here reads porcelain output through ``_run_shell``, which strips the
-    combined output — so the leading space of a worktree-only status (``" M
-    path"``) is gone by the time it arrives and a fixed slice eats the first
-    character of the path instead. Splitting on the first whitespace run is
-    correct for a stripped and an unstripped line alike, and the status column
-    itself is not something any caller needs.
-    """
-    paths: list[str] = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        parts = stripped.split(None, 1)
-        if len(parts) != 2:
-            continue
-        entry = parts[1]
-        if " -> " in entry:  # rename: the destination is what is on disk now
-            entry = entry.split(" -> ", 1)[1]
-        entry = entry.strip().strip('"').rstrip("/")
-        if entry:
-            paths.append(entry)
-    return paths
 
 
 def pending_memory_paths(project_root: Path) -> list[str]:

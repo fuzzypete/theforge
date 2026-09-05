@@ -18,12 +18,17 @@ refusal to prevent in that configuration — a point the story asks the design
 document to state explicitly, because "no refusal happened" and "no refusal
 could have happened" are different findings.
 
-:func:`test_a_reachable_refusal_is_prevented_by_the_publication_seam` supplies
-the missing half. ``on_approve: merge`` *does* evaluate that precondition at
-every story entry, and against a base branch that refuses forge's memory commit
-the refusal is genuinely reachable: the counterfactual in the same test shows
-story 2 refused when the transport is forced back to the direct path. With the
-seam in place it is not.
+:func:`test_a_reachable_contamination_is_prevented_by_the_publication_seam`
+supplies the missing half. Against a base branch that refuses forge's memory
+commit the contamination is genuinely reachable: the paired counterfactual
+shows story 2 entering on top of story 1's uncommitted run record when the
+transport is forced back to the direct path. With the seam in place it does not.
+
+Both halves observe the checkout's raw dirty status rather than the landing
+precondition. Since #2775 that predicate excuses forge's own artifact trees —
+a sprint's bookkeeping is not grounds for refusing that sprint's stories — so a
+refusal is no longer the observable the contamination produces, and asserting on
+one would have pinned the bug rather than the seam.
 """
 
 from __future__ import annotations
@@ -58,7 +63,10 @@ from theforge.coordinator.state import (
     Phase,
     ReviewCycleMetadata,
 )
-from theforge.coordinator.workspace import landing_precondition_error
+from theforge.coordinator.workspace import (
+    landing_precondition_error,
+    project_root_dirty_status,
+)
 from theforge.sprint.memory_publication import MEMORY_BRANCH, MEMORY_PUBLISH_CLEAN
 
 BASE = "main"
@@ -377,11 +385,13 @@ def test_protected_base_parallel_merge_pr_poc(
     def fake_run_task(_config, task, *args, **kwargs):
         slug = task.slug
         in_flight.add(slug)
-        # Would a landing be refused right now by artifacts a *sibling* left in
-        # the shared checkout? Asked with ``lands_in_project_root=True`` on
-        # purpose: merge-pr does not enforce it, and the question the story asks
-        # is about the checkout's state, not about whether forge looks.
-        observed_dirt[slug] = landing_precondition_error(config, lands_in_project_root=True)
+        # Has a *sibling* left artifacts in the shared checkout right now? Asked
+        # of the raw status rather than of ``landing_precondition_error``: since
+        # #2775 that predicate excuses forge's own artifact trees, so it can no
+        # longer witness the contamination this test is about. The question the
+        # story asks is about the checkout's state, not about whether forge
+        # refuses over it.
+        observed_dirt[slug] = project_root_dirty_status(protected_project)
         if slug == "story-a":
             b_entered.wait(timeout=30)
         elif slug == "story-b":
@@ -437,8 +447,8 @@ def test_protected_base_parallel_merge_pr_poc(
     assert active_at_c and "story-b" in active_at_c[0], (
         "story-c was not admitted while a sibling was still running"
     )
-    refused = {slug: err for slug, err in observed_dirt.items() if err}
-    assert refused == {}, f"stories refused by forge's own artifacts: {refused}"
+    contaminated = {slug: dirt for slug, dirt in observed_dirt.items() if dirt}
+    assert contaminated == {}, f"stories admitted on top of forge's own artifacts: {contaminated}"
 
     # ── The protected branch ─────────────────────────────────────────────
     # Only the story merges advanced it; forge committed nothing directly.
@@ -598,7 +608,11 @@ def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
 
     def fake_run_task(_config, task, *args, **kwargs):
         events.append(f"dispatch:{task.slug}")
-        observed_dirt[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
+        # The raw status, not the landing precondition: since #2775 that
+        # predicate excuses forge's own artifact trees, which is exactly the
+        # dirt the drain exists to clear — so it can no longer witness whether
+        # the drain ran.
+        observed_dirt[task.slug] = project_root_dirty_status(protected_project)
         _write_run_artifacts(protected_project, task.slug)
         return _result(task.slug, "a" * 40, "a" * 40)
 
@@ -632,8 +646,8 @@ def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
         assert events[index - 1] == "drain", (
             f"{events[index]} was admitted without a preceding drain: {events}"
         )
-    refused = {slug: err for slug, err in observed_dirt.items() if err}
-    assert refused == {}, f"stories admitted into a dirty checkout: {refused}"
+    dirty = {slug: dirt for slug, dirt in observed_dirt.items() if dirt}
+    assert dirty == {}, f"stories admitted into a dirty checkout: {dirty}"
 
 
 def _install_base_refusing_pre_commit_hook(project: Path) -> None:
@@ -658,8 +672,15 @@ def _install_base_refusing_pre_commit_hook(project: Path) -> None:
 
 def _preconditions_seen_by_each_story(
     project: Path, tmp_path: Path, *, seam_in_place: bool
-) -> dict[str, str | None]:
+) -> dict[str, dict[str, str | None]]:
     """Run one ``merge`` sprint and return what each story saw at its entry.
+
+    Records two things per story: the shared checkout's raw dirty status, and
+    the landing precondition derived from it. They are no longer the same claim
+    (#2775) — a checkout carrying nothing but a sibling's run artifacts is dirty
+    and is nonetheless admissible — so the counterfactual has to observe the
+    state the seam acts on rather than a refusal the entry check no longer
+    raises.
 
     Split out so each half of the counterfactual is its own test running a
     single sprint. Asserting both halves in one test meant running two sprints
@@ -673,10 +694,13 @@ def _preconditions_seen_by_each_story(
     _protect_base(tmp_path)
     _install_base_refusing_pre_commit_hook(project)
 
-    observed: dict[str, str | None] = {}
+    observed: dict[str, dict[str, str | None]] = {}
 
     def fake_run_task(_config, task, *args, **kwargs):
-        observed[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
+        observed[task.slug] = {
+            "dirt": project_root_dirty_status(project),
+            "refusal": landing_precondition_error(config, lands_in_project_root=True),
+        }
         _write_run_artifacts(project, task.slug)
         state = CoordinatorState()
         state.run_id = f"run-{task.slug}"
@@ -709,32 +733,42 @@ def _preconditions_seen_by_each_story(
     return observed
 
 
-def test_the_refusal_is_reachable_when_the_transport_is_forced_to_direct_commit(
+def test_the_contamination_is_reachable_when_the_transport_is_forced_to_direct_commit(
     protected_project: Path, tmp_path: Path
 ) -> None:
     """The counterfactual the mandated configuration cannot supply.
 
-    ``on_approve: merge`` evaluates the landing precondition at every story's
-    entry, and a base branch that refuses forge's memory commit leaves the first
-    story's artifacts standing in the shared checkout — precisely the reported
-    failure, one step downstream. Without the fallback, story-b is refused by
-    story-a's artifacts, which the refused commit could not clear.
+    A base branch that refuses forge's memory commit leaves the first story's
+    artifacts standing in the shared checkout — precisely the reported failure,
+    one step downstream. Without the fallback, story-b enters on top of
+    story-a's uncommitted run record, which the refused commit could not clear.
+
+    That contamination used to *also* refuse story-b at its entry. It no longer
+    does (#2775): a sprint's own bookkeeping is not grounds for refusing that
+    sprint's stories, so the second assertion here pins the entry check staying
+    silent about exactly the dirt this counterfactual manufactures. The
+    contamination is still real and still worth preventing — later story
+    worktrees are cut from this checkout — which is what the paired test below
+    establishes the seam does.
     """
     observed = _preconditions_seen_by_each_story(protected_project, tmp_path, seam_in_place=False)
-    assert observed["story-b"] is not None
-    assert ".forge/audits/runs" in observed["story-b"]
+    assert ".forge/audits/runs" in (observed["story-b"]["dirt"] or "")
+    assert observed["story-b"]["refusal"] is None, (
+        f"forge's own pending artifacts refused a sibling story: {observed['story-b']['refusal']}"
+    )
 
 
-def test_a_reachable_refusal_is_prevented_by_the_publication_seam(
+def test_a_reachable_contamination_is_prevented_by_the_publication_seam(
     protected_project: Path, tmp_path: Path
 ) -> None:
-    """The other half: with the seam in place the same run does not refuse.
+    """The other half: with the seam in place the same run leaves a clean root.
 
-    Paired with the counterfactual above — that one establishes the refusal is
-    reachable at all, this one that the publication seam is what prevents it.
-    Neither claim means much alone.
+    Paired with the counterfactual above — that one establishes the
+    contamination is reachable at all, this one that the publication seam is
+    what prevents it. Neither claim means much alone.
     """
     observed = _preconditions_seen_by_each_story(protected_project, tmp_path, seam_in_place=True)
-    assert observed["story-b"] is None, (
-        f"the seam did not prevent the refusal: {observed['story-b']}"
+    assert observed["story-b"]["dirt"] == "", (
+        f"the seam did not clear the shared checkout: {observed['story-b']['dirt']}"
     )
+    assert observed["story-b"]["refusal"] is None
