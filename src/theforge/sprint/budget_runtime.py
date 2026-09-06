@@ -676,6 +676,14 @@ class SprintBudgetRuntime:
             reexec=_ctx.reexec,
             accepted_unmeasured=dict(self._accepted),
         )
+        # One carried figure, not two. The snapshot is assembled from the
+        # accumulated rows and the prior audit; the ledger's prior is that same
+        # money floored at the spend this run id already persisted to its own
+        # ``.state``. Disclosing and refusing against the smaller of the two
+        # would admit a run under a ceiling the enforcement moments later stop it
+        # for having passed — and would spend intake and preflight money getting
+        # there (#2922).
+        _carry_snapshot = _carry_snapshot.floored_at(self._state.cost.snapshot().prior)
         _headroom = _carry_snapshot.remaining_headroom_usd(self.budget_usd)
         _budget_line = f"Budget ${self.budget_usd:.2f}"
         _budget_line += f" · carried ${_carry_snapshot.carried_cost_usd:.2f}"

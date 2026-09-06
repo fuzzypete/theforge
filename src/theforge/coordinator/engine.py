@@ -490,7 +490,10 @@ def _coordinator_loop(
             state.preflight_complexity,
             state.preflight_complexity_score,
         )
-        _static_dev_max = config.dev_profile.max_iterations or config.retry.max_dev_iterations
+        # ``max_dev_iterations`` counts phase retry attempts.  ``dev_profile``
+        # separately controls turns within one agent invocation; it is applied
+        # only when the runner profile is constructed in dev_phase.
+        _static_dev_max = config.retry.max_dev_iterations
         _static_dev_cost_estimate = config.dev_profile.budget_usd
         _explicit_dev_override = "dev" in getattr(state, "_explicit_roles", set())
         # Adaptive iterations now reads the SQLite audit substrate; we pass
@@ -703,6 +706,11 @@ def _coordinator_loop(
     # (total_count).  Mutations go exclusively through budget.consume() and
     # budget.reset_cycle() so that every consumption is recorded in
     # budget.consumption_log.
+    # RetryBudget counts development *attempts*, not agent turns within one
+    # attempt, so it is sized from the adaptive dev retry count — which
+    # derive_limits bounds by retry_policy.max_dev_iterations/_cap and which is
+    # therefore already in attempt units.  The per-invocation agent-turn ceiling
+    # is a separate dev-profile setting and is never sourced from here.
     state.budget.max_iterations = state.adaptive_dev_max
 
     while True:

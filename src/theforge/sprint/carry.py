@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +33,30 @@ class SprintCarryBudgetSnapshot:
 
     def remaining_headroom_usd(self, budget_usd: float) -> float:
         return round(float(budget_usd) - self.verification_spend_usd, 4)
+
+    def floored_at(self, carried_cost_usd: float) -> "SprintCarryBudgetSnapshot":
+        """This snapshot with its carried spend raised to at least *carried_cost_usd*.
+
+        The records this snapshot is assembled from can under-report: a
+        generation that lost its accumulated rows across a re-exec leaves them
+        summing to less than the run actually spent. Where a stronger account of
+        the same money exists — the spend the run persisted to its own live
+        state — the disclosure and the startup refusal must be made against that
+        one, or a run is admitted under a ceiling it has already passed (#2922).
+
+        Never lowers: a smaller floor is not evidence of less spend.
+        """
+        if carried_cost_usd <= self.carried_cost_usd:
+            return self
+        return replace(
+            self,
+            carried_cost_usd=float(carried_cost_usd),
+            verification_spend_usd=budget_verification_spend(
+                accumulated_cost=0.0,
+                prior_cost=float(carried_cost_usd),
+                accepted_unmeasured_ceiling_usd=self.accepted_unmeasured_ceiling_usd,
+            ),
+        )
 
 
 def _existing_sprint_id(sprint_name: str, project_root: Path) -> str | None:
