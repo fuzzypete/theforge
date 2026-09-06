@@ -134,7 +134,20 @@ def sandbox_containment_mode(profile: ModelProfile) -> str:
 
 
 def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
-    """CLI launchers are always auth-ready; binary presence checked separately."""
+    """Clear a CLI launcher for dispatch once its binary is on PATH.
+
+    This is a *dispatch gate*, and True here means only "nothing known blocks
+    the attempt" — the credential the launcher will present is not inspected,
+    and the provider is not asked whether the account may call the model. Do
+    not read it as evidence the call will be accepted: an account-entitlement
+    refusal is invisible to this check (#2909).
+
+    Callers that report readiness to an operator must qualify it rather than
+    render it as an unconditional "ready" — ``cli/check_config.py`` derives a
+    third *unverified* state from the transport for exactly that reason. The
+    value stays a plain bool because the sprint launch gate, adaptive
+    assignment and config load all read it as one.
+    """
     return (True, "")
 
 

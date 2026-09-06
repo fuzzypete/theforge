@@ -18,7 +18,11 @@ from theforge.config import (
 )
 from theforge.config.auth import check_agent_auth
 from theforge.config.bridge import model_ref_to_profile
-from theforge.config.models import provider_for_transport, transport_from_raw_fields
+from theforge.config.models import (
+    canonical_model_id,
+    provider_for_transport,
+    transport_from_raw_fields,
+)
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
@@ -444,6 +448,79 @@ def _collapse_complexity_labels(mapping: dict[str, str]) -> str:
     return ("\n" + " " * 16).join(parts)
 
 
+def _profile_model_key(profile: ModelProfile) -> str | None:
+    """Return the canonical registry key a profile's identity resolves to."""
+    if profile.registry_id:
+        return profile.registry_id
+    provider = profile.provider_family
+    if not provider or profile.transport is None:
+        return None
+    return canonical_model_id(provider, profile.model, profile.transport.kind)
+
+
+def _identity_caveat(profile: ModelProfile, config: ForgeConfig) -> str | None:
+    """Return this profile's unconfirmed-identifier note, or None when confirmed.
+
+    The same statement ``_unconfirmed_identity_models`` renders in MODEL
+    REGISTRY, resolved per profile so it can be shown beside the verdict it
+    qualifies instead of in a separate section (#2909).
+    """
+    model_key = _profile_model_key(profile)
+    if not model_key:
+        return None
+    try:
+        spec = resolve_agent_spec(model_key, registry=config.model_registry)
+    except ValueError:
+        return None  # unresolvable keys are reported elsewhere
+    today = date.today()
+    if spec.identity.confirmed_on(today):
+        return None
+    return spec.identity.describe(today)
+
+
+def _unverified_because(profile: ModelProfile, config: ForgeConfig) -> str | None:
+    """Return why a passing readiness check still establishes no callability.
+
+    ``check_agent_auth`` clears a CLI-transport profile once its launcher
+    resolves on PATH. That establishes the binary exists — not that the
+    credentials it will present are live, and not that the signed-in account is
+    entitled to call the model this profile names. Reporting that as an
+    unqualified ``✓ ready`` is what let an account-entitlement refusal (a 400
+    from the provider, invariant across stories and attempts) arrive only after
+    a story had been routed and paid for (#2909).
+
+    Returns None for API-transport profiles: their check resolves an actual
+    credential, a different and narrower claim, and ``forge check-providers``
+    probes them separately.
+    """
+    if profile.transport is None or profile.transport.kind != "cli":
+        return None
+    runner = profile.transport.runner
+    parts = [
+        f"{runner} launcher on PATH; neither credentials nor this account's "
+        f"entitlement to call {profile.model!r} was checked"
+    ]
+    caveat = _identity_caveat(profile, config)
+    if caveat:
+        parts.append(caveat)
+    return "; ".join(parts)
+
+
+def _format_auth_status(
+    profile: ModelProfile,
+    ready: bool,
+    reason: str,
+    config: ForgeConfig,
+) -> str:
+    """Render one profile's readiness verdict: ready, unverified, or failed."""
+    if not ready:
+        return f"✗ {reason}"
+    unverified = _unverified_because(profile, config)
+    if unverified is None:
+        return "✓ ready"
+    return f"? unverified — {unverified}"
+
+
 def _format_config(
     config: ForgeConfig,
     auth_results: AuthResults,
@@ -602,7 +679,7 @@ def _format_config(
     ]:
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("phase", profile.name), (True, ""))
-        auth_str = "  ✓ ready" if ready else f"  ✗ {reason}"
+        auth_str = f"  {_format_auth_status(profile, ready, reason, config)}"
         lines.append(
             f"  {label:<12}{transport:<30}  timeout={profile.timeout_seconds}s"
             f"  budget=${profile.budget_usd:.2f}{_thinking_budget_label(profile)}{auth_str}"
@@ -613,7 +690,10 @@ def _format_config(
     if config.plan.enabled:
         transport = _plan_transport_label(config.plan)
         ready, reason = auth_results.get(_auth_key("phase", "plan"), (True, ""))
-        auth_str = "  ✓ ready" if ready else f"  ✗ {reason}"
+        plan_profile = _apply_transport_fallback(
+            model_ref_to_profile("plan", config.plan.ref), config.transport_fallbacks
+        )
+        auth_str = f"  {_format_auth_status(plan_profile, ready, reason, config)}"
         lines.append(
             f"  {'plan':<12}{transport:<30}  timeout={config.plan.timeout}s"
             f"  budget=${config.plan.budget_usd:.2f}{auth_str}"
@@ -627,7 +707,7 @@ def _format_config(
     for profile in config.review_pool:
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("review", profile.name), (True, ""))
-        auth_str = "✓ ready" if ready else f"✗ {reason}"
+        auth_str = _format_auth_status(profile, ready, reason, config)
         role_str = f"  role={profile.review_role}" if profile.review_role else ""
         lines.append(
             f"  {profile.name:<22}{transport:<30}{role_str}  budget=${profile.budget_usd:.2f}"
@@ -640,7 +720,7 @@ def _format_config(
         profile = config.synthesis_profile
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("synthesis", profile.name), (True, ""))
-        auth_str = "✓ ready" if ready else f"✗ {reason}"
+        auth_str = _format_auth_status(profile, ready, reason, config)
         lines.append(
             f"  {profile.name:<22}{transport:<30}  (synthesis)  budget=${profile.budget_usd:.2f}"
             f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -655,7 +735,7 @@ def _format_config(
         for profile in config.plan_agent_review.profiles:
             transport = _transport_label(profile)
             ready, reason = auth_results.get(_auth_key("plan_review", profile.name), (True, ""))
-            auth_str = "✓ ready" if ready else f"✗ {reason}"
+            auth_str = _format_auth_status(profile, ready, reason, config)
             lines.append(
                 f"  {profile.name:<22}{transport:<30}  budget=${profile.budget_usd:.2f}"
                 f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -673,7 +753,9 @@ def _format_config(
             )
             transport_str = f"{provider_label:<10}{transport_label:<10}{agent.model}"
             ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
-            auth_str = "✓ ready" if ready else f"✗ {reason}"
+            auth_str = _format_auth_status(
+                agent.to_model_profile(allowed_tools=()), ready, reason, config
+            )
             lines.append(f"  {agent.name:<22}{transport_str:<30}  tier={agent.tier:<8}{auth_str}")
             if not ready:
                 warnings_list.append(f"{agent.name}: {reason} — will be skipped at runtime")

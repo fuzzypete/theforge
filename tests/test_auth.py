@@ -372,3 +372,19 @@ def test_containment_mode_classifications() -> None:
         assert sandbox_containment_mode(claude) == "unavailable"
     assert sandbox_containment_mode(_sandbox_cli_profile("claude", "none")) == "none"
     assert sandbox_containment_mode(_sandbox_cli_profile("codex")) == "native"
+
+
+def test_cli_readiness_stays_a_bool_for_dispatch_gates():
+    """CLI readiness is True/False — never a third value (#2909).
+
+    ``check_agent_auth`` is a dispatch gate as well as a report input: the
+    sprint launch gate, adaptive assignment and config load all read its first
+    element as a boolean. check-config's third "unverified" state is derived in
+    the reporting layer precisely so widening this contract cannot silently
+    make every CLI profile read as not-ready at those call sites.
+    """
+    with patch("theforge.config.auth.shutil.which", return_value="/usr/bin/npx"):
+        for cli in ("codex", "gemini"):
+            ready, reason = check_agent_auth(_cli_profile(cli))
+            assert ready is True
+            assert reason == ""

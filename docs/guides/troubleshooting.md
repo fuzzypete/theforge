@@ -531,6 +531,16 @@ from (`run_id`, phase, role, profile, failure code). Check the per-story audit
 under `.forge/audits/runs/` to see why cost went unrecorded, then diagnose that
 story's run.
 
+**Not this:** a call the provider *refused before generating* — an immediate
+HTTP 400 `invalid_request_error`, e.g. "the 'gpt-5.4' model is not supported
+when using Codex with a ChatGPT account" — is recorded as a measured **$0.00**,
+because nothing was generated and nothing was billed (#2913). It never becomes
+an unmeasured source and never withholds a sibling story; the failing story
+fails on the unusable model, which is what the run reports. The narrowness is
+deliberate: only an explicit pre-generation refusal resolves to zero. A call
+that ran and whose accounting was lost — an upstream 5xx, a timeout, an
+unparseable usage summary — stays cost-unknown and still constrains the cap.
+
 **When the condition is stuck:** an unmeasured source is carried into every
 later run of the same sprint, so a story whose reviewer died on (say) a provider
 quota error stays unrunnable — the refusal happens after its reuse gate has
