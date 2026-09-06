@@ -1,0 +1,107 @@
+schema_version: 2
+run_id: 0900ffb05b28
+authoritative_run_record: .forge/audits/runs/0900ffb05b28.json
+generated_at: '2026-09-06T20:19:53.396541+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0088075
+story:
+  slug: issue-2908
+  name: forge sprint fails a story with no stated reason when its worktree path holds
+    unregistered residue
+  github_issue: 2908
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/run_setup.py
+- tests/test_coord_worktree_drift.py
+what_changed:
+  description: The run fixed the operator-facing handling of workspace-creation failure
+    for the unregistered-residue path so the story emits a stated refusal reason instead
+    of only failing with the result line. It also added a focused seam test that drives
+    that failure through the task runner and inspects the human-facing log output.
+  approach: 'The change was a narrow coordinator-path fix: wire the existing workspace-creation
+    failure into the per-story ESCALATE/reporting path, then verify it with a real-repo
+    drift scenario test that exercises the run_task flow rather than only lower-level
+    setup behavior.'
+  files_modified: *id002
+what_was_learned:
+- claim: When fixing a missing operator-facing failure reason in coordinator flow,
+    verification needs to exercise the full run_task/reporting path and assert the
+    human-visible log output, not just the lower-level failure condition.
+  evidence:
+  - type: review_finding
+    finding_id: 7352c8a7ad47e1bf
+    description: Review accepted the code-path fix itself but still blocked the change
+      because no test drove the unregistered-residue failure through run_task and
+      captured the operator-facing log, showing that this class of bug is only verified
+      when the full reporting path is exercised.
+  - type: review_finding
+    finding_id: b8ebacd28e01fa11
+    description: Review separately flagged that the ESCALATE line had been added without
+      any assertion on the emitted log stream, demonstrating that for user-visible
+      refusal regressions the required proof is an explicit check of console output
+      rather than inference from internal behavior.
+  - type: review_cycle
+    cycle: '2'
+    description: Approval cited resolution of the prior P1 specifically because a
+      seam test now drove the unregistered-residue path and verified the logged reason,
+      confirming that end-to-end log assertion was the gating verification shape.
+  - type: file
+    path: tests/test_coord_worktree_drift.py
+    description: The added test file is the place where the run pinned behavior by
+      simulating worktree drift through coordinator execution, evidencing that the
+      chosen verification method was a seam test around task execution and emitted
+      logs.
+learned_patterns:
+- operator-visible-failure-reason
+- run-task-log-seam-test
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 7352c8a7ad47e1bf
+    severity: P1
+    file: src/theforge/coordinator/engine.py
+    description: The workspace-creation error path gained the operator-facing ESCALATE
+      line, but the change had no test that drives the unregistered-residue failure
+      through run_task and captures the human-facing log.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: b8ebacd28e01fa11
+    severity: P1
+    file: tests/test_coord_worktree_drift.py
+    description: The commit adds the missing operator-facing ESCALATE log line for
+      a workspace-creation failure but includes no test asserting that the log stream
+      contains the reason, and no existing test in the suite asserts any ESCALATE
+      console line (a grep for the ESCALATE log text across tests/ returns nothing),
+      so the exact regression this issue was filed against would go undetected if
+      the line were removed again.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced that the code-path fix was insufficient without a test
+    asserting the ESCALATE reason in the human-facing log stream.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 7.5973844999999995
+  dominant_difficulty: Proving a user-visible refusal in the coordinator required
+    testing the full dispatch/reporting seam rather than only the workspace setup
+    logic.
