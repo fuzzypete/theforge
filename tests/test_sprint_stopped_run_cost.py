@@ -780,3 +780,127 @@ class TestReexecBudgetAdmission:
             f"run; it was handed {preflight_calls}"
         )
         assert result.specs_succeeded == 0
+
+    def test_a_refused_run_settles_inherited_agents_before_skipping_their_stories(
+        self, tmp_path: Path
+    ) -> None:
+        """A refusal that lets paid work continue is not a refusal.
+
+        An inherited agent group is a process still spending inside a worktree
+        this sprint owns. Marking its story skipped and exiting leaves it running
+        against a ceiling the run has just declared exhausted, with no owner left
+        to settle it.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=30.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 21.91,
+                }
+            ],
+        )
+        _write_prior_sprint_audit(tmp_path, sprint_id, 21.91)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "run-refuse-reclaim.state").write_text(
+            yaml.dump({"budget_status": "within", "budget_spend_usd": 31.44, "stories": []}),
+            encoding="utf-8",
+        )
+
+        reclaimed: list[str] = []
+
+        def record_reclaim(slug, **_kwargs):
+            reclaimed.append(slug)
+            return [4242]
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch(
+                "theforge.sprint.live_stories.reclaim_inherited_agents",
+                side_effect=record_reclaim,
+            ),
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task") as run_task,
+        ):
+            result = run_sprint_ctx(
+                config, manifest_path, reexec=True, run_id="run-refuse-reclaim"
+            )
+
+        assert run_task.call_count == 0
+        assert "feature-a" in reclaimed, (
+            "the refusal must settle the story's inherited agent group before "
+            f"recording it as skipped; reclaim was called for {reclaimed}"
+        )
+        assert result.specs_succeeded == 0
+
+
+class TestSeededPriorCostSurvivesAnEarlyTerminal:
+    def test_refused_prior_done_story_never_publishes_below_its_prior_cost(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The seeded branch of the early-terminal case.
+
+        A prior-generation DONE story has its cost SEEDED onto the canonical row,
+        not carried — so carried attribution is $0.00 for it. When it re-enters
+        and is refused before dispatch, the accumulated row is replaced
+        wholesale, and without reading the seed that replacement publishes $0.00
+        over $6.00 of pre-restart spend until wrap-up.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=30.0)
+        config = _make_config(tmp_path)
+        sprint_id = _seed_prior_generation(tmp_path, outcome="DONE")
+        _write_prior_sprint_audit(tmp_path, sprint_id, PRIOR_COST_USD)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "run-seeded-refused.state").write_text(
+            yaml.dump({"budget_status": "within", "budget_spend_usd": 31.44, "stories": []}),
+            encoding="utf-8",
+        )
+
+        published: list[list[dict]] = []
+        _spy_on_accumulated_writes(monkeypatch, published)
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task") as run_task,
+        ):
+            run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-seeded-refused")
+
+        assert run_task.call_count == 0, "the run is over its ceiling and must not dispatch"
+
+        costs = [
+            row.get("cost_usd")
+            for stories in published
+            for row in stories
+            if row.get("slug") == "feature-a"
+        ]
+        assert costs, "the refusal must have published an accumulated row for feature-a"
+        assert all(c is not None and c >= PRIOR_COST_USD for c in costs), (
+            "a seeded prior cost must not be replaced by $0.00, not even between "
+            f"the refusal and wrap-up; saw {costs}"
+        )
+
+        accumulated = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = {row["slug"]: row for row in accumulated.get("stories", [])}
+        assert rows["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD), (
+            "counted once — the seed is read, not consumed, so wrap-up does not "
+            "add it a second time"
+        )

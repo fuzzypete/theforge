@@ -3954,6 +3954,7 @@ def _projected_story_cost(
     *,
     canonical: bool = False,
     overwrites_seed: bool = False,
+    include_seed: bool = False,
 ) -> float | None:
     """The cost a persisted row reports for *slug*.
 
@@ -3974,6 +3975,13 @@ def _projected_story_cost(
     being on the row and has to be carried instead. A write that merely restates
     a row (the initial live-state projection) must not claim it, or a story
     skipped as already-merged would be charged its prior cost twice.
+
+    *include_seed* is for the accumulated file, whose rows are replaced
+    wholesale rather than transitioned. Replacing a seeded prior row overwrites
+    that cost in THAT file while the canonical row still holds it, so the value
+    written must include the seed — but the seed itself must stay where it is,
+    or the wrap-up reconciliation would add it to the canonical row a second
+    time. Reading it without consuming it is what keeps both files right.
     """
     if overwrites_seed:
         state.activate_seeded_prior_cost(slug)
@@ -3982,6 +3990,8 @@ def _projected_story_cost(
     attribution = _story_attribution_usd(state, slug)
     if canonical:
         state.applied_story_attribution[slug] = attribution
+    if include_seed:
+        attribution += state.seeded_prior_story_cost.get(slug, 0.0)
     return measured + attribution
 
 
@@ -6125,7 +6135,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             # the zero (#2922). The absolute-prior reconciliation paths consume
             # the carried attribution before handing their figure in, so the money
             # is added here exactly once.
-            "cost_usd": _projected_story_cost(_sprint_state, slug, cost_usd),
+            #
+            # ``include_seed`` because this write REPLACES the prior accumulated
+            # row: a prior-generation DONE story that re-enters and is refused
+            # before dispatch has its cost seeded on the canonical row, not
+            # carried, and without the seed the replacement would publish $0.00
+            # over its pre-restart spend until wrap-up.
+            "cost_usd": _projected_story_cost(_sprint_state, slug, cost_usd, include_seed=True),
             "story_run_id": _ctx.run_id,
             "preflight": None,
             "preflight_original_verdict": None,
@@ -7258,6 +7274,16 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             )
 
     if _startup_budget_decision is not None:
+        # An inherited agent group is paid work still running inside a worktree
+        # this sprint owns. Recording its story as skipped and exiting leaves it
+        # spending — against a ceiling the run has just declared exhausted — and
+        # writing to that worktree with no owner left to settle it, until the
+        # next invocation's orphan reaper finds it hours later with no context
+        # (#2079). The refusal settles the process before it records the outcome,
+        # for the same reason it fires ahead of intake and preflight: a refusal
+        # that lets spending continue is not a refusal (#2922).
+        for _refused_task in list(_sprint_state.dag.remaining()):
+            _reclaim_dropped_agents(_refused_task.slug)
         _sprint_state.budget.skip_remaining_stories(_startup_budget_decision)
 
     # Parallel scheduling state
