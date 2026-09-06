@@ -211,7 +211,7 @@ def test_repeated_no_submit_retries_do_not_duplicate_guidance_block(
             "dev_profile": config.dev_profile.__class__(
                 **{**config.dev_profile.__dict__, "budget_usd": 10.0}
             ),
-            "retry": config.retry.__class__(max_dev_iterations=4, max_review_cycles=2),
+            "retry": config.retry.__class__(max_dev_iterations=5, max_review_cycles=2),
         }
     )
     task = _make_task(tmp_path)
