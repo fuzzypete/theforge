@@ -170,6 +170,7 @@ from .state_writer import (
     SPRINT_PHASE_FAILED,
     SPRINT_PHASE_STOPPED,
     SprintStateWriter,
+    read_recorded_spend_usd,
     update_state_phase,
     update_state_story,
 )
@@ -5810,6 +5811,23 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             recovered_prior_started_at,
             _sprint_state.recovered_prior_entries_by_ref,
         ) = _read_prior_sprint_accounting(_ctx.config.project_root, _ctx.sprint_id)
+        # Floor the carried figure at the spend this run id has already recorded
+        # to its own live state. A re-exec keeps the run id and the .state file,
+        # so that high-water is the surviving account of what the previous
+        # process image spent — and it outlives the accumulated rows, which are
+        # exactly what a lost generation takes with it. Enforcing the cap against
+        # the smaller number would admit work the run has no headroom for, which
+        # is the half of #2922 that costs money rather than only misreporting it.
+        _durable_recorded_spend = (
+            read_recorded_spend_usd(_ctx.run_id, _ctx.config.project_root) if _ctx.run_id else None
+        )
+        if _durable_recorded_spend is not None and _durable_recorded_spend > _recovered_prior_cost:
+            _log(
+                f"Carried spend raised to this run's recorded high-water: "
+                f"${_durable_recorded_spend:.4f} (accumulated rows account for "
+                f"${_recovered_prior_cost:.4f})"
+            )
+            _recovered_prior_cost = _durable_recorded_spend
         _sprint_state.cost.set_prior(_recovered_prior_cost)
         if _recovered_prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${_recovered_prior_cost:.2f}")

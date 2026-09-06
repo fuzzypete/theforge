@@ -312,6 +312,27 @@ def _story_cost(story: dict) -> float | None:
     return None if raw is None else 0.0
 
 
+def read_recorded_spend_usd(run_id: str, project_root: Path) -> float | None:
+    """The spend high-water a run has already persisted, if any.
+
+    A re-exec keeps the same run id and the same ``.state`` file, so this is the
+    one durable record of what the process image before it had spent — the
+    figure that survives when the accumulated story rows do not. The next
+    generation's carried spend is floored at it, because a cap enforced against
+    a number smaller than the run has already spent is not being enforced
+    (#2922).
+
+    ``None`` when the file is absent, unreadable, or predates the field.
+    """
+    data = _load_existing_state(project_root / ".forge" / "runs" / f"{run_id}.state")
+    if data is None:
+        return None
+    raw = data.get("budget_spend_usd")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    return None
+
+
 def _load_existing_state(state_path: Path) -> dict | None:
     """Read an existing state file when possible."""
     if not state_path.exists():

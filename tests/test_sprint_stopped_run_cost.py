@@ -32,9 +32,13 @@ from tests.test_sprint_resume import (
     _make_manifest,
     _make_spec_file,
     _set_sprint_id,
+    _write_prior_sprint_audit,
 )
 from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
-from theforge.sprint.audit import persist_accumulated_story_state
+from theforge.sprint.audit import (
+    build_cost_accounting_discrepancy,
+    persist_accumulated_story_state,
+)
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.state_writer import SprintStateWriter
 from theforge.sprint.story_state import StoryOutcome
@@ -387,7 +391,69 @@ def _write_stopped_state(
     (runs_dir / f"{run_id}.ended").write_text("stopped\n", encoding="utf-8")
 
 
+def _make_state_live(tmp_path: Path, run_id: str) -> None:
+    """Turn a stopped run's leftovers into a run that is still going.
+
+    A PID file is what ``forge status`` reads as "still live", and the terminal
+    marker must be gone or the header reports the recorded outcome instead.
+    """
+    runs_dir = tmp_path / ".forge" / "runs"
+    (runs_dir / f"{run_id}.ended").unlink(missing_ok=True)
+    (runs_dir / f"{run_id}.pid").write_text("999999\n", encoding="utf-8")
+    state_path = runs_dir / f"{run_id}.state"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    data["sprint_phase"] = "running"
+    state_path.write_text(yaml.dump(data), encoding="utf-8")
+
+
 class TestUnreconciledCostReporting:
+    def test_live_run_shows_recorded_spend_as_the_floor(self, tmp_path: Path, capsys) -> None:
+        """A live run never displays less than it has already recorded spending.
+
+        Its rows can legitimately trail its ledger for a moment, so this is not a
+        contradiction to refuse on — but the number that cannot be too low is the
+        one to lead with, because the operator's continue-or-stop decision and
+        the cap both read it.
+        """
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48b1",
+            story_costs={"issue-2908": 2.54, "issue-2914": 19.37},
+            recorded_spend_usd=31.44,
+        )
+        _make_state_live(tmp_path, "0210029b48b1")
+
+        assert display_sprint_status("0210029b48b1", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "cost: $31.44" in header, header
+        assert "$21.91" in header, "the row sum must still be named beside it"
+        assert "cost: $21.91" not in header, (
+            "a live run must not present a row sum below its own recorded spend as the run's cost"
+        )
+
+    def test_live_run_whose_rows_account_for_its_spend_reads_plainly(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """No floor annotation when there is no gap to annotate."""
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48b2",
+            story_costs={"issue-2908": 2.54, "issue-2914": 3.74},
+            recorded_spend_usd=6.28,
+        )
+        _make_state_live(tmp_path, "0210029b48b2")
+
+        assert display_sprint_status("0210029b48b2", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "cost: $6.28" in header, header
+        assert "recorded" not in header, header
+
     def test_stopped_run_below_its_recorded_spend_reports_unreconciled(
         self, tmp_path: Path, capsys
     ) -> None:
@@ -478,3 +544,145 @@ class TestUnreconciledCostReporting:
 
         assert "unreconciled" not in header, header
         assert "cost: $6.28" in header, header
+
+
+class TestAuditWithholdsAContradictedTotal:
+    """The same rule at the publication surfaces, not only in the status view."""
+
+    def test_one_cent_below_recorded_spend_is_a_discrepancy(self) -> None:
+        """The high-water comparison gets no rounding slack.
+
+        The ledger-versus-rows check has a cent of it, and legitimately: those
+        are two aggregations of the same money by different routes. The recorded
+        high-water is not a second aggregation — it is a figure this run already
+        published — so a cent below it is a cent that went missing.
+        """
+        block = build_cost_accounting_discrepancy(
+            6.28,
+            [("issue-2908", 2.54), ("issue-2914", 3.74)],
+            recorded_spend_high_water_usd=6.29,
+        )
+
+        assert block is not None, "a one-cent shortfall against recorded spend is not rounding"
+        assert block["unexplained_usd"] == pytest.approx(0.01)
+        assert block["recorded_spend_high_water_usd"] == pytest.approx(6.29)
+        assert block["sprint_ledger_usd"] == pytest.approx(6.28)
+        assert "already recorded" in block["detail"]
+
+    def test_rows_matching_recorded_spend_are_settled(self) -> None:
+        """No gap, no block — the guard is a contradiction check."""
+        assert (
+            build_cost_accounting_discrepancy(
+                6.28,
+                [("issue-2908", 2.54), ("issue-2914", 3.74)],
+                recorded_spend_high_water_usd=6.28,
+            )
+            is None
+        )
+
+    def test_sub_cent_ledger_noise_keeps_its_tolerance(self) -> None:
+        """The ledger's own cent of slack survives the split.
+
+        Tightening the high-water comparison must not tighten this one: the two
+        totals round independently and disagreeing in the third place is the
+        arithmetic, not lost money.
+        """
+        assert (
+            build_cost_accounting_discrepancy(
+                6.285,
+                [("issue-2908", 2.54), ("issue-2914", 3.74)],
+                recorded_spend_high_water_usd=0.0,
+            )
+            is None
+        )
+
+    def test_sprint_audit_withholds_the_total_when_rows_fall_below_recorded_spend(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """End to end: sprint-audit.yaml does not publish the contradicted figure.
+
+        The run's rows come to $1.50 while the state file it wrote records $9.00
+        of spend under the same run id. The audit must report the gap and
+        withhold the total rather than certify the smaller number.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _make_config(tmp_path)
+        _set_sprint_id(tmp_path)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "run-audit-highwater.state").write_text(
+            yaml.dump({"budget_status": "within", "budget_spend_usd": 9.0, "stories": []}),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "theforge.sprint.runner.run_task",
+            return_value=_make_coordinator_result(success=True, cost=CURRENT_COST_USD),
+        ):
+            run_sprint_ctx(config, manifest_path, run_id="run-audit-highwater")
+
+        audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        discrepancy = audit["sprint"]["cost_accounting_discrepancy"]
+        assert discrepancy is not None, (
+            "rows below the run's own recorded spend must be reported, not settled"
+        )
+        assert discrepancy["recorded_spend_high_water_usd"] == pytest.approx(9.0)
+        assert audit["sprint"]["cost_complete"] is False
+        assert audit["sprint"]["total_cost_usd"] is None
+
+
+class TestReexecBudgetAdmission:
+    def test_carried_spend_is_floored_at_the_runs_recorded_high_water(
+        self, tmp_path: Path
+    ) -> None:
+        """A cap is enforced against what the run spent, not what its rows kept.
+
+        The accumulated rows carry $2.00 because a lost generation took the rest
+        with it; the run's own .state — which survives a re-exec, same run id,
+        same file — records $9.00. Admitting work against $2.00 spends headroom
+        the run does not have.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 2.0,
+                }
+            ],
+        )
+        _write_prior_sprint_audit(tmp_path, sprint_id, 2.0)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "run-floor.state").write_text(
+            yaml.dump({"budget_status": "within", "budget_spend_usd": 9.0, "stories": []}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_skip_merged_triage()),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=_make_coordinator_result(success=True, cost=CURRENT_COST_USD),
+            ),
+        ):
+            result = run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-floor")
+
+        assert result.total_cost_usd >= 9.0, (
+            "the sprint must carry the spend its own run state recorded, not the "
+            f"smaller figure its accumulated rows kept; got ${result.total_cost_usd:.2f}"
+        )

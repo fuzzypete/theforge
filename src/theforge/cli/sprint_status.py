@@ -270,30 +270,39 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             cost_measured_usd = _measured_sum
 
     # A run's recorded spend is a high-water mark, not a running guess: money it
-    # told an operator it had spent stays spent. When a finished run's per-story
-    # rows sum to LESS than that figure, the two contradict each other and
-    # neither is the sprint's cost — the run lost part of its own accounting
-    # somewhere (#2922). Report the shortfall as unreconciled rather than let the
-    # smaller, internally-consistent number stand as a settled total; an
-    # under-reported total is what lets a cap bind later than the operator
-    # believes it does. Only for runs that have finished: a live run's rows
-    # legitimately trail its ledger while work is in flight.
+    # told an operator it had spent stays spent. Whenever the per-story rows sum
+    # to LESS than that figure, the smaller number must not be what this command
+    # prints as the run's cost — an under-reported total is what lets a cap bind
+    # later than the operator believes it does (#2922).
     #
     # The comparison is made at the precision both figures are persisted to, not
     # against a tolerance: a tolerance would accept exactly the small decreases
     # it is hardest to notice, and a cent that vanished is still a cent that
     # vanished.
+    #
+    # What is *said* about the gap differs by whether the run is over:
+    #   live    — the run is still spending and its rows can legitimately trail
+    #             its ledger for a moment, so the recorded figure is a FLOOR:
+    #             show it, and name the row sum beside it. Never the lower one.
+    #   finished — nothing more will arrive to close the gap, so the two figures
+    #             contradict each other and neither is the sprint's cost. Report
+    #             it as unreconciled rather than settle on either.
     cost_unreconciled_usd: float | None = None
+    cost_floor_usd: float | None = None
     _recorded_is_number = isinstance(budget_spend_recorded, (int, float)) and not isinstance(
         budget_spend_recorded, bool
     )
-    if not is_live and total_cost_usd is not None and _recorded_is_number:
+    if total_cost_usd is not None and _recorded_is_number:
         _recorded = round(float(budget_spend_recorded), _RECORDED_SPEND_PRECISION)
         if _recorded > round(total_cost_usd, _RECORDED_SPEND_PRECISION):
-            cost_unreconciled_usd = _recorded
-            cost_measured_usd = total_cost_usd
-            total_cost_usd = None
-            cost_complete = False
+            if is_live:
+                cost_floor_usd = total_cost_usd
+                total_cost_usd = _recorded
+            else:
+                cost_unreconciled_usd = _recorded
+                cost_measured_usd = total_cost_usd
+                total_cost_usd = None
+                cost_complete = False
 
     # ── Header ───────────────────────────────────────────────────────────
     # A PID file is evidence a process exists, not evidence the sprint is still
@@ -331,7 +340,15 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         header_parts.append(
             _format_sprint_phase(sprint_phase, sprint_phase_detail, sprint_phase_started_at)
         )
-    if total_cost_usd is not None:
+    if total_cost_usd is not None and cost_floor_usd is not None:
+        # A live run whose rows have not caught up with its own recorded spend.
+        # The recorded figure leads, because it is the one that cannot be too
+        # low; the row sum is named beside it so the gap is visible rather than
+        # implied.
+        header_parts.append(
+            f"cost: ${total_cost_usd:.2f} recorded (stories ${cost_floor_usd:.2f}){overrun_marker}"
+        )
+    elif total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}{overrun_marker}")
     elif cost_unreconciled_usd is not None:
         # Name both numbers, at the precision the gap was detected at. The
