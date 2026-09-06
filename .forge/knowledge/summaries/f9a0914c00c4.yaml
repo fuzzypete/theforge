@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: f9a0914c00c4
 authoritative_run_record: .forge/audits/runs/f9a0914c00c4.json
-generated_at: '2026-09-06T03:15:05.679159+00:00'
+generated_at: '2026-09-06T04:24:14.347283+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.008285
+  cost_usd: 0.005719
 story:
   slug: issue-2923
   name: forge explain cannot read the routing record of a live or stopped story, though
@@ -35,43 +35,37 @@ changed_files: &id002
 - tests/test_cli_explain_live.py
 what_changed:
   description: The run extended `forge explain` so it can surface routing explanations
-    for live and stopped stories by reading durable unfinished-run records, and updated
-    the CLI documentation to describe the reachable explanation paths and their behavior.
-  approach: It split unfinished-run lookup into a dedicated live/stopped audit-reading
-    path wired into the existing explain command, then hardened run-id resolution
-    and operator-facing messaging around malformed or absent records while documenting
-    the resulting command surface.
+    for live and stopped stories by reading unfinished-story records, and updated
+    CLI/docs output to distinguish missing records from unreadable ones.
+  approach: It added a dedicated live/stopped lookup path alongside the existing explain
+    flow, then hardened lookup behavior through review so run-targeted searches only
+    treat matching on-disk records as relevant before reporting read failures.
   files_modified: *id002
 what_was_learned:
-- claim: When adding fallback discovery across many on-disk audit files, lookup must
-    verify record identity before surfacing parse or presence results; otherwise unrelated
-    corrupt files can be misattributed to the requested run.
+- claim: When a CLI falls back to scanning shared on-disk audit locations, lookup
+    must confirm record identity before surfacing parse/read errors; otherwise unrelated
+    corrupt files can be misreported as evidence for the requested target.
   evidence:
   - type: review_finding
     finding_id: 68146b2162902405
-    description: The review found that `forge explain --run missing-run` could report
-      a record for the requested run merely because some other story's live audit
-      file was malformed, demonstrating that broad fallback scans need per-record
-      identity checks before turning errors into user-visible conclusions.
+    description: Review found that `forge explain --run missing-run` could encounter
+      a malformed audit file for another story and incorrectly report that the requested
+      run's routing record existed but was unreadable, demonstrating that fallback
+      readers must verify the requested run/story match before converting unrelated
+      file corruption into a target-specific result.
   - type: review_cycle
     cycle: '1'
-    description: Cycle 1 requested changes specifically because targetless run lookups
-      could convert malformed unrelated live audits into false positives for the requested
-      run, showing this verification requirement was a blocking correctness issue
-      rather than an edge-case nicety.
+    description: Cycle 1 requested changes specifically because targetless lookup
+      paths could misattribute malformed live audits from other stories to the requested
+      run, showing this is a real failure mode in broad filesystem searches rather
+      than a hypothetical edge case.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 approval notes that run-id lookups no longer claim another
-      story's corrupt audit as the requested record, confirming that identity-gated
-      error handling was the condition needed to make the fallback path trustworthy.
-  - type: file
-    path: tests/test_cli_explain_live.py
-    description: 'The dedicated tests for malformed unrelated-record paths demonstrate
-      that verification was enforced at the lookup boundary: unrelated bad files are
-      exercised specifically to ensure they do not satisfy or poison the requested
-      run-id query.'
+    description: Cycle 2 approved only after the fix ensured run-id lookups no longer
+      claimed another story's corrupt audit as the requested record, confirming identity-gating
+      was the condition needed for correct behavior.
 learned_patterns:
-- identity-gated-fallback-scan
+- identity-before-error-on-fallback-scan
 review_insights:
   recurring_findings: []
   resolved_findings:
@@ -84,12 +78,13 @@ review_insights:
     cycles_seen: 1
     disposition: fixed
   observations:
-  - The review loop concentrated on preventing broad live-audit fallback logic from
-    misreporting unrelated malformed records as matches for the requested run.
+  - The review loop focused on preventing broad live-audit scans from attributing
+    unrelated malformed records to the requested run/story.
 complexity_signal:
   actual_iterations: 2
   review_cycles: 2
   plan_regenerations: null
   cost_usd: 11.096534799999999
-  dominant_difficulty: Reconciling multiple unfinished-run audit sources without producing
-    misleading explanations or false record matches during CLI lookup.
+  dominant_difficulty: Correctly resolving explanation records across unfinished-run
+    storage paths without misidentifying unrelated on-disk audits during fallback
+    lookup.
