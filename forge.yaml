@@ -223,6 +223,10 @@ workspace:
 validation:
   # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
   # gate_decision_key; do not add them back under validation:.
+  # Stays bare `make gate`: tests/test_ci_gate_parity.py asserts CI invokes exactly
+  # this string, so a flag here would silently diverge CI from the story gate. The
+  # xdist cap for parallel sprints is passed as the GATE_WORKERS environment
+  # variable instead (Makefile uses ?=, which honours the environment).
   gate_command: "make gate"
   # Canonical intermediate command dev agents should use while working.
   #
