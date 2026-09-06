@@ -90,7 +90,11 @@ that disagrees with the base tier is therefore not prima facie a defect.
 Consequently, **the routing snapshot in `.forge/routing/` cannot explain a
 selection.** It records the outcome, not the substitution that produced it
 (#2393). Use `forge explain --story <n>`, which reads the per-run
-`routing_decision` block, or the audit record directly.
+`routing_decision` block, or the audit record directly. That works while the
+story is still running or after `forge stop` killed it, not only once it has
+finished: `forge explain` falls back to the in-flight per-story `audit.yaml` and
+the resume record, which hold the same block before the run reaches the audit
+substrate (#2923).
 
 What no mechanism does today is compare the evidence back against the
 declaration that produced eligibility in the first place. A model declared
