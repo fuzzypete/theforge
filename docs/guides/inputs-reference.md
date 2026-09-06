@@ -920,7 +920,11 @@ profiles:
     timeout_seconds: 600
     timeout_medium_seconds: 900     # optional: for medium-complexity stories
     timeout_large_seconds: 1800     # optional: for large-complexity stories
-    max_iterations: 50              # optional: API-mode agent loop ceiling
+    # Optional: API-mode agent loop ceiling — turns within ONE agent
+    # invocation. Unset means the runner default (75). This is not
+    # retry.max_dev_iterations, which counts phase retry attempts; changing
+    # either one never moves the other.
+    max_iterations: 50
     allowed_tools:
       - Read
       - Edit

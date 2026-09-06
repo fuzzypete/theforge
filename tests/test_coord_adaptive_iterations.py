@@ -111,7 +111,6 @@ def test_audit_falls_back_to_config_when_no_adaptive(tmp_path: Path):
 def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
     """_coordinator_loop calls derive_limits and writes the result to state."""
     from theforge.coordinator.engine import _coordinator_loop
-    from theforge.runners.schema_utils import _DEFAULT_MAX_ITERATIONS
 
     config = _make_adaptive_config(tmp_path)
     task = _make_task(tmp_path)
@@ -137,7 +136,7 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
 
     assert state.adaptive_dev_max > 0
     assert state.adaptive_review_max > 0
-    assert state.adaptive_dev_max == _DEFAULT_MAX_ITERATIONS
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
     assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_review_max <= config.retry.max_review_cycles_cap
     assert state.adaptive_dev_timeout_seconds == round(
@@ -370,7 +369,6 @@ def test_adaptive_off_produces_policy_values(tmp_path: Path):
 
 def test_adaptive_assignment_off_keeps_review_limits_adaptive(tmp_path: Path):
     from theforge.coordinator.engine import _coordinator_loop
-    from theforge.runners.schema_utils import _DEFAULT_MAX_ITERATIONS
 
     config = replace(
         _make_adaptive_config(tmp_path),
@@ -397,7 +395,7 @@ def test_adaptive_assignment_off_keeps_review_limits_adaptive(tmp_path: Path):
         except _StopLoop:
             pass
 
-    assert state.adaptive_dev_max == _DEFAULT_MAX_ITERATIONS
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
     assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_review_max == config.retry.max_review_cycles_cap
     assert state.adaptive_limits_audit["base_review"] == config.retry.max_review_cycles_cap
@@ -439,7 +437,10 @@ def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
         except _StopLoop:
             pass
 
-    assert state.adaptive_dev_max == 4
+    # dev_profile.max_iterations=4 is the per-invocation agent-turn ceiling and
+    # must not become the retry-attempt count, even under an explicit dev
+    # override: attempts stay on retry policy (#2920).
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
     assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_dev_timeout_seconds == round(1200 * MEDIUM_HEADROOM_FACTOR)
     assert state.adaptive_dev_cost_estimate_usd == 12.0

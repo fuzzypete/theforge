@@ -17,8 +17,11 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -146,6 +149,75 @@ def _run_dev(config, task, state, tmp_path, agent_result, captured_logs=None):
         return _run_dev_phase(
             state, config, task, "# t\n", tmp_path, "feat/x", notify=False, logger=None
         )
+
+
+def _captured_dev_profile(config, task, state, tmp_path: Path):
+    """Run the dev phase and return the profile handed to the runner."""
+    from theforge.coordinator.dev_phase import _run_dev_phase
+
+    captured: list = []
+
+    def capture_profile(*, profile, **_kwargs):
+        captured.append(profile)
+        return _timeout_agent_result()
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=capture_profile)
+        )
+        stack.enter_context(
+            patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock())
+        )
+        _run_dev_phase(state, config, task, "# t\n", tmp_path, "feat/x", notify=False, logger=None)
+
+    return captured[0]
+
+
+@pytest.mark.parametrize("retry_max", [1, 3, 9])
+def test_retry_budget_never_becomes_the_agent_turn_ceiling(tmp_path: Path, retry_max: int) -> None:
+    """Retry-attempt policy must not reach the runner's per-invocation ceiling.
+
+    Seam test for #2920: ``retry.max_dev_iterations`` counts phase attempts and
+    ``dev_profile.max_iterations`` counts agent turns inside one attempt. An
+    unset profile value must stay ``None`` across the coordinator/runner
+    boundary so the runner applies its own documented default (75) — never the
+    retry count, and never the adaptive value derived from it.
+    """
+    config, task, state = _setup(tmp_path)
+    config = replace(
+        config,
+        dev_profile=replace(config.dev_profile, max_iterations=None),
+        retry=replace(config.retry, max_dev_iterations=retry_max),
+    )
+    # Whatever the adaptive layer derived for retry/timeout sizing is in
+    # attempt units and must not leak into the profile.
+    state.adaptive_dev_max = retry_max
+    state.budget.max_iterations = retry_max
+
+    profile = _captured_dev_profile(config, task, state, tmp_path)
+
+    assert profile.max_iterations is None
+
+
+def test_explicit_agent_turn_ceiling_passes_through_and_leaves_retries_alone(
+    tmp_path: Path,
+) -> None:
+    """An operator-set turn ceiling reaches the runner without touching retries."""
+    config, task, state = _setup(tmp_path)
+    config = replace(
+        config,
+        dev_profile=replace(config.dev_profile, max_iterations=40),
+        retry=replace(config.retry, max_dev_iterations=3),
+    )
+    state.adaptive_dev_max = 3
+    state.budget.max_iterations = 3
+
+    profile = _captured_dev_profile(config, task, state, tmp_path)
+
+    assert profile.max_iterations == 40
+    # The other direction of the independence: raising the turn ceiling did not
+    # buy the story more dev attempts.
+    assert state.budget.max_iterations == 3
 
 
 def test_timeout_with_iterations_remaining_retries_not_escalates(tmp_path: Path) -> None:
