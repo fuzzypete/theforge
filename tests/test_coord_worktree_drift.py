@@ -19,6 +19,12 @@ These tests pin the classification at each surface it crosses:
   rather than re-framing it as "Workspace creation failed"
 - ``run_batch_preflight``: the operator-facing sprint log renders it line by
   line instead of burying it inside one WARNING line
+
+Issue #2908 is the neighbouring failure at the same seam: a workspace condition
+the result object carried but nothing wrote to the operator's console, so the
+story just failed with no stated reason. Those tests capture the log stream and
+assert the ESCALATE line names the reason — at each entry point that reaches an
+ESCALATE before any agent runs.
 """
 
 from __future__ import annotations
@@ -40,7 +46,12 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import run_from_dev, run_from_review, run_task
+from theforge.coordinator.engine import (
+    run_from_dev,
+    run_from_review,
+    run_review_only,
+    run_task,
+)
 from theforge.coordinator.state import Phase
 from theforge.coordinator.workspace import _create_workspace
 from theforge.coordinator.worktree_drift import (
@@ -125,6 +136,29 @@ def _drifted_repo(tmp_path: Path, slug: str, *, escalated: bool) -> tuple[Path, 
     _git(project_root, "push", "origin", "main")
 
     return project_root, workspace_path, branch
+
+
+def _repo_with_residue(tmp_path: Path, slug: str) -> tuple[Path, Path]:
+    """A real repo whose story worktree path holds a directory git never registered.
+
+    Mirrors #2908: an operator (or a crashed run) leaves non-Forge contents at the
+    managed worktree path. ``git worktree list`` does not name it, and because the
+    contents are not Forge-owned they are preserved rather than deleted — so the
+    workspace phase has nothing it can safely reuse or remove.
+    """
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _git(project_root, "init", "--initial-branch=main")
+    _git(project_root, "config", "user.email", "test@example.com")
+    _git(project_root, "config", "user.name", "Test")
+    _write(project_root / "src" / "app.py", "# base\n")
+    _git(project_root, "add", "src")
+    _git(project_root, "commit", "-m", "initial")
+
+    residue = project_root / slug
+    _write(residue / "leftover.txt", "hand-written contents forge never produced\n")
+
+    return project_root, residue
 
 
 def _real_config(project_root: Path, slug: str) -> ForgeConfig:
@@ -306,6 +340,35 @@ class TestRunTaskSeam:
 
         assert result.message.startswith("Workspace creation failed:")
 
+    def test_unregistered_residue_states_its_reason_on_the_operator_log(self, tmp_path):
+        """#2908: the story used to fail with no reason on the console.
+
+        The result object carried the error, but nothing wrote it to the stream
+        the operator actually watches, so a sprint reported a failed story and
+        said nothing about why. Driven end to end from a real repo so the
+        residue condition is produced by the workspace phase, not asserted from
+        a mock of it.
+        """
+        slug = "residue-story"
+        project_root, residue = _repo_with_residue(tmp_path, slug)
+        config = _real_config(project_root, slug)
+        task = _real_task(slug, project_root)
+
+        logged: list[str] = []
+        with patch("theforge.coordinator.engine._log", side_effect=logged.append):
+            result = run_task(config, task, no_pull=True, lands_in_project_root=False)
+
+        assert result.success is False
+        assert result.phase is Phase.ESCALATE
+        assert "does not register it as a worktree" in result.state.error
+        # The residue is preserved, not deleted — it is not Forge-owned.
+        assert (residue / "leftover.txt").exists()
+
+        escalate_lines = [line for line in logged if "ESCALATE" in line]
+        assert escalate_lines, f"no ESCALATE line on the operator log: {logged}"
+        assert result.state.error in escalate_lines[0]
+        assert str(residue) in escalate_lines[0]
+
 
 # ── The resume rebase seam ────────────────────────────────────────────
 
@@ -384,6 +447,62 @@ class TestResumeRebaseSeam:
         assert result.phase is Phase.ESCALATE
         assert result.message.startswith("pre-dev rebase onto main failed")
         assert not is_drift_classification(result.message)
+
+    @patch("theforge.coordinator.engine.classify_rebase_conflict", return_value=None)
+    @patch("theforge.coordinator.engine._rebase_onto_main", return_value=(False, REBASE_STDERR))
+    @patch_gate_shell(side_effect=_resume_shell)
+    def test_resume_rebase_failure_states_its_reason_on_the_operator_log(
+        self, _mock_shell, _mock_rebase, _mock_classify, tmp_path
+    ):
+        """#2908, same shape on the resume path: the audit had it, the console did not."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        logged: list[str] = []
+        with patch("theforge.coordinator.engine._log", side_effect=logged.append):
+            result = run_from_review(config, task, workspace, no_pull=True)
+
+        assert result.phase is Phase.ESCALATE
+        escalate_lines = [line for line in logged if "ESCALATE" in line]
+        assert escalate_lines, f"no ESCALATE line on the operator log: {logged}"
+        assert result.state.error in escalate_lines[0]
+
+    @patch_gate_shell(side_effect=_resume_shell)
+    def test_missing_worktree_states_its_reason_on_the_operator_log(self, _mock_shell, tmp_path):
+        """#2908, same shape: resuming against a worktree that is simply gone."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug  # deliberately never created
+
+        logged: list[str] = []
+        # This guard lives in run_setup, which resolves ``_log`` through the util
+        # module at call time — the same operator stream, a different binding.
+        with patch("theforge.coordinator.util._log", side_effect=logged.append):
+            result = run_from_review(config, task, workspace, no_pull=True)
+
+        assert result.phase is Phase.ESCALATE
+        assert "Worktree not found" in result.state.error
+        escalate_lines = [line for line in logged if "ESCALATE" in line]
+        assert escalate_lines, f"no ESCALATE line on the operator log: {logged}"
+        assert result.state.error in escalate_lines[0]
+
+    def test_review_only_missing_worktree_states_its_reason_on_the_operator_log(self, tmp_path):
+        """#2908, same shape: `forge review` against a worktree that is gone."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug  # deliberately never created
+
+        logged: list[str] = []
+        with patch("theforge.coordinator.engine._log", side_effect=logged.append):
+            result = run_review_only(config, task, workspace)
+
+        assert result.phase is Phase.ESCALATE
+        assert "Worktree not found" in result.state.error
+        escalate_lines = [line for line in logged if "ESCALATE" in line]
+        assert escalate_lines, f"no ESCALATE line on the operator log: {logged}"
+        assert result.state.error in escalate_lines[0]
 
 
 # ── The sprint-log surface ────────────────────────────────────────────

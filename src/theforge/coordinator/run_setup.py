@@ -633,6 +633,7 @@ def _setup_resume_entry(
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        _cu._log(f"✗ ESCALATE   {state.error}")
         logger._safe_emit("escalate", reason=state.error, phase="INIT")
         logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
