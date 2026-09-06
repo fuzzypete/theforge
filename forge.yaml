@@ -247,7 +247,18 @@ validation:
   # adaptive scaling multiplies this value, so parallelism was the only thing
   # masking it. Set to ~2.5x measured alone-time; the timeout exists to catch a
   # hung gate, not to bound normal growth. Re-measure when the suite grows.
-  gate_timeout: 180
+  # 180→255 (2026-09-05): re-measured per the instruction above. `make gate` is
+  # 101.6s wall clock alone (10928 tests, up from 6224) — the suite grew 76% but
+  # wall time only 42%, so growth is sub-linear and not the problem. 255 is ~2.5x
+  # measured alone-time, the same ratio 180 encoded in July.
+  #
+  # What actually failed: issue-2921 escalated on `Gate timed out after 360s`
+  # (180 x adaptive scaling) while a second gate ran concurrently under
+  # --parallel 2. GATE_PYTEST_CMD uses `-n auto`, which assumes it owns the box;
+  # on 10 logical / 4 performance cores two gates demand ~20 xdist workers and each
+  # takes ~3.5x its solo time. Raising the timeout absorbs that; bounding `-n` would
+  # address it directly but needs measuring against CI's different core count first.
+  gate_timeout: 255
 
 conventions:
   hard:
