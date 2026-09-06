@@ -91,6 +91,12 @@ class SprintResult:
     # sprint-total-versus-story-rows cross-check (#2847) treats it as accounted
     # for rather than as spend nothing explains.
     non_story_spend_usd: float = 0.0
+    # The highest spend this run recorded to its live state while it was running.
+    # A run's own earlier observation of its spend is evidence the final total
+    # has to account for: a total below it describes a refund that did not
+    # happen, and the cross-check treats the gap as unexplained rather than
+    # letting the lower figure stand as settled (#2922).
+    recorded_spend_high_water_usd: float = 0.0
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
     stopped_reason: str | None = None  # why sprint stopped early, if it did
 

@@ -2833,6 +2833,7 @@ def _make_worker_phase_fn(
     budget_checkpoint: "Callable[[str, SprintCostObservation | None], None] | None" = None,
     live_cost_updates: "dict[str, SprintCostObservation] | None" = None,
     stop_event: threading.Event | None = None,
+    cost_projection: "Callable[[float | None], float | None] | None" = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper for worker live state.
 
@@ -2859,6 +2860,13 @@ def _make_worker_phase_fn(
     already running: the sprint learns what the story has spent at the same
     moment the story is between phases and can still be stopped without wasting
     a phase's work (#2547).
+
+    When *cost_projection* is provided every ``cost_usd`` forwarded to the state
+    writer passes through it first. The coordinator reports what THIS generation
+    measured; the row has to report what the sprint has spent on the story,
+    including whatever an earlier generation spent before a re-exec. Projecting
+    here rather than at wrap-up is what keeps that money on disk when an operator
+    stops the run mid-flight (#2922).
 
     When *stop_event* is already set the worker has been cancelled by the
     scheduler, so any later phase update is stale: accepting it would recreate
@@ -2910,7 +2918,10 @@ def _make_worker_phase_fn(
                 if "complexity_score" in updates:
                     update_kwargs["complexity_score"] = updates["complexity_score"]
                 if "cost_usd" in updates:
-                    update_kwargs["cost_usd"] = updates["cost_usd"]
+                    _live_cost = updates["cost_usd"]
+                    update_kwargs["cost_usd"] = (
+                        cost_projection(_live_cost) if cost_projection is not None else _live_cost
+                    )
                 if "current_model" in updates:
                     update_kwargs["current_model"] = updates["current_model"]
                 if detail_updates:
@@ -3389,12 +3400,17 @@ def _classify_and_record(
     dag: StoryDAG,
     merged_slugs: set[str],
     story_state: "SprintStoryState | None" = None,
+    cost_projection: "Callable[[float | None], float | None] | None" = None,
 ) -> StoryOutcome:
     """Classify result and update DAG state.
 
     Returns the canonical :class:`StoryOutcome` for the story. When
     ``story_state`` is supplied, the outcome is also recorded there — this is
     the single source of truth that all surfaces project from.
+
+    ``cost_projection`` turns the coordinator's current-generation cost into the
+    figure the row reports, so this write agrees with every other one about what
+    the sprint has spent on the story (#2922).
     """
     preflight_verdict = result.state.preflight_verdict
     landing_status = getattr(result, "landing_status", None)
@@ -3445,7 +3461,12 @@ def _classify_and_record(
         dag.mark_skipped(task.slug)
 
     if story_state is not None:
-        _transition_fields: dict = {"cost_usd": _story_reported_cost(result.state)}
+        _reported_cost = _story_reported_cost(result.state)
+        _transition_fields: dict = {
+            "cost_usd": (
+                cost_projection(_reported_cost) if cost_projection is not None else _reported_cost
+            )
+        }
         if is_landed:
             _transition_fields["landed"] = True
         story_state.transition(task.slug, outcome=outcome, **_transition_fields)
@@ -3802,6 +3823,26 @@ class SprintExecutionState:
     # sprint row so both surfaces report the same accounting (#2214).
     prior_generation_work: dict[str, dict] = field(default_factory=dict)
     story_cost_adjustments: dict[str, float] = field(default_factory=dict)
+    # --- pre-restart per-story spend (#2922) ---------------------------------
+    # Spend an earlier generation of THIS sprint already attributed to a story
+    # that re-enters this one. It lives here, not in ``run_sprint``'s frame,
+    # because a signal-driven stop never returns to that frame: money held only
+    # in a local variable is money the run loses when an operator stops it, and
+    # the run then reports a final total below the carried figure it had already
+    # disclosed.
+    #
+    # ``carried_prior_story_cost`` is active — every persisted projection of the
+    # story's cost adds it. ``seeded_prior_story_cost`` is prior cost the
+    # canonical row still physically holds (a succeeded prior outcome IS seeded);
+    # it is activated exactly once, at the first write that replaces that row's
+    # cost with this generation's measured figure, and stays inert for a story
+    # that never re-runs.
+    carried_prior_story_cost: dict[str, float] = field(default_factory=dict)
+    seeded_prior_story_cost: dict[str, float] = field(default_factory=dict)
+    # Per slug, the attribution already folded into its canonical row. The
+    # wrap-up reconciliation adds only the difference, so money that live and
+    # terminal writes already applied is never applied a second time.
+    applied_story_attribution: dict[str, float] = field(default_factory=dict)
     # Stories this sprint cancelled mid-flight because its cap was reached.
     # Their results come back through the generic cancellation path, and this is
     # what tells the scheduler the cancellation was a spending decision rather
@@ -3835,6 +3876,43 @@ class SprintExecutionState:
     def __post_init__(self) -> None:
         self.budget = SprintBudgetRuntime(self)
 
+    # --- pre-restart per-story spend (#2922) ---------------------------------
+
+    def defer_prior_story_cost(self, slug: str, cost_usd: float, *, seeded: bool) -> None:
+        """Record spend an earlier generation attributed to *slug*.
+
+        *seeded* says whether the canonical row was registered holding that cost.
+        A seeded amount waits in ``seeded_prior_story_cost`` until the row is
+        overwritten; an unseeded one is carried from this moment on, which is
+        what makes it survive a stop that never reaches wrap-up.
+        """
+        if cost_usd <= 0.0:
+            return
+        target = self.seeded_prior_story_cost if seeded else self.carried_prior_story_cost
+        target[slug] = target.get(slug, 0.0) + float(cost_usd)
+
+    def activate_seeded_prior_cost(self, slug: str) -> None:
+        """Carry *slug*'s seeded prior cost now that its row no longer holds it.
+
+        Called from every write that replaces the row's cost with this
+        generation's measured figure. Idempotent: the seed is consumed once.
+        """
+        amount = self.seeded_prior_story_cost.pop(slug, None)
+        if amount:
+            self.carried_prior_story_cost[slug] = (
+                self.carried_prior_story_cost.get(slug, 0.0) + amount
+            )
+
+    def consume_carried_prior_cost(self, slug: str) -> None:
+        """Drop *slug*'s carried prior cost because a row now states it directly.
+
+        The reconciliation paths write a story's prior-generation cost onto its
+        row as an absolute figure. That is the same money, so it must stop being
+        added on top of it.
+        """
+        self.carried_prior_story_cost.pop(slug, None)
+        self.seeded_prior_story_cost.pop(slug, None)
+
     @classmethod
     def for_run(cls, context: SprintRunContext) -> "SprintExecutionState":
         """The state a run of *context* starts from.
@@ -3853,6 +3931,73 @@ class SprintExecutionState:
 # execution state and their own per-call inputs, and nothing else: the state
 # is the parameter, not a list of the values it holds, which is what makes the
 # next extraction a move rather than a re-decision.
+
+
+def _story_attribution_usd(state: SprintExecutionState, slug: str) -> float:
+    """Spend attributed to *slug* that its coordinator state does not report.
+
+    Two sources, both real money already in the sprint's ledger: this
+    generation's intake-remediation spend (``story_cost_adjustments``) and
+    pre-restart spend an earlier generation attributed to the story
+    (``carried_prior_story_cost``).
+    """
+    intake = state.story_cost_adjustments.get(slug, 0.0)
+    carried = state.carried_prior_story_cost.get(slug, 0.0)
+    return round(intake + carried, 6)
+
+
+def _projected_story_cost(
+    state: SprintExecutionState,
+    slug: str,
+    measured: float | None,
+    *,
+    canonical: bool = False,
+    overwrites_seed: bool = False,
+) -> float | None:
+    """The cost a persisted row reports for *slug*.
+
+    This generation's measured cost plus everything else the sprint has
+    attributed to the story. Applied at every live and terminal write rather
+    than once at wrap-up, so a stopped process cannot take the attribution with
+    it (#2922) — a ``forge stop`` never returns to ``run_sprint``'s wrap-up, and
+    what is not on disk by then is lost.
+
+    *measured* of ``None`` is cost-unknown and stays cost-unknown: adding a known
+    amount to an unknown one does not produce a confident figure (#1992).
+
+    *canonical* marks a write to the canonical story registry, whose attribution
+    the wrap-up reconciliation would otherwise apply a second time.
+
+    *overwrites_seed* marks a write that replaces the row's cost with this
+    generation's own measured figure — the moment a seeded prior cost stops
+    being on the row and has to be carried instead. A write that merely restates
+    a row (the initial live-state projection) must not claim it, or a story
+    skipped as already-merged would be charged its prior cost twice.
+    """
+    if overwrites_seed:
+        state.activate_seeded_prior_cost(slug)
+    if measured is None:
+        return None
+    attribution = _story_attribution_usd(state, slug)
+    if canonical:
+        state.applied_story_attribution[slug] = attribution
+    return measured + attribution
+
+
+def _canonical_cost_projector(
+    state: SprintExecutionState, slug: str
+) -> "Callable[[float | None], float | None]":
+    """A one-argument projection of *slug*'s cost onto its canonical row.
+
+    ``_make_worker_phase_fn`` is a module-level function that holds no execution
+    state, so the projection is bound here and handed to it rather than the
+    state being threaded through the worker plumbing.
+    """
+
+    def _project(measured: float | None) -> float | None:
+        return _projected_story_cost(state, slug, measured, canonical=True, overwrites_seed=True)
+
+    return _project
 
 
 def _claim_story_execution(state: SprintExecutionState, slug: str) -> None:
@@ -3933,6 +4078,18 @@ def _set_outcome(
             state.stories.register(slug, _key, canonical_ref=_ref)
         else:
             state.stories.register(slug, slug)
+    if "cost_usd" in fields:
+        # Every count-affecting event flows through here, so this is also where
+        # a story's persisted cost picks up the spend its coordinator state does
+        # not report — at the moment the row is written, not at a wrap-up that a
+        # stopped sprint never reaches (#2922).
+        _incoming_cost = fields["cost_usd"]
+        _measured_cost = (
+            float(_incoming_cost)
+            if isinstance(_incoming_cost, (int, float)) and not isinstance(_incoming_cost, bool)
+            else None
+        )
+        fields["cost_usd"] = _projected_story_cost(state, slug, _measured_cost, canonical=True)
     canonical_outcome = coerce_outcome(outcome)
     if canonical_outcome.is_terminal and "finished_at" not in fields:
         fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -4142,7 +4299,14 @@ def _persist_current_story_result(
     outcome_source = (
         "preflight_verdict" if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE" else None
     )
-    _story_cost = _story_reported_cost(result.state, state.story_cost_adjustments.get(slug, 0.0))
+    # The accumulated file is the record the NEXT generation reloads, so it
+    # carries the same projection every other surface reports: this generation's
+    # measured cost plus the intake and pre-restart spend attributed to the
+    # story. Written here, while the story settles, rather than at a wrap-up a
+    # stopped process never reaches (#2922).
+    _story_cost = _projected_story_cost(
+        state, slug, _story_reported_cost(result.state), overwrites_seed=True
+    )
     state.current_story_entries_by_ref[canonical_ref] = {
         "path": display_key,
         "slug": slug,
@@ -5525,25 +5689,26 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # operator-facing surface (forge status, banner, summary, notifications).
     # No local counters are kept; counts are projected from this structure.
     # Pre-restart spend that the canonical story state will not be holding by
-    # the time totals are projected. It is re-attached at wrap-up (see
-    # ``_bump_story_cost``); without it the summary total — which sums the
-    # canonical state — silently drops spend that SprintResult still counts via
-    # the ledger's carried prior, so two operator-facing totals disagree about
-    # one run.
+    # the time totals are projected. Without it the summary total — which sums
+    # the canonical state — silently drops spend that SprintResult still counts
+    # via the ledger's carried prior, so two operator-facing totals disagree
+    # about one run.
     #
     # Two disjoint ways the canonical state loses it, both only for stories that
     # re-enter this generation:
     #   unseeded — a non-succeeded (or unmappable) prior outcome is never
     #     seeded, because monotonicity would reject the later transition to
-    #     RUNNING. Its cost is therefore always missing.
+    #     RUNNING. Its cost is therefore always missing, so it becomes carried
+    #     attribution immediately.
     #   seeded-then-overwritten — a succeeded prior outcome IS seeded with its
     #     cost, but if the story runs again, transition() replaces cost_usd
     #     with the coordinator's current-generation total. The seed survives
     #     only for a story that does not re-run (e.g. resume_skip_merged), so
-    #     this one is re-attached conditionally, keyed on whether the story
-    #     actually ran.
-    unseeded_prior_story_cost: dict[str, float] = {}
-    seeded_prior_story_cost: dict[str, float] = {}
+    #     it is activated conditionally, at the first write that overwrites it.
+    #
+    # Both live on the execution state, not in this frame: a signal-driven stop
+    # never returns here, and money held only in a local variable is money the
+    # run reports as never spent once an operator stops it (#2922).
     # Pre-populate from prior-run accumulated state so cross-process resume
     # invocations see the full logical sprint in counts and projections.
     # Stories present in the current run are seeded only when their prior
@@ -5567,9 +5732,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 return 0.0
 
         def _defer_prior_cost(slug: str, prior: dict) -> None:
-            _cost = _prior_cost_of(prior)
-            if _cost > 0.0:
-                unseeded_prior_story_cost[slug] = unseeded_prior_story_cost.get(slug, 0.0) + _cost
+            _sprint_state.defer_prior_story_cost(slug, _prior_cost_of(prior), seeded=False)
 
         for _prior in _preload(_ctx.sprint_id, _ctx.config.project_root):
             _prior_slug = _prior.get("slug")
@@ -5610,11 +5773,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             # re-runs, transition() overwrites it with the current generation's
             # total. Remember it so wrap-up can restore it in that case.
             if _prior_slug in _current_run_slugs:
-                _seeded_cost = _prior_cost_of(_prior)
-                if _seeded_cost > 0.0:
-                    seeded_prior_story_cost[_prior_slug] = (
-                        seeded_prior_story_cost.get(_prior_slug, 0.0) + _seeded_cost
-                    )
+                _sprint_state.defer_prior_story_cost(
+                    _prior_slug, _prior_cost_of(_prior), seeded=True
+                )
             # Strip per-run terminal artifacts so an accumulated story cannot
             # carry forward a stale review summary or final_outcome from an
             # earlier generation. The current run must write these fresh.
@@ -6471,6 +6632,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         """
         record = _prior_generation_record(slug)
         if record is not None and "cost_usd" in record:
+            # The row is about to state the prior accumulated cost outright, so
+            # the same money must stop being carried as attribution on top of it
+            # (#2922). Both readings come from this one record.
+            _sprint_state.consume_carried_prior_cost(slug)
             raw = record.get("cost_usd")
             if raw is None:
                 return None
@@ -6903,7 +7068,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     # A dropped story that abandoned work has a real cost: the
                     # prior generation's when its audit survived (#2214),
                     # unmeasured when it did not — never a fabricated $0.00.
-                    "cost_usd": _dropped_row_cost(_slug),
+                    # Projected so a story re-entering this generation starts its
+                    # row holding the pre-restart spend, before any work — and so
+                    # before anything can stop the process — rather than waiting
+                    # on a wrap-up reattachment (#2922).
+                    "cost_usd": _projected_story_cost(
+                        _sprint_state, _slug, _dropped_row_cost(_slug), canonical=True
+                    ),
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "batch_group": batch_group_by_slug.get(_slug),
                     "blocked_by": _blocked_by,
@@ -7423,6 +7594,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                                 ),
                                 budget_checkpoint=_sprint_state.budget.checkpoint,
                                 live_cost_updates=_sprint_state.latest_live_costs,
+                                cost_projection=_canonical_cost_projector(
+                                    _sprint_state, _member_slug
+                                ),
                                 stop_event=_batch_stop_evt,
                             )
                             _sprint_state.stop_events[_member_slug] = _batch_stop_evt
@@ -7513,6 +7687,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     ),
                     budget_checkpoint=_sprint_state.budget.checkpoint,
                     live_cost_updates=_sprint_state.latest_live_costs,
+                    cost_projection=_canonical_cost_projector(_sprint_state, task.slug),
                     stop_event=stop_evt,
                 )
                 _sprint_state.stop_events[task.slug] = stop_evt
@@ -8136,12 +8311,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     _done_status = "waiting"
                 # Live status update — does not commit a terminal outcome to
                 # the canonical structure when the slug is still preflighting.
+                _project_cost = _canonical_cost_projector(_sprint_state, task.slug)
                 if _sprint_state.state_writer is not None and _done_status == "waiting":
                     _sprint_state.state_writer.update(
                         slug,
                         status=_done_status,
                         phase=result.phase.name,
-                        cost_usd=_story_reported_cost(result.state),
+                        cost_usd=_project_cost(_story_reported_cost(result.state)),
                     )
 
                 _classify_outcome = _classify_and_record(
@@ -8150,6 +8326,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     _sprint_state.dag,
                     _sprint_state.merged_slugs,
                     story_state=_sprint_state.stories,
+                    cost_projection=_project_cost,
                 )
                 _terminal_model = _terminal_story_model(result)
                 _outcome_fields: dict[str, object] = {
@@ -8398,11 +8575,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _terminal_sprint_phase = SPRINT_PHASE_DONE
         _sprint_state.state_writer.set_phase(_terminal_sprint_phase)
 
-    # Attribute intake remediation agent spend back to each story's canonical
-    # cost_usd so per-story sums (used by sprint-summary.yaml) match the
-    # SprintResult total. The dev/review cycle's transition() overwrites
-    # cost_usd with CoordinatorState.total_cost, so this attribution must
-    # happen after the work loop completes — never before.
+    # Reconcile per-story attribution — intake remediation spend and pre-restart
+    # carried spend — against what the canonical rows already hold, so the
+    # per-story sums (used by sprint-summary.yaml) match the SprintResult total.
+    #
+    # Every live and terminal write now projects the same attribution onto the
+    # row as it is written (#2922), because a stop never reaches this point and
+    # money that only arrives here is money a stopped run loses. What is left for
+    # this pass is the rows nothing ever wrote to: a story dropped at the intake
+    # gate, or one whose spend the work loop never got to record. It adds only
+    # the outstanding part, so an amount a live write already applied is not
+    # applied a second time.
     def _bump_story_cost(slug: str, extra: float) -> None:
         if extra <= 0.0:
             return
@@ -8415,31 +8598,30 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             return
         _sprint_state.stories.transition(slug, cost_usd=entry.cost_usd + extra)
 
-    for _slug, _outcome in (intake_outcomes or {}).items():
-        _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
-    for _issue_num, _outcome in (_ctx.entry_intake_outcomes or {}).items():
-        _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
-
-    # Re-attach pre-restart spend the canonical state is no longer holding, so
-    # the summary total (which sums that state) matches SprintResult's
-    # accumulated + carried prior. Runs here, after the work loop, for the same
-    # reason the intake attribution above does: transition() overwrites
-    # cost_usd with the coordinator's current-generation total while a story
-    # is running, so any earlier attribution would be discarded.
-    _carried_by_slug: dict[str, float] = dict(unseeded_prior_story_cost)
-    for _seed_slug, _seed_cost in seeded_prior_story_cost.items():
-        # A seeded cost only needs restoring when the story re-ran; otherwise
-        # the seed is still intact and adding it would double-count.
-        if _seed_slug in _sprint_state.ran_this_generation:
-            _carried_by_slug[_seed_slug] = _carried_by_slug.get(_seed_slug, 0.0) + _seed_cost
-    for _carried_slug, _carried_cost in _carried_by_slug.items():
-        _bump_story_cost(_carried_slug, _carried_cost)
-    if _carried_by_slug:
-        _carried_total = sum(_carried_by_slug.values())
-        _carried_detail = ", ".join(f"{s}=${c:.4f}" for s, c in sorted(_carried_by_slug.items()))
+    _reconciled_by_slug: dict[str, float] = {}
+    for _attr_slug in sorted(
+        set(_sprint_state.story_cost_adjustments) | set(_sprint_state.carried_prior_story_cost)
+    ):
+        _outstanding = round(
+            _story_attribution_usd(_sprint_state, _attr_slug)
+            - _sprint_state.applied_story_attribution.get(_attr_slug, 0.0),
+            6,
+        )
+        if _outstanding <= 0.0:
+            continue
+        _bump_story_cost(_attr_slug, _outstanding)
+        _sprint_state.applied_story_attribution[_attr_slug] = _story_attribution_usd(
+            _sprint_state, _attr_slug
+        )
+        _reconciled_by_slug[_attr_slug] = _outstanding
+    if _reconciled_by_slug:
+        _reconciled_total = sum(_reconciled_by_slug.values())
+        _reconciled_detail = ", ".join(
+            f"{s}=${c:.4f}" for s, c in sorted(_reconciled_by_slug.items())
+        )
         _log(
-            f"Re-attached pre-restart spend to {len(_carried_by_slug)} story/stories: "
-            f"${_carried_total:.4f} ({_carried_detail})"
+            f"Re-attached unprojected spend to {len(_reconciled_by_slug)} story/stories: "
+            f"${_reconciled_total:.4f} ({_reconciled_detail})"
         )
 
     _final_cost = _sprint_state.cost.snapshot()
@@ -8487,6 +8669,15 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         # that to the row itself through ``story_cost_adjustments``.
         non_story_spend_usd=_sprint_state.cost.non_story_spend(
             frozenset(e.slug for e in _sprint_state.stories.stories())
+        ),
+        # What this run told operators it had spent while it was running. The
+        # cross-check below compares the rows against it as well as against the
+        # ledger, so a generation that lost part of its own accounting reports a
+        # discrepancy rather than a settled lower total (#2922).
+        recorded_spend_high_water_usd=(
+            _sprint_state.state_writer.recorded_spend_usd() or 0.0
+            if _sprint_state.state_writer is not None
+            else 0.0
         ),
         results=_sprint_state.results,
         stopped_reason=_sprint_state.stop.reason,

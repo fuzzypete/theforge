@@ -136,6 +136,7 @@ def build_cost_accounting_discrepancy(
     story_costs: "list[tuple[str | None, float | None]]",
     *,
     declared_non_story_usd: float = 0.0,
+    recorded_spend_high_water_usd: float = 0.0,
 ) -> dict | None:
     """Spend admitted into the sprint total that no per-story row explains.
 
@@ -159,8 +160,17 @@ def build_cost_accounting_discrepancy(
     the sprint level because it belongs to no story of the sprint (intake
     remediation on an issue that was never scheduled). It is explained — just
     not by a story row — so it counts on the explained side.
+
+    ``recorded_spend_high_water_usd`` is the most the run ever told an operator
+    it had spent. A run's own earlier observation is as binding as its ledger:
+    where the ledger came back lower — a generation that lost part of its
+    accounting across a re-exec (#2922) — the higher figure is the one the rows
+    have to explain, so the contradiction surfaces here instead of being settled
+    quietly in favour of the smaller number.
     """
-    measured = round(float(measured_total_usd or 0.0), 4)
+    measured = round(
+        max(float(measured_total_usd or 0.0), float(recorded_spend_high_water_usd or 0.0)), 4
+    )
     non_story = round(float(declared_non_story_usd or 0.0), 4)
     story_total = round(sum(cost for _slug, cost in story_costs if cost is not None), 4)
     explained = round(story_total + non_story, 4)
@@ -1313,6 +1323,9 @@ def _write_sprint_audit(
             getattr(result, "total_cost_usd", 0.0) or 0.0,
             _explained_costs,
             declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+            recorded_spend_high_water_usd=(
+                getattr(result, "recorded_spend_high_water_usd", 0.0) or 0.0
+            ),
         )
         if _cost_discrepancy is not None:
             _cost_complete = False
@@ -1830,6 +1843,9 @@ def _write_sprint_summary(
             getattr(result, "total_cost_usd", 0.0) or 0.0,
             [(e.get("slug"), e.get("cost_usd")) for e in spec_entries],
             declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+            recorded_spend_high_water_usd=(
+                getattr(result, "recorded_spend_high_water_usd", 0.0) or 0.0
+            ),
         )
         if _cost_discrepancy is not None:
             effective_cost_complete = False

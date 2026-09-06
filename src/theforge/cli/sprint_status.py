@@ -19,6 +19,11 @@ _STATUS_WIDTH = 11
 
 _DETAIL_REF_RE = re.compile(r"#(\d+)")
 
+#: How far a finished run's per-story rows may sit below the spend the run
+#: itself recorded before the two are treated as contradicting each other. Both
+#: sides are stored to four places, so anything at or under a cent is rounding.
+_UNRECONCILED_COST_TOLERANCE_USD = 0.01
+
 #: Slug -> issue-number normalization is shared with the issue-cost aggregate so
 #: the number this view resolves a title for and the number that view sums runs
 #: for can never diverge (#2365).
@@ -194,6 +199,14 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
                 # whatever the last phase written to .state says.
                 entries = mark_interrupted_entries(entries)
                 sprint_name = _read_sprint_name_from_state(state_path)
+                # A stopped or crashed run left behind what it recorded about its
+                # own spend. Read it: it is the only thing that can contradict
+                # the per-story rows this command is about to sum (#2922).
+                _stopped_meta = _read_sprint_meta_from_state(state_path)
+                budget_usd = _stopped_meta.get("budget_usd")
+                budget_status_recorded = _stopped_meta.get("budget_status")
+                budget_overrun_recorded = _stopped_meta.get("budget_overrun_usd")
+                budget_spend_recorded = _stopped_meta.get("budget_spend_usd")
 
     # For crashed sprints with an unreadable state file, show the banner with
     # an empty story list rather than falling through to sprint-summary (which
@@ -254,6 +267,27 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             cost_complete = False
             cost_measured_usd = _measured_sum
 
+    # A run's recorded spend is a high-water mark, not a running guess: money it
+    # told an operator it had spent stays spent. When a finished run's per-story
+    # rows sum to LESS than that figure, the two contradict each other and
+    # neither is the sprint's cost — the run lost part of its own accounting
+    # somewhere (#2922). Report the shortfall as unreconciled rather than let the
+    # smaller, internally-consistent number stand as a settled total; an
+    # under-reported total is what lets a cap bind later than the operator
+    # believes it does. Only for runs that have finished: a live run's rows
+    # legitimately trail its ledger while work is in flight.
+    cost_unreconciled_usd: float | None = None
+    if (
+        not is_live
+        and total_cost_usd is not None
+        and isinstance(budget_spend_recorded, (int, float))
+        and float(budget_spend_recorded) - total_cost_usd > _UNRECONCILED_COST_TOLERANCE_USD
+    ):
+        cost_unreconciled_usd = float(budget_spend_recorded)
+        cost_measured_usd = total_cost_usd
+        total_cost_usd = None
+        cost_complete = False
+
     # ── Header ───────────────────────────────────────────────────────────
     # A PID file is evidence a process exists, not evidence the sprint is still
     # advancing: the runner writes the terminal sprint_phase before its own
@@ -292,6 +326,13 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         )
     if total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}{overrun_marker}")
+    elif cost_unreconciled_usd is not None:
+        # Name both numbers. The operator's question is which one to trust, and
+        # the honest answer is neither — so neither is presented as the total.
+        header_parts.append(
+            f"cost: unreconciled (stories ${cost_measured_usd or 0.0:.2f} < "
+            f"recorded ${cost_unreconciled_usd:.2f}){overrun_marker}"
+        )
     elif not cost_complete:
         header_parts.append(f"cost: {_fmt_cost_total(None, cost_measured_usd)}{overrun_marker}")
     if duration_seconds is not None:

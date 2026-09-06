@@ -165,17 +165,39 @@ class SprintStateWriter:
         overrun_usd: float = 0.0,
         spend_usd: float | None = None,
     ) -> None:
-        """Record the run's standing against its cap and rewrite the state file."""
+        """Record the run's standing against its cap and rewrite the state file.
+
+        ``spend_usd`` is kept as a **high-water mark**: money this run has
+        already spent stays recorded whatever happens to the process afterwards.
+        A later publication reporting less spend is not a refund — it is a
+        generation that lost part of its own accounting — so the recorded figure
+        never decreases and is never cleared back to ``None`` (#2922). A rising
+        spend also defeats the unchanged-status early return below; otherwise the
+        recorded figure would lag reality for the whole time a run sits
+        comfortably ``within`` its cap.
+        """
         with self._lock:
-            unchanged = self._budget_status == status and round(
-                self._budget_overrun_usd, 4
-            ) == round(float(overrun_usd), 4)
+            incoming = None if spend_usd is None else float(spend_usd)
+            raised = incoming is not None and (
+                self._budget_spend_usd is None or incoming > self._budget_spend_usd
+            )
+            unchanged = (
+                self._budget_status == status
+                and round(self._budget_overrun_usd, 4) == round(float(overrun_usd), 4)
+                and not raised
+            )
             if unchanged:
                 return
             self._budget_status = status
             self._budget_overrun_usd = float(overrun_usd)
-            self._budget_spend_usd = None if spend_usd is None else float(spend_usd)
+            if raised:
+                self._budget_spend_usd = incoming
             self._write_locked()
+
+    def recorded_spend_usd(self) -> float | None:
+        """The highest spend this run has recorded, or ``None`` if it recorded none."""
+        with self._lock:
+            return self._budget_spend_usd
 
     def set_phase(self, phase: str) -> None:
         """Update sprint-level phase and rewrite the state file atomically."""

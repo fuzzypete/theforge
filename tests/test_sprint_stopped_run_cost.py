@@ -1,0 +1,341 @@
+"""Regression: a stopped run's cost never falls below what it already spent.
+
+A sprint that re-execs carries per-story spend from the generation before it.
+That money used to be held in a local variable of ``run_sprint`` and re-attached
+to the story rows in the end-of-run wrap-up — a wrap-up ``forge stop`` never
+reaches, because the SIGTERM handler writes the terminal marker and exits. The
+run then reported a final total *below* the carried figure it had itself
+disclosed at startup, with nothing saying the two disagreed.
+
+Two halves are asserted here:
+  - the carried spend is on disk from the first state write onward, so no
+    stop can lose it (``TestPreRestartSpendIsPersistedEagerly``);
+  - where a contradiction survives anyway, the status header reports it as
+    unreconciled instead of printing the lower sum as the sprint's cost
+    (``TestUnreconciledCostReporting``).
+
+Issue: https://github.com/fuzzypete/theforge/issues/2922
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+import yaml
+from sprint_test_helpers import run_sprint_ctx
+
+from tests.test_sprint_resume import (
+    _make_config,
+    _make_coordinator_result,
+    _make_manifest,
+    _make_spec_file,
+    _set_sprint_id,
+)
+from theforge.sprint.audit import persist_accumulated_story_state
+from theforge.sprint.dag import StoryTriage
+from theforge.sprint.state_writer import SprintStateWriter
+from theforge.sprint.story_state import StoryOutcome
+
+PRIOR_COST_USD = 6.0
+CURRENT_COST_USD = 1.5
+
+
+def _retry_triage() -> StoryTriage:
+    return StoryTriage(
+        story_path="feature-a.md",
+        action="full",
+        reason="no worktree found",
+        worktree_path=None,
+        slug="feature-a",
+    )
+
+
+def _skip_merged_triage() -> StoryTriage:
+    return StoryTriage(
+        story_path="feature-a.md",
+        action="skip_merged",
+        reason="already merged to main",
+        worktree_path=None,
+        slug="feature-a",
+    )
+
+
+def _seed_prior_generation(tmp_path: Path, *, outcome: str) -> str:
+    """Accumulated state as an interrupted earlier generation would leave it."""
+    sprint_id = _set_sprint_id(tmp_path)
+    persist_accumulated_story_state(
+        sprint_id,
+        "Test Sprint",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "feature-a.md",
+                "slug": "feature-a",
+                "path": "feature-a.md",
+                "outcome": outcome,
+                "cost_usd": PRIOR_COST_USD,
+                "story_run_id": "run-prev",
+                "started_at": "2026-09-05T01:00:00Z",
+                "finished_at": "2026-09-05T01:05:00Z",
+            }
+        ],
+    )
+    return sprint_id
+
+
+def _spy_on_state_writes(monkeypatch, snapshots: list[dict]) -> None:
+    """Record the live ``.state`` file after every write the run makes.
+
+    The point of the fix is *when* the money reaches disk, so the assertion has
+    to see every intermediate file the run produced — not only the last one.
+    """
+    original = SprintStateWriter._write_locked
+
+    def spy(self) -> None:
+        original(self)
+        try:
+            data = yaml.safe_load(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return
+        if isinstance(data, dict):
+            snapshots.append(data)
+
+    monkeypatch.setattr(SprintStateWriter, "_write_locked", spy)
+
+
+def _row_costs(snapshots: list[dict], slug: str) -> list[float | None]:
+    costs: list[float | None] = []
+    for snapshot in snapshots:
+        for story in snapshot.get("stories") or []:
+            if isinstance(story, dict) and story.get("slug") == slug:
+                costs.append(story.get("cost_usd"))
+    return costs
+
+
+class TestPreRestartSpendIsPersistedEagerly:
+    def test_retried_story_row_never_regresses_below_prior_spend(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Every persisted row for a re-run story holds its pre-restart spend.
+
+        The story's own coordinator reports $1.50 for this generation, which is
+        *less* than the $6.00 the previous one spent on it. If the row is written
+        with the smaller figure and only reconciled at wrap-up, a stop in between
+        publishes a total that lost $6.00.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _make_config(tmp_path)
+        sprint_id = _seed_prior_generation(tmp_path, outcome="FAILED")
+
+        snapshots: list[dict] = []
+        _spy_on_state_writes(monkeypatch, snapshots)
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=_make_coordinator_result(
+                    success=True, cost=CURRENT_COST_USD, landing_status="landed"
+                ),
+            ),
+        ):
+            result = run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-gen2-2922")
+
+        costs = _row_costs(snapshots, "feature-a")
+        assert costs, "the run must have written a live state row for feature-a"
+        assert all(c is not None and c >= PRIOR_COST_USD for c in costs), (
+            "no persisted row may report less than the pre-restart spend already "
+            f"attributed to the story; saw {costs}"
+        )
+        assert costs[-1] == pytest.approx(PRIOR_COST_USD + CURRENT_COST_USD)
+
+        # The accumulated file the next generation reloads carries the same
+        # figure, written while the story settled rather than at wrap-up.
+        accumulated = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = {row["slug"]: row for row in accumulated.get("stories", [])}
+        assert rows["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD + CURRENT_COST_USD)
+        # The run's own totals still agree — eager attribution must not
+        # double-count what the wrap-up reconciliation used to add.
+        assert result.total_cost_usd == pytest.approx(PRIOR_COST_USD + CURRENT_COST_USD)
+        summary = yaml.safe_load(
+            (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        by_slug = {s["slug"]: s for s in summary["stories"]}
+        assert by_slug["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD + CURRENT_COST_USD)
+
+    def test_skip_merged_story_keeps_prior_spend_exactly_once(self, tmp_path: Path) -> None:
+        """The other branch: a prior DONE story that does NOT re-run.
+
+        Its cost is seeded onto the canonical row at startup and nothing
+        overwrites it, so carrying it as attribution as well would report $12.00
+        for $6.00 of work. Eager attribution has to leave this case alone.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _make_config(tmp_path)
+        sprint_id = _seed_prior_generation(tmp_path, outcome="DONE")
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_skip_merged_triage()),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=_make_coordinator_result(
+                    success=True, cost=CURRENT_COST_USD, landing_status="landed"
+                ),
+            ),
+        ):
+            result = run_sprint_ctx(
+                config, manifest_path, reexec=True, run_id="run-gen2-skipmerged"
+            )
+
+        summary = yaml.safe_load(
+            (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        by_slug = {s["slug"]: s for s in summary["stories"]}
+        assert by_slug["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD), (
+            "a story skipped as already-merged keeps the prior cost its row was "
+            "seeded with — once, not twice"
+        )
+        assert result.total_cost_usd == pytest.approx(PRIOR_COST_USD)
+
+        accumulated = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = {row["slug"]: row for row in accumulated.get("stories", [])}
+        assert rows["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD)
+
+
+class TestRecordedSpendIsMonotonic:
+    def test_rising_spend_is_recorded_while_status_is_unchanged(self, tmp_path: Path) -> None:
+        """A run comfortably ``within`` its cap still records what it spends.
+
+        ``set_budget_status`` short-circuits when the status and overrun have not
+        moved, which is most of a run. Without spend in that check the recorded
+        figure would sit at whatever the first publication happened to be.
+        """
+        writer = SprintStateWriter("run-mono", tmp_path, "Test Sprint", budget_usd=100.0)
+        writer.init([{"slug": "feature-a", "path": "feature-a.md", "cost_usd": 0.0}])
+
+        writer.set_budget_status("within", spend_usd=5.0)
+        assert writer.recorded_spend_usd() == pytest.approx(5.0)
+        writer.set_budget_status("within", spend_usd=12.0)
+        assert writer.recorded_spend_usd() == pytest.approx(12.0)
+
+        state = yaml.safe_load((tmp_path / ".forge" / "runs" / "run-mono.state").read_text())
+        assert state["budget_spend_usd"] == pytest.approx(12.0)
+
+    def test_recorded_spend_never_falls(self, tmp_path: Path) -> None:
+        """Spend already disclosed stays disclosed — a lower report is not a refund."""
+        writer = SprintStateWriter("run-mono2", tmp_path, "Test Sprint", budget_usd=100.0)
+        writer.init([{"slug": "feature-a", "path": "feature-a.md", "cost_usd": 0.0}])
+
+        writer.set_budget_status("within", spend_usd=31.44)
+        writer.set_budget_status("within", spend_usd=21.91)
+        assert writer.recorded_spend_usd() == pytest.approx(31.44)
+
+        writer.set_budget_status("within", spend_usd=None)
+        assert writer.recorded_spend_usd() == pytest.approx(31.44)
+
+        state = yaml.safe_load((tmp_path / ".forge" / "runs" / "run-mono2.state").read_text())
+        assert state["budget_spend_usd"] == pytest.approx(31.44)
+
+
+def _write_stopped_state(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    story_costs: dict[str, float],
+    recorded_spend_usd: float,
+) -> None:
+    """A stopped run's leftovers: terminal ``.state`` plus its ``.ended`` marker."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / f"{run_id}.state").write_text(
+        yaml.dump(
+            {
+                "sprint_name": "issues-2775,2906",
+                "sprint_id": "sprint-2922",
+                "sprint_phase": "stopped",
+                "budget_usd": 150.0,
+                "budget_status": "within",
+                "budget_overrun_usd": 0.0,
+                "budget_spend_usd": recorded_spend_usd,
+                "max_parallel": 2,
+                "stories": [
+                    {
+                        "slug": slug,
+                        "path": f"Issue #{slug.removeprefix('issue-')}",
+                        "outcome": StoryOutcome.FAILED.value,
+                        "status": StoryOutcome.FAILED.value,
+                        "phase": "STOPPED",
+                        "cost_usd": cost,
+                        "detail": {},
+                        "blocked_by": [],
+                        "depends_on": [],
+                    }
+                    for slug, cost in story_costs.items()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runs_dir / f"{run_id}.ended").write_text("stopped\n", encoding="utf-8")
+
+
+class TestUnreconciledCostReporting:
+    def test_stopped_run_below_its_recorded_spend_reports_unreconciled(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Rows that sum below the run's own recorded spend are not a total.
+
+        Both figures describe one run and they contradict each other. Printing
+        the smaller one as ``cost:`` is the outcome the operator has no signal
+        about — and it under-reports against the cap.
+        """
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48a1",
+            story_costs={"issue-2908": 2.54, "issue-2914": 3.74},
+            recorded_spend_usd=31.44,
+        )
+
+        assert display_sprint_status("0210029b48a1", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "unreconciled" in header, header
+        assert "$31.44" in header, header
+        assert "cost: $6.28" not in header, (
+            "the contradicted per-story sum must not be presented as the run's cost"
+        )
+
+    def test_stopped_run_that_reconciles_reports_its_total(self, tmp_path: Path, capsys) -> None:
+        """The guard is a contradiction check, not a blanket refusal."""
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48a2",
+            story_costs={"issue-2908": 2.54, "issue-2914": 3.74},
+            recorded_spend_usd=6.28,
+        )
+
+        assert display_sprint_status("0210029b48a2", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "unreconciled" not in header, header
+        assert "cost: $6.28" in header, header
