@@ -1,0 +1,118 @@
+schema_version: 2
+run_id: 0b8095402c1d
+authoritative_run_record: .forge/audits/runs/0b8095402c1d.json
+generated_at: '2026-09-05T21:57:20.485236+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0087215
+story:
+  slug: issue-2775
+  name: A sprint refuses its own stories at entry for artifacts a sibling landing
+    has not finished committing
+  github_issue: 2775
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/controller-runbook.md
+- docs/guides/troubleshooting.md
+- src/theforge/coordinator/workspace.py
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/memory_publication.py
+- src/theforge/story_run_artifacts.py
+- tests/test_coord_landing_precondition.py
+- tests/test_protected_base_publication_poc.py
+- tests/test_story_run_artifacts.py
+what_changed:
+  description: The run changed workspace dirt precondition handling so sprint-generated
+    bookkeeping artifacts no longer cause story entry or landing refusal, and refactored
+    publication paths for those artifacts. It also documented the operator-visible
+    behavior and troubleshooting shape for the workspace refusal case.
+  approach: The change introduced a shared artifact-aware classification for story-run
+    audit and knowledge outputs, applied that classification anywhere workspace cleanliness
+    gates story progress, and simplified publication state handling so those artifacts
+    are reconciled through the same path rather than treated as ordinary operator
+    dirt.
+  files_modified: *id002
+what_was_learned:
+- claim: When a system both writes shared run artifacts and performs early workspace-cleanliness
+    refusals, the early refusal must use the same artifact-tolerant predicate as later
+    landing-time checks; otherwise concurrency turns bookkeeping into a separate failure
+    mode that rejects work that would otherwise succeed.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: The approving review explicitly called out that entry, resume, sprint-entry,
+      and merge-time landing checks now share the same artifact-tolerant blocking
+      predicate, showing that the key correctness condition was consistency across
+      all refusal sites rather than fixing only one code path.
+  - type: file
+    path: src/theforge/coordinator/workspace.py
+    description: This file is where workspace dirt is classified for coordination
+      decisions; its substantial change demonstrates that admission logic had to distinguish
+      sprint-owned artifacts from operator dirt at the point where refusals are computed.
+  - type: file
+    path: tests/test_coord_landing_precondition.py
+    description: 'The focused precondition tests exercise the reported collision mode
+      and operator-dirt refusal separately, demonstrating the actionable boundary
+      for future work: sprint-owned artifacts and true external dirt must be evaluated
+      by the same gate but classified differently.'
+- claim: Run-produced audit, memory, and summary artifacts need a first-class identity
+    independent of publication timing, so workspace checks can recognize them even
+    when publication state is stale or absent.
+  evidence:
+  - type: file
+    path: src/theforge/story_run_artifacts.py
+    description: A dedicated artifact module shows the run centered on identifying
+      story-run outputs by their paths and naming rules, which is what allows other
+      components to treat them consistently without relying on transient publication
+      bookkeeping.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The reduction and reshaping in audit publication indicates that publication
+      bookkeeping was not sufficient as the source of truth for whether these files
+      should block progress, supporting the lesson that artifact identity must stand
+      on its own.
+  - type: file
+    path: src/theforge/sprint/memory_publication.py
+    description: 'Parallel simplification in memory publication reinforces the same
+      mechanism across another publication path: recognition of sprint-owned artifacts
+      cannot depend solely on whether a publisher has already recorded them.'
+  - type: file
+    path: tests/test_story_run_artifacts.py
+    description: Tests dedicated to artifact identification show that future work
+      in this area should verify path-level recognition directly, because later coordination
+      behavior depends on that classification being correct before any publish-state
+      update occurs.
+learned_patterns:
+- artifact-aware-workspace-gates
+- shared-predicate-across-entry-and-landing
+- path-based-run-artifact-classification
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on ensuring every entry and landing path used the same artifact-tolerant
+    workspace predicate rather than leaving one refusal path stricter than the others.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 13.0731667
+  dominant_difficulty: Keeping all independently timed workspace-precondition checks
+    aligned with sprint-owned artifact publication so concurrency could not create
+    false dirty-root refusals.

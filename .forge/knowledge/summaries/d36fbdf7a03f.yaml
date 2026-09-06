@@ -1,0 +1,133 @@
+schema_version: 2
+run_id: d36fbdf7a03f
+authoritative_run_record: .forge/audits/runs/d36fbdf7a03f.json
+generated_at: '2026-09-04T16:32:27.142190+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00987275
+story:
+  slug: issue-2668
+  name: Plan-review convergence detection is derived from consecutive attempts only,
+    so a trajectory that alternates never escalates and always spends its full regeneration
+    allowance
+  github_issue: 2668
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/plan_trajectory.py
+- src/theforge/coordinator/state.py
+- tests/test_coord_plan.py
+- tests/test_coord_plan_flow_agent.py
+- tests/test_coord_plan_flow_review.py
+- tests/test_generate_audit_log.py
+what_changed:
+  description: "Plan-review stopping now distinguishes accumulated non-convergence\
+    \ from simple regeneration exhaustion and records that assessment in runtime state\
+    \ and audit output. The coordinator\u2019s plan-review flow was updated so trajectory\
+    \ history, stop reason, and outward-facing outcome stay aligned."
+  approach: The run reshaped plan-trajectory evaluation around whole-history assessment
+    instead of consecutive-attempt comparison, then threaded the resulting disposition
+    and reason through plan-flow state handling, audit emission, and focused scenario
+    tests across agent, review, and audit paths.
+  files_modified: *id002
+what_was_learned:
+- claim: When deciding whether iterative review is converging, the decision logic
+    must accumulate evidence across the full attempt history; any rule that can be
+    reset by a single non-repeating attempt will systematically spend the full retry
+    budget on alternating trajectories.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: "Cycle 1 approval explicitly states that the fix assesses non-convergence\
+      \ from history rather than only recent attempts, showing that the run\u2019\
+      s central lesson was to treat convergence as a whole-trajectory property."
+  - type: file
+    path: src/theforge/coordinator/plan_trajectory.py
+    description: This file contains the trajectory assessment logic, so its substantial
+      rework is the direct locus where per-attempt comparison was replaced by history-based
+      reasoning about convergence.
+  - type: diff
+    ref: cbf463e84ac2b015eccaf684788fefad7df98851
+    description: This diff is the implementation step that restructured trajectory
+      evaluation, demonstrating that the practical remedy for alternating-review failure
+      modes was to encode accumulation over recorded attempts.
+- claim: Stopping outcomes for iterative review need a first-class reason that survives
+    to operator-visible results; otherwise non-convergence and counter exhaustion
+    collapse into the same report and the run history cannot distinguish why spending
+    stopped.
+  evidence:
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that non-convergence stops are routed through
+      a distinct failed-to-converge branch and recorded in audit output, showing that
+      preserving stop reason through the flow was a necessary behavioral lesson.
+  - type: file
+    path: src/theforge/coordinator/plan_flow.py
+    description: This file controls which stop branch the coordinator takes, so changes
+      here demonstrate that accurate outcome reporting depends on carrying the assessed
+      disposition into the branch that emits the final result.
+  - type: file
+    path: src/theforge/coordinator/audit.py
+    description: Audit handling was updated alongside plan flow, which shows that
+      distinguishing stop causes is not complete unless the reason is serialized into
+      the run record that future operators and analyses consume.
+- claim: Paths that record review attempts without comparable findings need explicit
+    treatment, because repeatedly counting empty-structure attempts as ordinary trajectory
+    evidence can itself trigger false non-convergence judgments.
+  evidence:
+  - type: review_finding
+    finding_id: 48c316f9465adfb6
+    description: 'This review finding explains the failure mode: human, pending-file,
+      and remote review paths were recording empty finding lists, and after enough
+      such attempts the trajectory was judged unassessable and escalated, demonstrating
+      that missing comparison structure must be modeled deliberately.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval mentions resolving the human-review path leak, confirming
+      that the lesson from review was not just about the main trajectory algorithm
+      but also about how attempt records from special review paths feed that algorithm.
+learned_patterns:
+- history-based-convergence
+- explicit-stop-reason
+- empty-review-structure-handling
+review_insights:
+  recurring_findings:
+  - finding_id: 511ccd593e7f9818
+    severity: P2
+    file: src/theforge/coordinator/plan_trajectory.py
+    description: The non-convergence stop threshold is computed as max(3, min(4, max_plan_regen_attempts
+      + 1)), so under the default allowance of three regenerations an alternating
+      trajectory can first reach the escalate disposition only on the fourth recorded
+      attempt, which is the same cycle at which the regeneration counter is already
+      exhausted, while a trajectory whose findings recur on every consecutive attempt
+      now spends one more plan-and-review cycle than it did before because the third
+      attempt is classifi
+    cycles_seen: 2
+    disposition: unresolved
+  resolved_findings: []
+  observations:
+  - Review focused first on preserving full-history non-convergence evidence, then
+    on preventing empty-finding review paths from polluting trajectory assessment.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 6.4669483
+  dominant_difficulty: Getting trajectory assessment, stop branching, and audit/state
+    reporting to agree on the same notion of non-convergence across all review paths.
