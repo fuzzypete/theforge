@@ -95,16 +95,22 @@ class LiveRecord:
 class LiveLookup:
     """Outcome of a search across the non-substrate stores.
 
-    ``found`` is the freshest matching record, or ``None``. ``unreadable`` holds
-    ``(path, error)`` for every file that matched by location but could not be
-    parsed — the caller must report those separately, because "a record exists
-    and could not be read" is a different answer to the operator than "no record
-    exists".
+    ``found`` is the freshest matching record, or ``None``.
+
+    An unparseable file is reported in one of two places, and the difference is
+    the whole point of splitting them. ``unreadable`` holds ``(path, error)``
+    for files whose *location* identifies the story that was asked about: that
+    story has a record and it could not be read, which is a different answer to
+    the operator than "no record exists". ``unattributed`` holds unparseable
+    files that could not be tied to the target either way — a ``--run`` lookup
+    has nothing in a path to match against, so a corrupt audit belonging to some
+    other story must never be reported as the requested run's record.
     """
 
     found: LiveRecord | None
     unreadable: tuple[tuple[Path, str], ...]
     searched: tuple[str, ...]
+    unattributed: tuple[tuple[Path, str], ...] = ()
 
 
 def logs_root(project_root: Path) -> Path:
@@ -170,6 +176,21 @@ def _matches(
     return False
 
 
+def _path_identifies_target(identity: str, *, slug: str | None, issue_id: int | None) -> bool:
+    """Whether a file's location alone ties it to the story that was asked about.
+
+    ``identity`` is the story name the path carries: the story directory for a
+    per-story audit, the filename stem for a resume record. A ``run_id`` lookup
+    gets ``False`` for everything — no path names a run — so an unparseable file
+    is never attributed to a run on the strength of merely existing.
+    """
+    if slug is not None:
+        return identity == slug
+    if issue_id is not None:
+        return identity == f"issue-{issue_id}"
+    return False
+
+
 def _audit_store(record: dict) -> str:
     if record.get(_IN_FLIGHT_KEY):
         return STORE_IN_FLIGHT_AUDIT
@@ -210,14 +231,21 @@ def find_live_record(
     project_root = Path(project_root)
     candidates: list[LiveRecord] = []
     unreadable: list[tuple[Path, str]] = []
+    unattributed: list[tuple[Path, str]] = []
 
     for path in _story_audit_paths(project_root):
         record, error = _load(path, as_json=False)
         if record is None:
-            # Only report a parse failure for a file that plausibly belongs to
-            # the story asked about; the slug is in its path either way.
-            if slug is None or path.parent.name == slug:
-                unreadable.append((path, error or "unreadable"))
+            # A file that will not parse cannot say whose it is, so its location
+            # is the only evidence left. Attributed to the target only when the
+            # story directory names it; otherwise recorded as unattributed, so a
+            # corrupt audit for another story is never reported as this one's.
+            bucket = (
+                unreadable
+                if _path_identifies_target(path.parent.name, slug=slug, issue_id=issue_id)
+                else unattributed
+            )
+            bucket.append((path, error or "unreadable"))
             continue
         if not _matches(record, path, run_id=run_id, slug=slug, issue_id=issue_id):
             continue
@@ -233,7 +261,12 @@ def find_live_record(
     for path in _resume_record_paths(project_root, slug=slug):
         record, error = _load(path, as_json=True)
         if record is None:
-            unreadable.append((path, error or "unreadable"))
+            # A slug lookup reads exactly one resume record, addressed by the
+            # slug itself, so that file is the target's by construction.
+            attributed = slug is not None or _path_identifies_target(
+                path.stem, slug=slug, issue_id=issue_id
+            )
+            (unreadable if attributed else unattributed).append((path, error or "unreadable"))
             continue
         if not _matches(record, path, run_id=run_id, slug=slug, issue_id=issue_id):
             continue
@@ -250,10 +283,15 @@ def find_live_record(
         str(logs_root(project_root) / "**" / "audit.yaml"),
         str(resume_persistence.resume_records_dir(project_root) / "<slug>.json"),
     )
-    if not candidates:
-        return LiveLookup(found=None, unreadable=tuple(unreadable), searched=searched)
-    best = max(candidates, key=lambda c: (c.has_routing_decision, c.mtime_ns))
-    return LiveLookup(found=best, unreadable=tuple(unreadable), searched=searched)
+    best = (
+        max(candidates, key=lambda c: (c.has_routing_decision, c.mtime_ns)) if candidates else None
+    )
+    return LiveLookup(
+        found=best,
+        unreadable=tuple(unreadable),
+        searched=searched,
+        unattributed=tuple(unattributed),
+    )
 
 
 def _resume_record_paths(project_root: Path, *, slug: str | None) -> list[Path]:

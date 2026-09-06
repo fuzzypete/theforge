@@ -362,13 +362,20 @@ never presented as a finished run's, because it may still change. A resume
 record carries no configuration provenance, and the Configuration section says
 that rather than claiming the run predates provenance capture.
 
-Three "no answer" outcomes are distinct, by design:
+The "no answer" outcomes are distinct, by design:
 
 | Situation | What you see |
 |---|---|
 | Nothing recorded a decision anywhere | `no audit record found for …` naming both stores it searched |
 | A record exists but could not be parsed | `could not read <path>: …` plus "this is not the same as no record having been written" |
+| A file could not be parsed *and* could not be tied to what you asked for | `skipped <path>: …`, and the "nothing recorded it" claim is withdrawn |
 | The record exists but the router had not decided yet | `carries no routing_decision block yet` |
+
+The third row is why `--story` and `--run` can differ here: a story directory
+names the story, so an unparseable audit under it is that story's record. No
+path names a *run*, so `--run` never claims that a corrupt audit belonging to
+some other story is the run you asked about — it reports it as skipped and says
+the search could not rule it out.
 
 ---
 

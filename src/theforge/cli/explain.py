@@ -777,12 +777,17 @@ def _report_no_record(
     substrate_has_inputs: bool,
     project_root: Path,
 ) -> int:
-    """Say which of the two "not found" answers this is (#2923).
+    """Say which of the "not found" answers this is (#2923).
 
     An operator directed here by the documentation must be able to tell "nothing
     ever recorded a decision for this story" from "a record exists and this
     command could not read it". They are different problems with different next
     steps, and one message for both hides that.
+
+    The claim that a record exists is only made when the unreadable file's path
+    names the story asked about. A ``--run`` lookup has no such signal, so a
+    corrupt audit belonging to another story is reported as exactly what it is —
+    a file that was skipped — rather than as the requested run's record.
     """
     if lookup.unreadable:
         for path, error in lookup.unreadable:
@@ -793,19 +798,32 @@ def _report_no_record(
             file=sys.stderr,
         )
         return 1
+    for path, error in lookup.unattributed:
+        print(
+            f"[forge] skipped {path}: {error} — this file names no story or run that "
+            "could be checked against the one you asked for.",
+            file=sys.stderr,
+        )
+    # With unattributed files skipped, "nothing recorded it" would be a claim the
+    # search cannot support: one of those files may be the record asked for.
+    closing = (
+        f"{len(lookup.unattributed)} unreadable file(s) were skipped (above), so a "
+        "record for it may exist among them."
+        if lookup.unattributed
+        else "Nothing has recorded a routing decision for it."
+    )
     if not substrate_has_inputs:
         print(
             "[forge] no audit records found — nothing to explain. Searched the audit "
             f"substrate under {project_root / '.forge' / 'audits'} and the in-flight "
-            f"stores: {', '.join(lookup.searched)}.",
+            f"stores: {', '.join(lookup.searched)}. {closing}",
             file=sys.stderr,
         )
         return 1
     print(
         f"[forge] no audit record found for {label} — no completed run in the audit "
         "substrate, and no in-flight, interrupted or resume record either "
-        f"({', '.join(lookup.searched)}). Nothing has recorded a routing decision "
-        "for it.",
+        f"({', '.join(lookup.searched)}). {closing}",
         file=sys.stderr,
     )
     return 1

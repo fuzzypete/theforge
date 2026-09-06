@@ -244,6 +244,74 @@ def test_unreadable_record_is_not_reported_as_an_absent_one(tmp_path: Path, caps
     assert "Nothing has recorded a routing decision" not in err
 
 
+def _corrupt_audit_for_another_story(tmp_path: Path) -> Path:
+    """A malformed live audit belonging to a story nobody asked about."""
+    other = tmp_path / ".forge" / "logs" / SPRINT_NAME / "issue-4242"
+    other.mkdir(parents=True)
+    path = other / "audit.yaml"
+    path.write_text("{{ not: [valid\n", encoding="utf-8")
+    return path
+
+
+def test_run_lookup_does_not_claim_another_storys_corrupt_audit(tmp_path: Path, capsys) -> None:
+    """A --run lookup has no path signal, so it may not attribute a corrupt file.
+
+    Nothing in `.forge/logs/<sprint>/<slug>/audit.yaml` names a run, so an
+    unparseable audit for another story says nothing about the run asked for.
+    Reporting it as "this run's record could not be read" would answer a
+    question the search never actually resolved.
+    """
+    _project(tmp_path)
+    corrupt = _corrupt_audit_for_another_story(tmp_path)
+
+    assert explain.cmd_explain(_Args(run="missing-run", config=str(tmp_path / "forge.yaml"))) == 1
+    err = capsys.readouterr().err
+    assert "a routing record for run missing-run exists on disk" not in err
+    assert "this is not the same as no record having been written" not in err
+    # The skipped file is still disclosed, and the closing claim is weakened to
+    # match what the search can support.
+    assert f"skipped {corrupt}" in err
+    assert "may exist among them" in err
+    assert "Nothing has recorded a routing decision" not in err
+
+
+def test_issue_lookup_does_not_claim_another_storys_corrupt_audit(tmp_path: Path, capsys) -> None:
+    """Same guard for a bare issue number: only the conventional slug dir counts."""
+    _project(tmp_path)
+    _corrupt_audit_for_another_story(tmp_path)
+
+    assert explain.cmd_explain(_Args(story="2908", config=str(tmp_path / "forge.yaml"))) == 1
+    err = capsys.readouterr().err
+    assert "exists on disk but could not be read" not in err
+    assert "skipped" in err
+
+
+def test_issue_lookup_does_claim_its_own_corrupt_audit(tmp_path: Path, capsys) -> None:
+    """The path names the story, so the record's existence is a supported claim."""
+    _project(tmp_path)
+    audit_path = _flush_live_audit(tmp_path)
+    audit_path.write_text("{{ not: [valid\n", encoding="utf-8")
+
+    assert explain.cmd_explain(_Args(story="2908", config=str(tmp_path / "forge.yaml"))) == 1
+    err = capsys.readouterr().err
+    assert "exists on disk but could not be read" in err
+
+
+def test_run_lookup_does_not_claim_another_storys_corrupt_resume_record(
+    tmp_path: Path, capsys
+) -> None:
+    """The same pattern in the second store, which is scanned whole for a run."""
+    _project(tmp_path)
+    resume_dir = tmp_path / ".forge" / "resume_state"
+    resume_dir.mkdir(parents=True)
+    (resume_dir / "issue-4242.json").write_text("{not json", encoding="utf-8")
+
+    assert explain.cmd_explain(_Args(run="missing-run", config=str(tmp_path / "forge.yaml"))) == 1
+    err = capsys.readouterr().err
+    assert "exists on disk but could not be read" not in err
+    assert "skipped" in err
+
+
 def test_unfinished_record_without_routing_says_why(tmp_path: Path, capsys) -> None:
     """A story stopped before the router ran: absent, but not for the legacy reason."""
     _project(tmp_path)
@@ -299,4 +367,22 @@ def test_finder_reports_nothing_for_an_empty_project(tmp_path: Path) -> None:
     lookup = explain_live.find_live_record(tmp_path, slug=SLUG)
     assert lookup.found is None
     assert lookup.unreadable == ()
+    assert lookup.unattributed == ()
     assert any("resume_state" in entry for entry in lookup.searched)
+
+
+def test_finder_splits_unreadable_by_whether_the_path_names_the_target(
+    tmp_path: Path,
+) -> None:
+    for name in (SLUG, "issue-4242"):
+        story_dir = tmp_path / ".forge" / "logs" / SPRINT_NAME / name
+        story_dir.mkdir(parents=True)
+        (story_dir / "audit.yaml").write_text("{{ not: [valid\n", encoding="utf-8")
+
+    by_slug = explain_live.find_live_record(tmp_path, slug=SLUG)
+    assert [path.parent.name for path, _ in by_slug.unreadable] == [SLUG]
+    assert [path.parent.name for path, _ in by_slug.unattributed] == ["issue-4242"]
+
+    by_run = explain_live.find_live_record(tmp_path, run_id=RUN_ID)
+    assert by_run.unreadable == ()
+    assert len(by_run.unattributed) == 2
