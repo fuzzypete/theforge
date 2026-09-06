@@ -133,9 +133,22 @@ def sandbox_containment_mode(profile: ModelProfile) -> str:
     return "mechanical" if _host_sandbox_available() else "unavailable"
 
 
-def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool | None, str]:
-    """CLI launchers are always auth-ready; binary presence checked separately."""
-    return (None, "unverified")
+def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
+    """Clear a CLI launcher for dispatch once its binary is on PATH.
+
+    This is a *dispatch gate*, and True here means only "nothing known blocks
+    the attempt" — the credential the launcher will present is not inspected,
+    and the provider is not asked whether the account may call the model. Do
+    not read it as evidence the call will be accepted: an account-entitlement
+    refusal is invisible to this check (#2909).
+
+    Callers that report readiness to an operator must qualify it rather than
+    render it as an unconditional "ready" — ``cli/check_config.py`` derives a
+    third *unverified* state from the transport for exactly that reason. The
+    value stays a plain bool because the sprint launch gate, adaptive
+    assignment and config load all read it as one.
+    """
+    return (True, "")
 
 
 # ── Claude CLI credential store ──────────────────────────────────────────
@@ -285,7 +298,7 @@ def check_agent_auth(
     *,
     include_sandbox_readiness: bool = True,
     include_credential_probe: bool = False,
-) -> tuple[bool | None, str]:
+) -> tuple[bool, str]:
     """Return ``(ready, reason)`` for *profile*.
 
     ``ready`` is True when the profile has the credentials/binaries it needs.
@@ -329,13 +342,13 @@ def check_agent_auth(
                 return (False, "npx not found in PATH")
             if include_sandbox_readiness:
                 return _launcher_sandbox_readiness(profile)
-            return (None, "unverified")
+            return (True, "")
         # ghaw dispatches through the `gh` binary; the agent executes remotely
         # on GitHub Actions, so local sandbox readiness does not apply.
         if profile.cli == "ghaw":
             if shutil.which("gh") is None:
                 return (False, "'gh' not found in PATH (required for cli: ghaw)")
-            return (None, "unverified")
+            return (True, "")
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")
@@ -345,7 +358,7 @@ def check_agent_auth(
                 return (False, cred_reason)
         if include_sandbox_readiness:
             return _launcher_sandbox_readiness(profile)
-        return (None, "unverified")
+        return (True, "")
 
     # ── API profiles ──────────────────────────────────────────────────
     if profile.provider is not None:

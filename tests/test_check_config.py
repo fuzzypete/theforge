@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +22,11 @@ from theforge.config import (
     SprintConfig,
     TransportSpec,
     WorkspaceConfig,
+)
+from theforge.config.model_identity import (
+    IDENTITY_STATUS_SERVED,
+    UNCONFIRMED_IDENTITY,
+    IdentityVerification,
 )
 from theforge.config.models import AGENT_REGISTRY, AgentDef, AgentSpec, RoutingPolicy
 from theforge.config.models import TransportSpec as ModelTransportSpec
@@ -1261,3 +1267,117 @@ overrides:
         assert "DERIVED ROLES (complexity-aware)" in output
         assert "Advanced overrides: none" not in output
         assert "dev" in output
+
+
+class TestCliReadinessIsUnverified:
+    """A CLI-transport row must not claim more than the check established (#2909).
+
+    ``check_agent_auth`` clears a CLI profile on launcher presence alone. That
+    cannot distinguish a model the account may call from one the provider will
+    refuse outright, so the row reports a third state rather than resolving its
+    own uncertainty toward ``ready``.
+    """
+
+    def _format(self, config: ForgeConfig) -> str:
+        from theforge.cli.check_config import _format_config
+
+        output, _ = _format_config(config, {})
+        return output
+
+    def _codex_registry(self, identity: IdentityVerification) -> dict[str, AgentSpec]:
+        return {
+            "openai/gpt-5.4/cli": AgentSpec(
+                provider="openai",
+                model="gpt-5.4",
+                transport=ModelTransportSpec(kind="cli", runner="codex", executable="codex"),
+                routing=RoutingPolicy(tier="strong", capability=9, cost_rank=3),
+                identity=identity,
+            )
+        }
+
+    def test_cli_profile_reports_unverified_not_ready(self, tmp_path: Path) -> None:
+        config = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
+            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
+        )
+        output = self._format(config)
+        row = next(ln for ln in output.splitlines() if "openai-gpt-5.4-cli" in ln)
+        assert "? unverified" in row
+        assert "✓ ready" not in row
+        # Names what was actually established, and what was not.
+        assert "codex launcher on PATH" in row
+        assert "neither credentials nor this account's entitlement to call 'gpt-5.4'" in row
+
+    def test_identity_caveat_rides_the_same_row_as_the_verdict(self, tmp_path: Path) -> None:
+        """The qualifying fact sits with the verdict, not in a separate section."""
+        config = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
+            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
+        )
+        row = next(ln for ln in self._format(config).splitlines() if "openai-gpt-5.4-cli" in ln)
+        assert "never checked against the provider's published model list" in row
+
+    def test_confirmed_identity_drops_only_the_identity_clause(self, tmp_path: Path) -> None:
+        """A checked identifier removes its caveat; entitlement stays unverified."""
+        confirmed = IdentityVerification(
+            status=IDENTITY_STATUS_SERVED,
+            verified_against="the provider's published model list",
+            verified_on=date.today(),
+        )
+        config = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
+            model_registry=self._codex_registry(confirmed),
+        )
+        row = next(ln for ln in self._format(config).splitlines() if "openai-gpt-5.4-cli" in ln)
+        assert "? unverified" in row
+        assert "never checked against the provider's published model list" not in row
+
+    def test_api_profile_still_reports_ready(self, tmp_path: Path) -> None:
+        """API profiles resolve a real credential — a different, narrower claim."""
+        config = _make_forge_config(tmp_path, review_pool=[_api_profile("claude-reviewer")])
+        row = next(ln for ln in self._format(config).splitlines() if "claude-reviewer" in ln)
+        assert "✓ ready" in row
+        assert "unverified" not in row
+
+    def test_failed_check_still_reports_the_failure(self, tmp_path: Path) -> None:
+        from theforge.cli.check_config import _auth_key, _format_config
+
+        profile = _cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")
+        config = _make_forge_config(tmp_path, review_pool=[profile])
+        output, exit_code = _format_config(
+            config, {_auth_key("review", profile.name): (False, "npx not found in PATH")}
+        )
+        row = next(ln for ln in output.splitlines() if "openai-gpt-5.4-cli" in ln)
+        assert "✗ npx not found in PATH" in row
+        assert "unverified" not in row
+        assert exit_code == 1
+
+    def test_unverified_is_not_a_warning_and_does_not_change_exit_code(
+        self, tmp_path: Path
+    ) -> None:
+        """Unverified qualifies a row; it is not a problem to fix, so exit stays 0.
+
+        Promoting it to a warning would flip every CLI-only config to exit 1 and
+        bury the failures that do need action.
+        """
+        config = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
+            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
+        )
+        output, exit_code = __import__(
+            "theforge.cli.check_config", fromlist=["_format_config"]
+        )._format_config(config, {})
+        assert "? unverified" in output
+        assert "WARNINGS" not in output
+        assert exit_code == 0
+
+    def test_phases_section_is_qualified_too(self, tmp_path: Path) -> None:
+        """The reported symptom included the dev phase row, not just the pool."""
+        output = self._format(_make_forge_config(tmp_path))
+        dev_row = next(ln for ln in output.splitlines() if ln.strip().startswith("dev "))
+        assert "? unverified" in dev_row
+        assert "claude launcher on PATH" in dev_row

@@ -303,6 +303,25 @@ forge check-config [forge.yaml]
 **Use this when:** After editing config, before a release, or when debugging model wiring.
 This is the quickest way to inspect the role table derived from `models:`.
 
+Each profile row carries one of three readiness verdicts:
+
+| Verdict | What it establishes |
+|---------|---------------------|
+| `✓ ready` | The credential this profile needs resolves (API transports). |
+| `? unverified` | The CLI launcher is on PATH — nothing more. Credentials were not presented, and the provider was not asked whether this account may call the named model. |
+| `✗ <reason>` | The check found positive evidence the profile cannot run. |
+
+`? unverified` is the honest verdict for every CLI-transport profile: launcher
+presence cannot distinguish a model the account may call from one the provider
+refuses outright, and reporting it as `ready` is what let an account-entitlement
+refusal surface only after a story had been routed and paid for (#2909). The row
+also carries that model's upstream-identifier status, so the verdict and the fact
+that qualifies it are read together rather than from two separate sections.
+
+`? unverified` is not a warning and does not affect the exit code — it qualifies
+a row, it does not name something to fix. Excluding models the account cannot
+call from routing is separate (#2914).
+
 ---
 
 ## `forge explain`
