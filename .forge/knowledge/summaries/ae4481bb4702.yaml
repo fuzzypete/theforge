@@ -1,0 +1,61 @@
+schema_version: 2
+run_id: ae4481bb4702
+authoritative_run_record: .forge/audits/runs/ae4481bb4702.json
+generated_at: '2026-09-06T20:33:00.506909+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00322025
+story:
+  slug: issue-2909
+  name: forge check-config reports a model as ready when the account is not entitled
+    to call it
+  github_issue: 2909
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- config
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/check_config.py
+- src/theforge/config/auth.py
+- tests/test_auth.py
+- tests/test_check_config.py
+what_changed:
+  description: The run changed `forge check-config` so CLI-transport model profiles
+    are no longer reported as unqualified ready when the check has not established
+    model availability or entitlement. It also updated the operator-facing docs to
+    describe the new reporting distinction.
+  approach: The change reshaped readiness reporting around explicit verification state,
+    threading account/model-list identity information into the rendered row so the
+    caveat appears with the verdict instead of in a separate section.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- report-uncertainty-explicitly
+- co-locate-verdict-and-caveat
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review stayed focused on reporting semantics: passing CLI checks needed to remain
+    visibly unverified, with the entitlement caveat carried on the same row.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 13.6203141
+  dominant_difficulty: Representing partial knowledge in a concise readiness report
+    without implying dispatchability that the CLI check did not actually verify.

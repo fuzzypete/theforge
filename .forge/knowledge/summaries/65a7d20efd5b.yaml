@@ -1,0 +1,81 @@
+schema_version: 2
+run_id: 65a7d20efd5b
+authoritative_run_record: .forge/audits/runs/65a7d20efd5b.json
+generated_at: '2026-09-06T02:11:49.714924+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00773
+story:
+  slug: issue-2919
+  name: DEV retries a no-submit dev agent past the configured retry budget, without
+    bound
+  github_issue: 2919
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/dev_phase.py
+- tests/test_coord_max_iterations_no_submit.py
+what_changed:
+  description: The DEV phase now stops retrying no-submit max-iteration failures once
+    the story's retry budget is exhausted, instead of immediately launching another
+    identical DEV attempt without bound. A focused coordinator test was updated to
+    lock in that exhaustion path.
+  approach: The change routes this specific DEV failure mode through the same retry-budget
+    exhaustion decision used for bounded retries, so the coordinator checks consumed
+    attempts before scheduling another DEV run and escalates when the derived story
+    budget has been spent.
+  files_modified: *id002
+what_was_learned:
+- claim: When a coordinator has per-story retry budgets, the budget check has to run
+    on every path that can enqueue another phase attempt, including terminal-looking
+    agent failures such as 'max iterations reached without submit'; otherwise one
+    uncapped branch defeats the spend bound.
+  evidence:
+  - type: diff
+    ref: 09e35ce8a9904746277ddb3fd1611687029bfb76
+    description: This diff changes DEV-phase handling for the no-submit max-iterations
+      failure so it consults retry-budget exhaustion before requeueing, demonstrating
+      that the bug existed because this retry path previously bypassed the per-story
+      attempt cap.
+  - type: file
+    path: src/theforge/coordinator/dev_phase.py
+    description: The DEV coordinator logic is where failed DEV attempts are classified
+      and either retried or escalated; the fix living here shows the controlling lesson
+      is about applying the budget gate uniformly at the point where another attempt
+      would otherwise be scheduled.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved specifically on the basis that no-submit DEV failures
+      now check the consumed RetryBudget and escalate at exhaustion, confirming the
+      key behavioral requirement was to treat this failure path as budget-governed
+      rather than exceptional.
+learned_patterns:
+- retry-gate-on-all-requeue-paths
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether no-submit max-iteration DEV failures consume and honor
+    the same retry budget as other retried DEV failures.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 2.6054966
+  dominant_difficulty: A specific DEV failure classification was escaping the coordinator's
+    otherwise bounded retry policy.

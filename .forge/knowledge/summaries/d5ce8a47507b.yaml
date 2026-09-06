@@ -1,0 +1,85 @@
+schema_version: 2
+run_id: d5ce8a47507b
+authoritative_run_record: .forge/audits/runs/d5ce8a47507b.json
+generated_at: '2026-09-06T21:39:36.778597+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00588275
+story:
+  slug: issue-2913
+  name: A dev call the provider refuses without consuming tokens is recorded as cost-unknown,
+    and the unverifiable budget skips unrelated stories
+  github_issue: 2913
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/troubleshooting.md
+- src/theforge/runners/runner_codex.py
+- tests/fake_bin/npx
+- tests/test_runner_codex.py
+what_changed:
+  description: The run changed Codex cost accounting so explicit pre-generation provider
+    refusals are treated as zero-cost instead of unknown-cost, preventing those refusals
+    from making sibling stories' budget unverifiable. It also documented the troubleshooting
+    case and added runner fixtures and tests for the rejection path.
+  approach: The implementation distinguishes provider-declined requests from genuinely
+    unmeasured completed calls by parsing the refusal/error shape in the Codex runner
+    and classifying only that narrow class as zero spend, while leaving other missing-accounting
+    cases as unknown.
+  files_modified: *id002
+what_was_learned:
+- claim: When handling missing usage/accounting from an LLM call, future work should
+    separate explicit pre-generation provider refusals from true accounting loss,
+    because only the former can be safely resolved to zero without weakening budget
+    enforcement.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: The approval explicitly says the fix 'narrowly reclassifies an explicit
+      pre-generation 400 invalid_request_error', which shows review treated the important
+      implementation boundary as distinguishing provider refusal before generation
+      from other no-usage cases rather than broadly converting missing usage to zero.
+  - type: diff
+    ref: 14b315a680e8a00c678e05c8fd3b14f705a9dde6
+    description: 'This diff is the authoritative code change for the run and demonstrates
+      that the runner logic was adjusted at the classification layer, evidencing a
+      reusable pattern: infer zero cost only from an explicit refusal signal, not
+      from absence of usage alone.'
+  - type: file
+    path: src/theforge/runners/runner_codex.py
+    description: The runner file is where request outcomes are interpreted into spend
+      records, so its modification shows the lesson applies at the transport/result-classification
+      boundary where future runners must decide between zero, measured, and unknown
+      spend.
+learned_patterns:
+- pregeneration-refusal-zero-cost
+- budget-accounting-classification-boundary
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on keeping the reclassification narrow to explicit pre-generation
+    invalid-request refusals.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.5553319999999997
+  dominant_difficulty: Distinguishing a definitively unbilled provider refusal from
+    a completed call whose usage data is missing, without relaxing existing unverifiable-budget
+    safeguards.

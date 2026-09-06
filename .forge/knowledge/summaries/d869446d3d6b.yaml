@@ -1,0 +1,63 @@
+schema_version: 2
+run_id: d869446d3d6b
+authoritative_run_record: .forge/audits/runs/d869446d3d6b.json
+generated_at: '2026-09-06T17:15:23.903174+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00336775
+story:
+  slug: issue-2920
+  name: A dev agent on the API transport is terminated after three turns, far below
+    the configured agent-loop ceiling
+  github_issue: 2920
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- config
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/inputs-reference.md
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/state.py
+- tests/test_coord_adaptive_iterations.py
+- tests/test_coord_dev_timeout_retry.py
+what_changed:
+  description: The run corrected how dev-phase iteration limits are resolved so API
+    dev agent-turn ceilings no longer inherit the retry attempt count when the dev-specific
+    setting is unset. It also updated the input reference to clarify the API-mode
+    default for the dev iteration ceiling.
+  approach: The fix separated the configuration path for per-attempt dev agent turns
+    from the retry-policy path, preserving the runner/default resolution for dev iterations
+    while keeping adaptive and state handling aligned with that distinction.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- separate-attempts-from-turn-budgets
+- preserve-default-resolution-paths
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review confirmed the authoritative concern was keeping retry-attempt limits distinct
+    from API dev agent-turn limits while preserving the runner default path.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 4.0253444
+  dominant_difficulty: Two similarly named iteration settings counted different units,
+    so the hard part was tracing and separating where each limit should be resolved
+    and propagated.
