@@ -12,10 +12,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from theforge.config import ModelProfile
+from theforge.coordinator.state import CoordinatorState
 from theforge.runners.runner_codex import (
     CODEX_PACKAGE,
     _agent_text_from_events,
     _classify_codex_launch_failure,
+    _classify_pre_generation_refusal,
     _CodexUsage,
     _error_text_from_events,
     _price_codex_usage,
@@ -375,6 +377,73 @@ class TestCodexLaunchFailureClassification:
         assert (
             _classify_codex_launch_failure(returncode=1, stdout="partial work", stderr="") is None
         )
+
+
+class TestCodexPreGenerationRefusal:
+    """A refusal issued before generation is a measured $0.00, not unknown (#2913).
+
+    Narrow on purpose: the absence of a usage block is not itself proof that
+    nothing was spent — a completed call whose accounting was lost looks the same
+    — so only the provider's explicit "this request was never valid" resolves to
+    zero. Everything else keeps constraining the sprint's budget as it does today.
+    """
+
+    _REFUSAL = (
+        '{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+        '"message":"The \'gpt-5.4\' model is not supported when using Codex '
+        'with a ChatGPT account."}}\n'
+    )
+
+    def test_refusal_after_turn_started_is_still_a_zero(self) -> None:
+        stdout = (
+            '{"type":"thread.started","thread_id":"t1"}\n{"type":"turn.started"}\n' + self._REFUSAL
+        )
+        reason = _classify_pre_generation_refusal(stdout)
+        assert reason is not None
+        assert "not supported" in reason
+
+    def test_refusal_carried_on_turn_failed_is_recognised(self) -> None:
+        stdout = (
+            '{"type":"turn.started"}\n'
+            '{"type":"turn.failed","error":{"status":400,'
+            '"error":{"type":"invalid_request_error","message":"unsupported model"}}}\n'
+        )
+        assert _classify_pre_generation_refusal(stdout) == "unsupported model"
+
+    def test_upstream_500_stays_unknown(self) -> None:
+        """Tokens cannot be ruled out for a failure the provider did serve."""
+        stdout = '{"type":"turn.failed","error":{"message":"upstream 500"}}\n'
+        assert _classify_pre_generation_refusal(stdout) is None
+
+    def test_missing_status_alone_is_not_proof(self) -> None:
+        stdout = '{"type":"error","error":{"type":"invalid_request_error","message":"x"}}\n'
+        assert _classify_pre_generation_refusal(stdout) is None
+
+    def test_bare_400_without_an_invalid_request_type_is_not_proof(self) -> None:
+        stdout = '{"type":"error","status":400,"error":{"message":"bad things"}}\n'
+        assert _classify_pre_generation_refusal(stdout) is None
+
+    def test_reported_usage_disqualifies_the_zero(self) -> None:
+        """A refusal alongside real work is a run that spent something."""
+        stdout = (
+            '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
+            + self._REFUSAL
+        )
+        assert _classify_pre_generation_refusal(stdout) is None
+
+    def test_agent_text_disqualifies_the_zero(self) -> None:
+        stdout = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}\n'
+            + self._REFUSAL
+        )
+        assert _classify_pre_generation_refusal(stdout) is None
+
+    def test_unreadable_stdout_fails_closed(self) -> None:
+        """Output this parser cannot account for un-proves 'nothing was generated'."""
+        assert _classify_pre_generation_refusal("some prose\n" + self._REFUSAL) is None
+
+    def test_a_stream_with_no_refusal_event_is_none(self) -> None:
+        assert _classify_pre_generation_refusal('{"type":"thread.started"}\n') is None
 
 
 class TestCodexCachedTokenPricing:
@@ -758,3 +827,65 @@ class TestCodexLifecycle:
         )
         assert result.cost_usd is None
         assert result.model_usage == ()
+
+    def test_pre_generation_refusal_is_measured_zero_not_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A provider refusal before generation spent nothing — $0.00, not unknown.
+
+        The turn started, so the launch-failure path does not apply; what makes
+        this a measured zero is the provider's own statement that the request was
+        never valid (#2913). Recording it unknown made a sprint's cap
+        unverifiable and skipped unrelated stories.
+        """
+        self._patch_env(monkeypatch, "model_refused")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd == 0.0
+        assert result.model_usage == ()
+        assert result.failure_code == "provider_refused_before_generation"
+        # The CLI launched and reached the provider: this is not a startup failure.
+        assert result.startup_failure is False
+        # The operator-facing text names the refused model, not a budget problem.
+        assert "not supported" in result.output
+
+    def test_upstream_failure_after_turn_start_stays_cost_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An upstream 500 could have consumed tokens — it stays unmeasured."""
+        self._patch_env(monkeypatch, "upstream_error")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd is None
+        assert result.failure_code is None
+        assert result.startup_failure is False
+
+    def test_refusal_leaves_the_run_cost_measurable_at_the_state_seam(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The zero must survive into the aggregate the sprint's cap is checked against.
+
+        This is the seam the incident ran through: a cost-unknown dev result makes
+        the story's cost an unbounded lower bound, which the sprint budget guard
+        refuses to verify — skipping unrelated stories. A measured $0.00 keeps the
+        aggregate answerable. The unmeasurable case is asserted alongside it so the
+        difference, not just the zero, is pinned.
+        """
+        self._patch_env(monkeypatch, "model_refused")
+        profile = _make_profile(sandbox_mode="none")
+        refused = CoordinatorState()
+        refused.dev_results.append(
+            _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+        )
+        assert refused.total_dev_cost_measured == 0.0
+
+        self._patch_env(monkeypatch, "upstream_error")
+        unmeasured = CoordinatorState()
+        unmeasured.dev_results.append(
+            _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+        )
+        assert unmeasured.total_dev_cost_measured is None
