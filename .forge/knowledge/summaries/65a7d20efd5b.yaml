@@ -1,0 +1,78 @@
+schema_version: 2
+run_id: 65a7d20efd5b
+authoritative_run_record: .forge/audits/runs/65a7d20efd5b.json
+generated_at: '2026-09-06T02:07:29.059342+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00754
+story:
+  slug: issue-2919
+  name: DEV retries a no-submit dev agent past the configured retry budget, without
+    bound
+  github_issue: 2919
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/dev_phase.py
+- tests/test_coord_max_iterations_no_submit.py
+what_changed:
+  description: The run fixed DEV retry handling so no-submit failures that exhaust
+    the inner max-iterations path are counted against the story retry budget and stop
+    once that budget is spent, instead of being relaunched indefinitely.
+  approach: It tightened the coordinator's DEV-phase failure/escalation path around
+    max-iterations-without-submit outcomes and verified the bound with a focused regression
+    test for repeated identical DEV failures.
+  files_modified: *id002
+what_was_learned:
+- claim: When a coordinator has both inner per-attempt limits and outer per-story
+    retry budgets, failures triggered by the inner limit still need to consume and
+    check the outer budget before another attempt starts.
+  evidence:
+  - type: diff
+    ref: 09e35ce8a9904746277ddb3fd1611687029bfb76
+    description: This diff changes the DEV-phase control flow specifically around
+      max-iterations/no-submit failure handling, showing the bug came from treating
+      that failure path outside the normal retry-budget exhaustion check and that
+      future work should verify budget enforcement on every retry path, not only generic
+      failures.
+  - type: review_cycle
+    cycle: '1'
+    description: The review approval explicitly states that no-submit DEV failures
+      now check the consumed RetryBudget and escalate at exhaustion, confirming the
+      key mechanism was whether this special failure path consulted the outer budget
+      before relaunch.
+  - type: file
+    path: src/theforge/coordinator/dev_phase.py
+    description: This file contains the DEV retry orchestration, and its involvement
+      in the fix shows the relevant lesson is about coordinator-level retry-path accounting
+      rather than agent behavior inside a single attempt.
+learned_patterns:
+- retry-budget-on-all-failure-paths
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on whether the no-submit max-iterations path consumed RetryBudget
+    and escalated at exhaustion like other DEV failures.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 2.6054966
+  dominant_difficulty: A special DEV failure path bypassed the normal per-story retry-budget
+    gate, so the hard part was enforcing one bounded policy across all retry exits.
