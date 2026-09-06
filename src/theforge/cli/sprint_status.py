@@ -292,15 +292,25 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     _recorded_is_number = isinstance(budget_spend_recorded, (int, float)) and not isinstance(
         budget_spend_recorded, bool
     )
-    if total_cost_usd is not None and _recorded_is_number:
+    #
+    # No surviving story rows at all is the extreme of the same case, not an
+    # exemption from it: rows that explain nothing explain $0.00, and a run whose
+    # state records money spent must not print nothing about it just because the
+    # record of where it went is gone.
+    _rows_total_usd: float | None = None
+    if total_cost_usd is not None:
+        _rows_total_usd = total_cost_usd
+    elif cost_complete and not entries:
+        _rows_total_usd = 0.0
+    if _rows_total_usd is not None and _recorded_is_number:
         _recorded = round(float(budget_spend_recorded), _RECORDED_SPEND_PRECISION)
-        if _recorded > round(total_cost_usd, _RECORDED_SPEND_PRECISION):
+        if _recorded > round(_rows_total_usd, _RECORDED_SPEND_PRECISION):
             if is_live:
-                cost_floor_usd = total_cost_usd
+                cost_floor_usd = _rows_total_usd
                 total_cost_usd = _recorded
             else:
                 cost_unreconciled_usd = _recorded
-                cost_measured_usd = total_cost_usd
+                cost_measured_usd = _rows_total_usd
                 total_cost_usd = None
                 cost_complete = False
 

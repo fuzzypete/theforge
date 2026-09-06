@@ -545,6 +545,30 @@ class TestUnreconciledCostReporting:
         assert "unreconciled" not in header, header
         assert "cost: $6.28" in header, header
 
+    def test_stopped_run_with_recorded_spend_and_no_rows_is_unreconciled(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """No surviving rows is the extreme of the same contradiction.
+
+        Rows that explain nothing explain $0.00. A run whose state records money
+        spent must not print nothing about it merely because the record of where
+        the money went did not survive.
+        """
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48a5",
+            story_costs={},
+            recorded_spend_usd=31.44,
+        )
+
+        assert display_sprint_status("0210029b48a5", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "unreconciled" in header, header
+        assert "$31.44" in header, header
+
 
 class TestAuditWithholdsAContradictedTotal:
     """The same rule at the publication surfaces, not only in the status view."""
@@ -686,3 +710,73 @@ class TestReexecBudgetAdmission:
             "the sprint must carry the spend its own run state recorded, not the "
             f"smaller figure its accumulated rows kept; got ${result.total_cost_usd:.2f}"
         )
+
+    def test_a_high_water_over_the_cap_refuses_before_any_paid_pass(self, tmp_path: Path) -> None:
+        """The refusal has to land ahead of the passes that spend money.
+
+        Accumulated rows keep $21.91 of a $31.44 run under a $30 cap. Against the
+        rows there is headroom and the sprint proceeds; against what the run
+        actually spent there is none. Refusing only at per-story dispatch still
+        pays for intake remediation and a batch preflight first, so the check is
+        made before either — the same rule the landing precondition follows.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=30.0)
+        config = _config_with_intake(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 21.91,
+                }
+            ],
+        )
+        _write_prior_sprint_audit(tmp_path, sprint_id, 21.91)
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "run-overcap.state").write_text(
+            yaml.dump({"budget_status": "within", "budget_spend_usd": 31.44, "stories": []}),
+            encoding="utf-8",
+        )
+
+        intake_calls: list[list] = []
+        preflight_calls: list[list] = []
+
+        def record_intake(tasks, root, **kwargs):
+            intake_calls.append(list(tasks))
+            return {}
+
+        def record_preflight(tasks, *args, **kwargs):
+            preflight_calls.append(list(tasks))
+            return {}
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch("theforge.sprint.runner.run_intake_remediation", side_effect=record_intake),
+            patch(
+                "theforge.sprint.runner._build_intake_agent_caller",
+                return_value=(lambda *a, **k: None, ""),
+            ),
+            patch("theforge.sprint.runner.run_batch_preflight", side_effect=record_preflight),
+            patch("theforge.sprint.runner.run_task") as run_task,
+        ):
+            result = run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-overcap")
+
+        assert run_task.call_count == 0, "no story may dispatch under an exhausted ceiling"
+        assert all(not tasks for tasks in intake_calls), (
+            "intake remediation spends agent money and must not run for a refused "
+            f"run; it was handed {intake_calls}"
+        )
+        assert all(not tasks for tasks in preflight_calls), (
+            "batch preflight spends agent money and must not run for a refused "
+            f"run; it was handed {preflight_calls}"
+        )
+        assert result.specs_succeeded == 0

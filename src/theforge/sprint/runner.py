@@ -6201,6 +6201,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         for t in normalized.tasks
         if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
     ]
+    if _startup_budget_decision is not None:
+        # The startup headroom check already refused this run. Its stories are
+        # marked skipped further down, once the DAG exists — but intake
+        # remediation spends real money on agent rewrites, so the refusal has to
+        # bite here, ahead of it, the same way the landing precondition does.
+        # Refusing after spending is not refusing (#2922).
+        dispatch_tasks = []
 
     intake_outcomes = _run_intake_remediation_pass(
         config=_ctx.config,
@@ -6348,6 +6355,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         for t in normalized.tasks
         if t.slug not in _no_dispatch_slugs and t.slug not in _inflight_slugs
     ]
+    if _startup_budget_decision is not None:
+        # Same reason as the intake pass above: preflight is a reasoning task and
+        # every story in the batch costs money. A run the startup headroom check
+        # has already refused must not pay for it (#2922).
+        _log("Skipping batch preflight: the selected run cannot dispatch under its ceiling")
+        preflight_tasks = []
     preflight_states = run_batch_preflight(
         preflight_tasks,
         _ctx.config,
