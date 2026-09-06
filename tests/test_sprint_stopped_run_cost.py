@@ -33,6 +33,7 @@ from tests.test_sprint_resume import (
     _make_spec_file,
     _set_sprint_id,
 )
+from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
 from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.state_writer import SprintStateWriter
@@ -103,6 +104,41 @@ def _spy_on_state_writes(monkeypatch, snapshots: list[dict]) -> None:
             snapshots.append(data)
 
     monkeypatch.setattr(SprintStateWriter, "_write_locked", spy)
+
+
+def _spy_on_accumulated_writes(monkeypatch, published: list[list[dict]]) -> None:
+    """Record every accumulated story list the run publishes, in order."""
+    from theforge.sprint import runner as _runner
+
+    original = _runner.persist_accumulated_story_state
+
+    def spy(sprint_id, sprint_name, project_root, stories):
+        published.append([dict(row) for row in stories])
+        original(sprint_id, sprint_name, project_root, stories)
+
+    monkeypatch.setattr(_runner, "persist_accumulated_story_state", spy)
+
+
+def _config_with_intake(tmp_path: Path):
+    import dataclasses
+
+    from theforge.config.types import IntakeConfig
+
+    return dataclasses.replace(
+        _make_config(tmp_path),
+        intake=IntakeConfig(grooming=True, auto_fix=True, auto_fix_mode="edit"),
+    )
+
+
+def _dropped_intake_outcome(slug: str) -> IntakeOutcome:
+    """An intake gate rejection that spent nothing of its own."""
+    return IntakeOutcome(
+        slug=slug,
+        kind=IntakeOutcomeKind.DROPPED_SHAPE,
+        findings=(),
+        detail="story shape rejected",
+        audit={"remediation_source": "mechanical"},
+    )
 
 
 def _row_costs(snapshots: list[dict], slug: str) -> list[float | None]:
@@ -208,6 +244,62 @@ class TestPreRestartSpendIsPersistedEagerly:
             "seeded with — once, not twice"
         )
         assert result.total_cost_usd == pytest.approx(PRIOR_COST_USD)
+
+        accumulated = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = {row["slug"]: row for row in accumulated.get("stories", [])}
+        assert rows["feature-a"]["cost_usd"] == pytest.approx(PRIOR_COST_USD)
+
+    def test_intake_dropped_story_never_publishes_a_zero_accumulated_row(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A re-entered story dropped before dispatch keeps its pre-restart spend.
+
+        Nothing about this path produces a coordinator result, so every early
+        terminal — an intake drop, an auth or budget skip, a gate stand-down —
+        records the accumulated row with a defaulted $0.00. For a story carrying
+        $6.00 from before the re-exec, publishing that zero and fixing it only at
+        wrap-up leaves a window in which a stop keeps the zero.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _config_with_intake(tmp_path)
+        sprint_id = _seed_prior_generation(tmp_path, outcome="FAILED")
+
+        published: list[list[dict]] = []
+        _spy_on_accumulated_writes(monkeypatch, published)
+
+        def fake_intake(_tasks, _root, **_kwargs):
+            return {"feature-a": _dropped_intake_outcome("feature-a")}
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch("theforge.sprint.runner.run_intake_remediation", side_effect=fake_intake),
+            patch(
+                "theforge.sprint.runner._build_intake_agent_caller",
+                return_value=(lambda *a, **k: None, ""),
+            ),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=_make_coordinator_result(success=True, cost=CURRENT_COST_USD),
+            ),
+        ):
+            run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-gen2-intake-drop")
+
+        costs = [
+            row.get("cost_usd")
+            for stories in published
+            for row in stories
+            if row.get("slug") == "feature-a"
+        ]
+        assert costs, "the run must have published an accumulated row for feature-a"
+        assert all(c is not None and c >= PRIOR_COST_USD for c in costs), (
+            "no accumulated row may be published below the pre-restart spend, not "
+            f"even transiently; saw {costs}"
+        )
 
         accumulated = yaml.safe_load(
             (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
@@ -323,6 +415,29 @@ class TestUnreconciledCostReporting:
             "the contradicted per-story sum must not be presented as the run's cost"
         )
 
+    def test_one_cent_below_recorded_spend_is_still_unreconciled(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """A cent is not rounding noise — it is a cent that went missing.
+
+        A tolerance would wave through exactly the decreases hardest to spot, so
+        the comparison is made at the precision both figures are stored to.
+        """
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48a3",
+            story_costs={"issue-2908": 2.54, "issue-2914": 3.74},
+            recorded_spend_usd=6.29,
+        )
+
+        assert display_sprint_status("0210029b48a3", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "unreconciled" in header, header
+        assert "cost: $6.28" not in header, header
+
     def test_stopped_run_that_reconciles_reports_its_total(self, tmp_path: Path, capsys) -> None:
         """The guard is a contradiction check, not a blanket refusal."""
         from theforge.cli.sprint_status import display_sprint_status
@@ -335,6 +450,30 @@ class TestUnreconciledCostReporting:
         )
 
         assert display_sprint_status("0210029b48a2", tmp_path) == 0
+        header = capsys.readouterr().out.splitlines()[0]
+
+        assert "unreconciled" not in header, header
+        assert "cost: $6.28" in header, header
+
+    def test_serialization_noise_below_the_stored_precision_is_not_flagged(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Below the persisted precision there is no decrease to report.
+
+        Rows carry more places than the recorded figure does, so the two disagree
+        in the sixth decimal on every ordinary run. That is the file format, not
+        lost money, and flagging it would make the signal useless.
+        """
+        from theforge.cli.sprint_status import display_sprint_status
+
+        _write_stopped_state(
+            tmp_path,
+            "0210029b48a4",
+            story_costs={"issue-2908": 2.539976, "issue-2914": 3.741151},
+            recorded_spend_usd=6.2811,
+        )
+
+        assert display_sprint_status("0210029b48a4", tmp_path) == 0
         header = capsys.readouterr().out.splitlines()[0]
 
         assert "unreconciled" not in header, header

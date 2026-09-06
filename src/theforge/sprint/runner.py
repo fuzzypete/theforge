@@ -6098,7 +6098,16 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             "slug": slug,
             "outcome": outcome,
             "verdict": None,
-            "cost_usd": cost_usd,
+            # Same projection every other persisted row gets. This is the
+            # accumulated record for a story that leaves the sprint WITHOUT a
+            # coordinator result — an intake drop, an auth or budget skip, a gate
+            # stand-down — and every one of those defaults the cost to 0.0. For a
+            # story re-entering after a re-exec that 0.0 would overwrite its
+            # pre-restart spend with nothing, and a stop before wrap-up would keep
+            # the zero (#2922). The absolute-prior reconciliation paths consume
+            # the carried attribution before handing their figure in, so the money
+            # is added here exactly once.
+            "cost_usd": _projected_story_cost(_sprint_state, slug, cost_usd),
             "story_run_id": _ctx.run_id,
             "preflight": None,
             "preflight_original_verdict": None,
@@ -6659,6 +6668,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         is written keeps the sprint total and the sum of the rows equal, and the
         bump happens once per story however many times this is asked.
 
+        That "it never wrote an accumulated row" is the ordinary case, not a
+        guarantee: a generation can flush both, and then the accumulated row and
+        the audit are two accounts of ONE occurrence of the money. Where both
+        hold it, the accumulated half is already in the ledger's carried prior
+        and in this story's carried attribution, so only the excess is new — and
+        the carried attribution is consumed here, because the row is about to
+        state the whole figure outright (#2922 review).
+
         Returns ``None`` when nothing was recovered — never 0.0, which would
         assert that the prior generation spent nothing.
         """
@@ -6668,11 +6685,25 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         cost = carried.get("recoverable_cost_usd")
         if cost is None:
             return None
-        if not carried.get("cost_attributed"):
-            carried["cost_attributed"] = True
-            _sprint_state.cost.add(cost)
-            _log(f"RECOVERED {slug}: ${cost:.4f} of prior-generation spend rolled into the total")
-        return cost
+        if carried.get("cost_attributed"):
+            # Asked again for the same story: report the figure already settled,
+            # not a freshly derived one — the accumulated half has been consumed
+            # by now and would no longer be visible to recompute it.
+            return float(carried.get("attributed_row_cost_usd", cost))
+        _already_carried = _sprint_state.carried_prior_story_cost.get(slug, 0.0)
+        _row_cost = max(float(cost), _already_carried)
+        _new_money = round(_row_cost - _already_carried, 6)
+        carried["cost_attributed"] = True
+        carried["attributed_row_cost_usd"] = _row_cost
+        _sprint_state.consume_carried_prior_cost(slug)
+        if _new_money > 0.0:
+            _sprint_state.cost.add(_new_money)
+        _log(
+            f"RECOVERED {slug}: ${_row_cost:.4f} of prior-generation spend on the row "
+            f"(${_new_money:.4f} new to this generation's ledger, "
+            f"${_already_carried:.4f} already carried)"
+        )
+        return _row_cost
 
     def _dropped_row_cost(slug: str) -> float | None:
         """The cost every surface reports for a dropped story's row.
@@ -6688,7 +6719,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         """
         carried = _sprint_state.prior_generation_work.get(slug)
         if carried and carried.get("cost_attributed"):
-            return carried.get("recoverable_cost_usd")
+            # The resolved figure, not the raw recovered one: where the same
+            # money was also in the accumulated row, attribution settled on one
+            # occurrence of it and this row must report that same number.
+            return carried.get("attributed_row_cost_usd", carried.get("recoverable_cost_usd"))
         return None if slug in _dropped_with_work else 0.0
 
     for slug, reason in list(_dropped_slugs.items()):
