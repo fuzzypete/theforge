@@ -19,6 +19,13 @@ _STATUS_WIDTH = 11
 
 _DETAIL_REF_RE = re.compile(r"#(\d+)")
 
+#: Places both sides of the rows-versus-recorded-spend comparison are persisted
+#: to. Comparing at exactly that precision is what separates serialization noise
+#: from a real decrease: a cent is not rounding, it is a cent, and a run that
+#: reports one cent less than it already spent is the same defect at a smaller
+#: scale (#2922).
+_RECORDED_SPEND_PRECISION = 4
+
 #: Slug -> issue-number normalization is shared with the issue-cost aggregate so
 #: the number this view resolves a title for and the number that view sums runs
 #: for can never diverge (#2365).
@@ -194,6 +201,14 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
                 # whatever the last phase written to .state says.
                 entries = mark_interrupted_entries(entries)
                 sprint_name = _read_sprint_name_from_state(state_path)
+                # A stopped or crashed run left behind what it recorded about its
+                # own spend. Read it: it is the only thing that can contradict
+                # the per-story rows this command is about to sum (#2922).
+                _stopped_meta = _read_sprint_meta_from_state(state_path)
+                budget_usd = _stopped_meta.get("budget_usd")
+                budget_status_recorded = _stopped_meta.get("budget_status")
+                budget_overrun_recorded = _stopped_meta.get("budget_overrun_usd")
+                budget_spend_recorded = _stopped_meta.get("budget_spend_usd")
 
     # For crashed sprints with an unreadable state file, show the banner with
     # an empty story list rather than falling through to sprint-summary (which
@@ -254,6 +269,51 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             cost_complete = False
             cost_measured_usd = _measured_sum
 
+    # A run's recorded spend is a high-water mark, not a running guess: money it
+    # told an operator it had spent stays spent. Whenever the per-story rows sum
+    # to LESS than that figure, the smaller number must not be what this command
+    # prints as the run's cost — an under-reported total is what lets a cap bind
+    # later than the operator believes it does (#2922).
+    #
+    # The comparison is made at the precision both figures are persisted to, not
+    # against a tolerance: a tolerance would accept exactly the small decreases
+    # it is hardest to notice, and a cent that vanished is still a cent that
+    # vanished.
+    #
+    # What is *said* about the gap differs by whether the run is over:
+    #   live    — the run is still spending and its rows can legitimately trail
+    #             its ledger for a moment, so the recorded figure is a FLOOR:
+    #             show it, and name the row sum beside it. Never the lower one.
+    #   finished — nothing more will arrive to close the gap, so the two figures
+    #             contradict each other and neither is the sprint's cost. Report
+    #             it as unreconciled rather than settle on either.
+    cost_unreconciled_usd: float | None = None
+    cost_floor_usd: float | None = None
+    _recorded_is_number = isinstance(budget_spend_recorded, (int, float)) and not isinstance(
+        budget_spend_recorded, bool
+    )
+    #
+    # No surviving story rows at all is the extreme of the same case, not an
+    # exemption from it: rows that explain nothing explain $0.00, and a run whose
+    # state records money spent must not print nothing about it just because the
+    # record of where it went is gone.
+    _rows_total_usd: float | None = None
+    if total_cost_usd is not None:
+        _rows_total_usd = total_cost_usd
+    elif cost_complete and not entries:
+        _rows_total_usd = 0.0
+    if _rows_total_usd is not None and _recorded_is_number:
+        _recorded = round(float(budget_spend_recorded), _RECORDED_SPEND_PRECISION)
+        if _recorded > round(_rows_total_usd, _RECORDED_SPEND_PRECISION):
+            if is_live:
+                cost_floor_usd = _rows_total_usd
+                total_cost_usd = _recorded
+            else:
+                cost_unreconciled_usd = _recorded
+                cost_measured_usd = _rows_total_usd
+                total_cost_usd = None
+                cost_complete = False
+
     # ── Header ───────────────────────────────────────────────────────────
     # A PID file is evidence a process exists, not evidence the sprint is still
     # advancing: the runner writes the terminal sprint_phase before its own
@@ -290,8 +350,30 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         header_parts.append(
             _format_sprint_phase(sprint_phase, sprint_phase_detail, sprint_phase_started_at)
         )
-    if total_cost_usd is not None:
+    if total_cost_usd is not None and cost_floor_usd is not None:
+        # A live run whose rows have not caught up with its own recorded spend.
+        # The recorded figure leads, because it is the one that cannot be too
+        # low; the row sum is named beside it so the gap is visible rather than
+        # implied.
+        header_parts.append(
+            f"cost: ${total_cost_usd:.2f} recorded (stories ${cost_floor_usd:.2f}){overrun_marker}"
+        )
+    elif total_cost_usd is not None:
         header_parts.append(f"cost: ${total_cost_usd:.2f}{overrun_marker}")
+    elif cost_unreconciled_usd is not None:
+        # Name both numbers, at the precision the gap was detected at. The
+        # operator's question is which one to trust, and the honest answer is
+        # neither — so neither is presented as the total, and a cent-sized gap is
+        # not rounded into invisibility by the display.
+        _rows_str = f"{cost_measured_usd or 0.0:.2f}"
+        _recorded_str = f"{cost_unreconciled_usd:.2f}"
+        if _rows_str == _recorded_str:
+            _rows_str = f"{cost_measured_usd or 0.0:.4f}"
+            _recorded_str = f"{cost_unreconciled_usd:.4f}"
+        header_parts.append(
+            f"cost: unreconciled (stories ${_rows_str} < "
+            f"recorded ${_recorded_str}){overrun_marker}"
+        )
     elif not cost_complete:
         header_parts.append(f"cost: {_fmt_cost_total(None, cost_measured_usd)}{overrun_marker}")
     if duration_seconds is not None:
