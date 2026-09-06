@@ -117,7 +117,17 @@ models:
     # fallen out of selection. The pinned entry keeps it routing-effective, and is the identity
     # actually billed: claude-haiku-4-5 is what appears in cost.agents[].model_usage.
     - anthropic/claude-haiku-4-5/cli
-    - google/gemini-3.5-flash/api  # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
+    # google/gemini-3.5-flash/api — Google re-entry (2026-07-16, the registry story flagged below): stable/GA
+    - provider: google
+      model: gemini-3.5-flash
+      transport: {kind: api}
+      routing:
+        dev_capable: false   # 2026-09-05: DEV-ineligible. Every dev attempt on this identity
+                             # terminated at 3 turns with submit never called; the coordinator
+                             # then retried without bound (theforge#2919, theforge#2920). Review
+                             # is unaffected — 292 recorded review runs. Overlay only: tier,
+                             # capability, cost_rank and pricing still come from the catalog.
+                             # REMOVE once theforge#2920 has landed AND an rc carrying it is cut.
     #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
     #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
     #                                 70.3) — the exact no-submit failure class that benched 3.1-pro (#1598).
@@ -143,7 +153,15 @@ models:
     #                                  submit never called, finalization empty, excluded from merge. Code review
     #                                  cycle 3 (#2333): 22+ bash-recon iterations while both other reviewers
     #                                  finished in ~2 min. Same class as 2026-05-09 (non-delivery mid-review).
-    - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
+    # google/gemini-3.1-pro-preview/api — benched 2026-07-09: reviewer completed without calling submit_review
+    - provider: google
+      model: gemini-3.1-pro-preview
+      transport: {kind: api}
+      routing:
+        dev_capable: false   # 2026-09-05: DEV-ineligible, same cause as gemini-3.5-flash above.
+                             # Its two recorded dev failures (#2711, #2832) predate the diagnosis
+                             # and are suspected coordinator-caused, not model-caused
+                             # (theforge#2921) — do not read them as capability evidence.
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
     #                                      #1598 closed 2026-07-12 — three days AFTER this bench — and fixes
     #                                      precisely this failure (no retry, no substitute on a non-submitting
