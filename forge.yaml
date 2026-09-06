@@ -24,6 +24,19 @@ models:
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
     #                                 regardless of order. Reverted same day; real fix is #1617.
     - openai/gpt-5.5/cli          # OpenAI's recommended coding model (promoted to the catalog, #2252)
+    # Fable — Anthropic's top tier, added 2026-09-06. The CLI `fable` alias resolves
+    # to claude-fable-5 (probed: modelUsage reports claude-fable-5; $0.68 for a
+    # one-word reply). Alias, so no pricing_provenance; cost is provider-reported
+    # like claude-opus-5. DEV-only until it has history: it enters through the
+    # reseeded exploration cadence above and is ranked on observed cost-to-
+    # completion vs opus, not on this capability seed. The served version is
+    # unpinned in the catalog, so `forge audits alias-drift` reports it
+    # `unresolved` until a claude-fable-5 entry is promoted.
+    - provider: anthropic
+      model: fable
+      transport: {kind: cli}
+      routing: {tier: strong, capability: 10, cost_rank: 3, cost_rank_basis: vendor-tier, phase_eligibility: [dev]}
+      cost: {rate_basis: provider_reported}
     # GPT-5.6 (2026-08-05, #2207). Identifiers verified against the live /v1/models list for this
     # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna.
     #
@@ -301,6 +314,15 @@ assignment:
   # so code-review reviewers were still being selected on completion rate alone while
   # plan reviewers had moved to value signals three days earlier.
   code_review_value_enabled: true
+  # RESEED 2026-09-06. gpt-5.4 (2026-09-05, #2909) and the Google models (ba276a9a)
+  # left the pool within 24h; every remaining mid-band candidate (gpt-5.6-terra,
+  # gpt-5.5, gpt-5.6-sol) has zero dev history, so cost-qualified exploitation
+  # had one evidenced answer — opus — for score-5 stories. Defaults (5 / 1) would
+  # take ~15 stories per key to seed a challenger. Revert to defaults once each
+  # challenger clears min_sample_size (3) at the mid/strong keys.
+  exploration:
+    explore_every_n: 2
+    per_sprint_cap: 2
 
 # Neutralize the stuck-detector's no-file-modifications arm pending the redesign
 # in #1215. Repeat-call and identical-error-loop arms remain at their defaults
