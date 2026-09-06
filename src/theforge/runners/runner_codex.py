@@ -462,6 +462,109 @@ def _exited_before_any_turn(stdout: str) -> bool:
     return True
 
 
+# A provider refusal issued BEFORE generation begins — an HTTP 400
+# ``invalid_request_error`` such as "the 'gpt-5.4' model is not supported when
+# using Codex with a ChatGPT account" — is a cost of zero: the request was
+# declined, not served, so no tokens existed to bill (#2913).
+#
+# This is deliberately narrower than "the stream reported no usage". A call that
+# ran and whose accounting was lost looks identical in that one respect and must
+# keep its cost-unknown classification; what separates the two is the provider's
+# own explicit statement that the request was never valid. Anything that could
+# have consumed tokens before failing — an upstream 5xx, a quota refusal mid
+# turn, a timeout — is NOT on this list and stays unmeasured.
+_PRE_GENERATION_REFUSAL_STATUS = 400
+_PRE_GENERATION_REFUSAL_ERROR_TYPES = frozenset({"invalid_request_error"})
+
+# Stable failure identifier for "the provider refused the request before
+# generating anything". Distinct from LAUNCH_FAILURE_CODE: the CLI started fine
+# and reached the provider, so this is not a startup failure — only the cost
+# conclusion (a measured $0.00) is shared.
+PRE_GENERATION_REFUSAL_CODE = "provider_refused_before_generation"
+
+
+def _refusal_payloads(event: dict[str, Any]) -> "Iterator[dict[str, Any]]":
+    """Yield the dicts of an event that may carry provider error fields.
+
+    Codex nests the provider's error differently depending on where the failure
+    surfaced: at the top level of an ``error`` event, under ``error`` on a
+    ``turn.failed``, or one level deeper as the provider's own response body.
+    """
+    yield event
+    nested = event.get("error")
+    if isinstance(nested, dict):
+        yield nested
+        deeper = nested.get("error")
+        if isinstance(deeper, dict):
+            yield deeper
+
+
+def _is_pre_generation_refusal_event(event: dict[str, Any]) -> bool:
+    """True when *event* carries an explicit pre-generation provider refusal.
+
+    Requires BOTH signals — the 400 status and the ``invalid_request_error``
+    type — because either alone is weaker than the claim being made. A status
+    with no error type could be a transport artefact; an error type with no
+    status could be a message forge merely relayed.
+    """
+    if event.get("type") not in ("error", "turn.failed", "thread.failed"):
+        return False
+    has_status = False
+    has_error_type = False
+    for payload in _refusal_payloads(event):
+        for status_key in ("status", "status_code", "http_status"):
+            if _coerce_int(payload.get(status_key)) == _PRE_GENERATION_REFUSAL_STATUS:
+                has_status = True
+        error_type = payload.get("type")
+        if isinstance(error_type, str) and error_type in _PRE_GENERATION_REFUSAL_ERROR_TYPES:
+            has_error_type = True
+    return has_status and has_error_type
+
+
+def _classify_pre_generation_refusal(stdout: str) -> str | None:
+    """Return the provider's refusal message when nothing was ever generated.
+
+    Fails closed the same way ``_exited_before_any_turn`` does, and for the same
+    reason: a line this parser cannot read means output exists that is not
+    accounted for, so "nothing was generated" stops being an established fact.
+    Any evidence of generation — reported usage, a completed turn, agent text —
+    likewise disqualifies the stream, because a refusal alongside real work is a
+    run that spent something.
+    """
+    refusal: str | None = None
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not line.startswith("{"):
+            return None
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(event, dict):
+            return None
+        if event.get("type") == "turn.completed":
+            return None
+        if refusal is None and _is_pre_generation_refusal_event(event):
+            refusal = _refusal_message(event)
+    if refusal is None:
+        return None
+    if _usage_from_events(stdout) is not None or _agent_text_from_events(stdout) is not None:
+        return None
+    return refusal
+
+
+def _refusal_message(event: dict[str, Any]) -> str:
+    """The most specific human-readable text on a refusal event."""
+    for payload in reversed(tuple(_refusal_payloads(event))):
+        for key in ("message", "detail"):
+            text = payload.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()[:500]
+    return "provider refused the request before generating (400 invalid_request_error)"
+
+
 def _launch_failure_reason(stderr: str, stdout: str, returncode: int) -> str:
     """Distil the CLI's own explanation for a pre-turn exit into one line.
 
@@ -855,12 +958,29 @@ def _run_codex(
             stdout=proc.stdout or "",
             stderr=proc.stderr or "",
         )
+        # A provider refusal issued before generation began is likewise a
+        # measured $0.00 — the request was declined, not served (#2913). Unlike
+        # a launch failure the CLI started and reached the provider, so this is
+        # NOT a startup failure; only the cost conclusion is shared.
+        refusal_reason = (
+            None
+            if launch_reason is not None or proc.returncode == 0
+            else _classify_pre_generation_refusal(proc.stdout or "")
+        )
         if launch_reason is not None:
             cost_usd: float | None = 0.0
             model_usage: tuple[ModelUsage, ...] = ()
             _log(
                 f"  {label} FAILED TO LAUNCH (exit {proc.returncode}, no turn began): "
                 f"{launch_reason} — recording measured $0.00, not cost-unknown."
+            )
+        elif refusal_reason is not None:
+            cost_usd = 0.0
+            model_usage = ()
+            _log(
+                f"  {label} REFUSED BY PROVIDER before generation "
+                f"(exit {proc.returncode}, model {profile.model}): {refusal_reason} "
+                "— recording measured $0.00, not cost-unknown."
             )
         else:
             # Best-effort real cost from codex output. Unrecoverable → cost-unknown
@@ -871,7 +991,12 @@ def _run_codex(
                 stdout=proc.stdout or "",
             )
         _startup_failure = launch_reason is not None
-        _failure_code = LAUNCH_FAILURE_CODE if launch_reason is not None else None
+        if launch_reason is not None:
+            _failure_code: str | None = LAUNCH_FAILURE_CODE
+        elif refusal_reason is not None:
+            _failure_code = PRE_GENERATION_REFUSAL_CODE
+        else:
+            _failure_code = None
 
         if result_json:
             _json_output = result_json.get("result", output_text)
