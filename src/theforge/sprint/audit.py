@@ -125,10 +125,19 @@ def _state_reported_cost(state: object) -> float | None:
     return _optional_cost(getattr(state, "total_cost", None))
 
 
-# Rounding slack for the sprint-total-vs-story-rows comparison. Both sides are
-# reported to four places, so anything at or under a cent is the arithmetic of
-# rounding rather than spend nothing accounts for.
+# Rounding slack for the ledger-total-vs-story-rows comparison. The ledger
+# aggregates spend by a different route than the rows do — per-phase versus
+# per-story, each rounded on the way — so a sub-cent disagreement between them
+# is arithmetic rather than spend nothing accounts for.
 _COST_ACCOUNTING_TOLERANCE_USD = 0.01
+
+# The recorded-spend high-water comparison gets no such slack. That figure is
+# not a second aggregation of the same money: it is a number this run already
+# published to an operator, persisted at four places, and the rows are compared
+# against it at exactly that precision. A tolerance there would wave through the
+# small regressions that are hardest to notice, which is the whole failure mode
+# (#2922).
+_RECORDED_SPEND_PRECISION = 4
 
 
 def build_cost_accounting_discrepancy(
@@ -136,6 +145,7 @@ def build_cost_accounting_discrepancy(
     story_costs: "list[tuple[str | None, float | None]]",
     *,
     declared_non_story_usd: float = 0.0,
+    recorded_spend_high_water_usd: float = 0.0,
 ) -> dict | None:
     """Spend admitted into the sprint total that no per-story row explains.
 
@@ -159,16 +169,37 @@ def build_cost_accounting_discrepancy(
     the sprint level because it belongs to no story of the sprint (intake
     remediation on an issue that was never scheduled). It is explained — just
     not by a story row — so it counts on the explained side.
+
+    ``recorded_spend_high_water_usd`` is the most the run ever told an operator
+    it had spent. A run's own earlier observation is as binding as its ledger:
+    where the ledger came back lower — a generation that lost part of its
+    accounting across a re-exec (#2922) — the higher figure is the one the rows
+    have to explain, so the contradiction surfaces here instead of being settled
+    quietly in favour of the smaller number.
+
+    The two comparisons are made against different thresholds, deliberately. The
+    ledger is a second aggregation of the same spend and gets a cent of rounding
+    slack; the high-water is a figure already published to an operator and gets
+    none, so a one-cent regression against it is reported rather than absorbed.
     """
-    measured = round(float(measured_total_usd or 0.0), 4)
+    ledger = round(float(measured_total_usd or 0.0), 4)
+    recorded = round(float(recorded_spend_high_water_usd or 0.0), _RECORDED_SPEND_PRECISION)
     non_story = round(float(declared_non_story_usd or 0.0), 4)
     story_total = round(sum(cost for _slug, cost in story_costs if cost is not None), 4)
     explained = round(story_total + non_story, 4)
-    unexplained = round(measured - explained, 4)
-    if unexplained <= _COST_ACCOUNTING_TOLERANCE_USD:
+    ledger_unexplained = round(ledger - explained, 4)
+    recorded_unexplained = round(recorded - explained, _RECORDED_SPEND_PRECISION)
+    if ledger_unexplained <= _COST_ACCOUNTING_TOLERANCE_USD and recorded_unexplained <= 0.0:
         return None
+    measured = max(ledger, recorded)
+    unexplained = round(measured - explained, 4)
+    # Which side the gap was measured against, so an operator reading the block
+    # can trace it back to a figure rather than reconstruct it (convention 6).
+    _against_high_water = recorded_unexplained > 0.0 and recorded > ledger
     return {
         "sprint_measured_usd": measured,
+        "sprint_ledger_usd": ledger,
+        "recorded_spend_high_water_usd": recorded,
         "explained_story_usd": story_total,
         "declared_non_story_usd": non_story,
         "unexplained_usd": unexplained,
@@ -179,6 +210,13 @@ def build_cost_accounting_discrepancy(
             f"${unexplained:.2f} of measured sprint spend has no per-story record; "
             "the sprint total is reported as unavailable rather than as a complete "
             "figure assembled from an incomplete set of stories."
+            + (
+                f" The rows also fall below ${recorded:.4f}, the spend this run had "
+                "already recorded, so the shortfall is money the run lost track of "
+                "rather than money it never spent."
+                if _against_high_water
+                else ""
+            )
         ),
     }
 
@@ -1313,6 +1351,9 @@ def _write_sprint_audit(
             getattr(result, "total_cost_usd", 0.0) or 0.0,
             _explained_costs,
             declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+            recorded_spend_high_water_usd=(
+                getattr(result, "recorded_spend_high_water_usd", 0.0) or 0.0
+            ),
         )
         if _cost_discrepancy is not None:
             _cost_complete = False
@@ -1830,6 +1871,9 @@ def _write_sprint_summary(
             getattr(result, "total_cost_usd", 0.0) or 0.0,
             [(e.get("slug"), e.get("cost_usd")) for e in spec_entries],
             declared_non_story_usd=getattr(result, "non_story_spend_usd", 0.0) or 0.0,
+            recorded_spend_high_water_usd=(
+                getattr(result, "recorded_spend_high_water_usd", 0.0) or 0.0
+            ),
         )
         if _cost_discrepancy is not None:
             effective_cost_complete = False

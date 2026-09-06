@@ -1282,9 +1282,11 @@ class CoordinatorState:
     # always tell a phase this attempt executed from one lifted off disk, and an
     # absent preflight block from a deliberately skipped one.
     phase_recovery: dict | None = None
-    # Adaptive iteration limits (per-story). Populated by derive_limits() before
-    # the dev/review loop starts. 0 means "not computed yet"; engine falls back
-    # to config.retry.max_dev_iterations / max_review_cycles in that case.
+    # Adaptive retry/timeout limits (per-story). Populated by derive_limits()
+    # before the dev/review loop starts. 0 means "not computed yet"; callers
+    # fall back to config.retry.max_dev_iterations / max_review_cycles then.
+    # These count phase *attempts*: ``adaptive_dev_max`` is never the runner's
+    # within-invocation agent-turn ceiling, which stays a dev-profile setting.
     adaptive_dev_max: int = 0
     adaptive_review_max: int = 0
     adaptive_dev_timeout_seconds: int = 0
