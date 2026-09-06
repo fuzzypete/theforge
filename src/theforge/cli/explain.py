@@ -10,6 +10,13 @@ the final rationale.
 This is a read-only convenience over the recorded block — it invokes no agents,
 re-reads no profiles, and never writes. The block is the contract; this view is
 one presentation of it.
+
+The block reaches the audit substrate only when a story finishes, so a story
+that is running now — or that ``forge stop`` killed mid-flight — is looked up in
+the stores that *do* hold its decision while it is unfinished (see
+:mod:`theforge.cli.explain_live`). That is the state in which the question is
+usually asked, and a decision that cannot be retrieved when asked has the cost
+of being recorded and none of the benefit (#2923).
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import json
 import sys
 from pathlib import Path
 
+from theforge.cli import explain_live
 from theforge.cli.shared import _find_config
 from theforge.coordinator import audit_substrate
 
@@ -490,19 +498,28 @@ def render_routing_decision(block: dict) -> list[str]:
     return lines
 
 
-def render_configuration(block: object) -> list[str]:
+def render_configuration(block: object, *, absent_reason: str | None = None) -> list[str]:
     """Render the record's configuration-provenance block (#2056).
 
     Pure formatting over fields the audit layer already wrote. An absent block
     (a record predating configuration identity, backfilled to ``None`` on read)
     is stated as such rather than rendered as "unchanged" — a run whose
     configuration cannot be named must not look like one that can.
+
+    ``absent_reason`` replaces that message when the *store* the record came
+    from does not carry configuration provenance at all (the resume record).
+    "This store does not hold it" and "this run never recorded it" are different
+    facts, and neither may be printed as the other.
     """
     lines = ["Configuration", "-" * 60]
     if not isinstance(block, dict):
         lines.append(
-            "  not recorded — this run predates configuration provenance, so the "
-            "configuration it executed under cannot be established from the audit trail"
+            f"  {absent_reason}"
+            if absent_reason
+            else (
+                "  not recorded — this run predates configuration provenance, so the "
+                "configuration it executed under cannot be established from the audit trail"
+            )
         )
         lines.append("")
         return lines
@@ -566,24 +583,42 @@ def _print_recorded_config_value(record: dict, *, key: str, fallback_label: str)
     return 0
 
 
-def _explain_from_record(record: dict, label: str) -> int:
+def _explain_from_record(
+    record: dict,
+    label: str,
+    *,
+    configuration_absent_reason: str | None = None,
+    routing_absent_reason: str | None = None,
+) -> int:
     """Render the routing_decision from a loaded audit record.
 
     Distinguishes an absent block (pre-#1391 records, where the reader-side
     migration backfills ``routing_decision: None``) from a present one so the
     operator is never shown a misleading empty summary.
+
+    ``configuration_absent_reason`` / ``routing_absent_reason`` let a caller
+    reading an unfinished record (#2923) say why a block is missing from *that*
+    record instead of asserting the finished-record reason, which would be
+    false: a story stopped before the router ran has no routing block for a
+    reason that has nothing to do with the record's age.
     """
     # Configuration identity first: it says what this run was a run *of*, and it
     # is worth printing even when the routing rationale below is unavailable.
     print(f"# {label}")
-    for line in render_configuration(record.get("configuration")):
+    for line in render_configuration(
+        record.get("configuration"), absent_reason=configuration_absent_reason
+    ):
         print(line)
 
     if "routing_decision" not in record or record.get("routing_decision") is None:
         print(
-            f"[forge] {label}: no routing_decision block recorded for this run "
-            "(it predates the #1391 routing-decision record, so the assignment "
-            "rationale cannot be reconstructed).",
+            f"[forge] {label}: {routing_absent_reason}"
+            if routing_absent_reason
+            else (
+                f"[forge] {label}: no routing_decision block recorded for this run "
+                "(it predates the #1391 routing-decision record, so the assignment "
+                "rationale cannot be reconstructed)."
+            ),
             file=sys.stderr,
         )
         return 1
@@ -631,41 +666,149 @@ def cmd_explain(args: object) -> int:
         return 1
     project_root = config_path.parent
 
-    if not audit_substrate.has_audit_inputs(project_root):
+    run_id = getattr(args, "run", None)
+    story = getattr(args, "story", None)
+    slug: str | None = None
+    issue_id: int | None = None
+    if run_id:
+        label = f"run {run_id}"
+    else:
+        slug, issue_id = _resolve_story(story)
+        label = f"story {story}"
+
+    record: dict | None = None
+    substrate_error: str | None = None
+    substrate_has_inputs = audit_substrate.has_audit_inputs(project_root)
+    if substrate_has_inputs:
+        # Strictly read-only: open_readonly never creates, migrates, or rebuilds
+        # the substrate (unlike require_substrate), so `forge explain` cannot
+        # mutate the index as a side effect. A missing/stale index is reported
+        # rather than silently regenerated.
+        try:
+            conn = audit_substrate.open_readonly(project_root)
+        except audit_substrate.SubstrateError as exc:
+            substrate_error = str(exc)
+        else:
+            try:
+                if run_id:
+                    record = audit_substrate.latest_record_for(conn, run_id=run_id)
+                else:
+                    record = audit_substrate.latest_record_for(conn, slug=slug, issue_id=issue_id)
+            finally:
+                conn.close()
+
+    if record is not None:
+        if config_key:
+            return _print_recorded_config_value(record, key=config_key, fallback_label=label)
+        return _explain_from_record(record, label)
+
+    # No finished run is indexed. The decision may still be recorded on disk by
+    # a story that is running now, or one `forge stop` killed mid-flight (#2923)
+    # — those never reach the substrate, and they are the states in which this
+    # question is asked most often.
+    lookup = explain_live.find_live_record(
+        project_root, run_id=run_id, slug=slug, issue_id=issue_id
+    )
+    if lookup.found is not None:
+        return _explain_from_live_record(
+            lookup.found, label, config_key=config_key, substrate_error=substrate_error
+        )
+
+    if substrate_error:
+        print(f"[forge] {substrate_error}", file=sys.stderr)
+        return 1
+    return _report_no_record(
+        label, lookup, substrate_has_inputs=substrate_has_inputs, project_root=project_root
+    )
+
+
+def _explain_from_live_record(
+    found: explain_live.LiveRecord,
+    label: str,
+    *,
+    config_key: str | None,
+    substrate_error: str | None,
+) -> int:
+    """Render an unfinished story's record, stating which store it came from.
+
+    The provenance line is not decoration: an operator reading this output must
+    know they are looking at a record that may still change, and which of the
+    two non-substrate stores answered.
+    """
+    if substrate_error:
         print(
-            "[forge] no audit records found — nothing to explain.",
+            f"[forge] the audit substrate could not be read ({substrate_error}); "
+            "reading the on-disk record for this story instead.",
+            file=sys.stderr,
+        )
+    print(
+        f"[forge] {label}: no completed run is recorded in the audit substrate; "
+        f"explaining the {found.label} at {found.path} — this story has not been "
+        "published as finished, so its record may still change.",
+        file=sys.stderr,
+    )
+    record = explain_live.migrate_if_versioned(found.record)
+    if config_key:
+        return _print_recorded_config_value(record, key=config_key, fallback_label=label)
+    configuration_absent_reason = (
+        None
+        if found.carries_configuration
+        else (
+            "not carried by this store — the resume record holds phase blocks only; "
+            "configuration provenance is written with the run's audit record"
+        )
+    )
+    return _explain_from_record(
+        record,
+        f"{label}  ({found.label}: {found.path})",
+        configuration_absent_reason=configuration_absent_reason,
+        routing_absent_reason=(
+            f"the {found.label} at {found.path} carries no routing_decision block yet — "
+            "the run had not recorded a routing decision when this record was written, "
+            "so there is nothing to explain rather than something unreadable."
+        ),
+    )
+
+
+def _report_no_record(
+    label: str,
+    lookup: explain_live.LiveLookup,
+    *,
+    substrate_has_inputs: bool,
+    project_root: Path,
+) -> int:
+    """Say which of the two "not found" answers this is (#2923).
+
+    An operator directed here by the documentation must be able to tell "nothing
+    ever recorded a decision for this story" from "a record exists and this
+    command could not read it". They are different problems with different next
+    steps, and one message for both hides that.
+    """
+    if lookup.unreadable:
+        for path, error in lookup.unreadable:
+            print(f"[forge] could not read {path}: {error}", file=sys.stderr)
+        print(
+            f"[forge] a routing record for {label} exists on disk but could not be read "
+            "(see above) — this is not the same as no record having been written.",
             file=sys.stderr,
         )
         return 1
-    # Strictly read-only: open_readonly never creates, migrates, or rebuilds the
-    # substrate (unlike require_substrate), so `forge explain` cannot mutate the
-    # index as a side effect. A missing/stale index fails with an explicit
-    # rebuild instruction rather than being silently regenerated.
-    try:
-        conn = audit_substrate.open_readonly(project_root)
-    except audit_substrate.SubstrateError as exc:
-        print(f"[forge] {exc}", file=sys.stderr)
+    if not substrate_has_inputs:
+        print(
+            "[forge] no audit records found — nothing to explain. Searched the audit "
+            f"substrate under {project_root / '.forge' / 'audits'} and the in-flight "
+            f"stores: {', '.join(lookup.searched)}.",
+            file=sys.stderr,
+        )
         return 1
-
-    try:
-        run_id = getattr(args, "run", None)
-        story = getattr(args, "story", None)
-        if run_id:
-            record = audit_substrate.latest_record_for(conn, run_id=run_id)
-            label = f"run {run_id}"
-        else:
-            slug, issue_id = _resolve_story(story)
-            record = audit_substrate.latest_record_for(conn, slug=slug, issue_id=issue_id)
-            label = f"story {story}"
-    finally:
-        conn.close()
-
-    if record is None:
-        print(f"[forge] no audit record found for {label}.", file=sys.stderr)
-        return 1
-    if config_key:
-        return _print_recorded_config_value(record, key=config_key, fallback_label=label)
-    return _explain_from_record(record, label)
+    print(
+        f"[forge] no audit record found for {label} — no completed run in the audit "
+        "substrate, and no in-flight, interrupted or resume record either "
+        f"({', '.join(lookup.searched)}). Nothing has recorded a routing decision "
+        "for it.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _resolve_story(story: str) -> tuple[str | None, int | None]:

@@ -307,7 +307,8 @@ This is the quickest way to inspect the role table derived from `models:`.
 
 ## `forge explain`
 
-Render the operator-facing assignment summary for one recorded run.
+Render the operator-facing assignment summary for one recorded run, finished or
+not.
 
 ```bash
 forge explain --story <issue-or-slug>
@@ -344,6 +345,30 @@ The output includes:
 
 If a run predates the `routing_decision` contract, the command says so
 explicitly instead of fabricating an explanation.
+
+### Stories that are running, stopped, or abandoned mid-flight
+
+A story enters the audit substrate only when it finishes. `forge explain` also
+reads the two stores that hold the decision while a story is unfinished, so the
+question can be answered in the states that generate it most often:
+
+1. the per-story `audit.yaml` under `.forge/logs/<sprint>/<slug>/` — flushed as
+   the sprint runs (`in_flight: true`) and stamped terminal by `forge stop`;
+2. the resume record at `.forge/resume_state/<slug>.json`.
+
+Whichever holds the freshest recorded decision answers, and the command names
+the store and path it read on stderr — output taken from an unfinished record is
+never presented as a finished run's, because it may still change. A resume
+record carries no configuration provenance, and the Configuration section says
+that rather than claiming the run predates provenance capture.
+
+Three "no answer" outcomes are distinct, by design:
+
+| Situation | What you see |
+|---|---|
+| Nothing recorded a decision anywhere | `no audit record found for …` naming both stores it searched |
+| A record exists but could not be parsed | `could not read <path>: …` plus "this is not the same as no record having been written" |
+| The record exists but the router had not decided yet | `carries no routing_decision block yet` |
 
 ---
 
