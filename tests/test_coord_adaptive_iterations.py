@@ -136,7 +136,8 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
 
     assert state.adaptive_dev_max > 0
     assert state.adaptive_review_max > 0
-    assert state.adaptive_dev_max <= config.retry.max_dev_iterations_cap
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
+    assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_review_max <= config.retry.max_review_cycles_cap
     assert state.adaptive_dev_timeout_seconds == round(
         config.dev_profile.timeout_seconds * LARGE_HEADROOM_FACTOR
@@ -394,9 +395,8 @@ def test_adaptive_assignment_off_keeps_review_limits_adaptive(tmp_path: Path):
         except _StopLoop:
             pass
 
-    assert state.adaptive_dev_max == (
-        config.dev_profile.max_iterations or config.retry.max_dev_iterations
-    )
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
+    assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_review_max == config.retry.max_review_cycles_cap
     assert state.adaptive_limits_audit["base_review"] == config.retry.max_review_cycles_cap
     assert state.adaptive_limits_audit["profile_history_runs"] == 0
@@ -437,7 +437,11 @@ def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
         except _StopLoop:
             pass
 
-    assert state.adaptive_dev_max == 4
+    # dev_profile.max_iterations=4 is the per-invocation agent-turn ceiling and
+    # must not become the retry-attempt count, even under an explicit dev
+    # override: attempts stay on retry policy (#2920).
+    assert state.adaptive_dev_max == config.retry.max_dev_iterations
+    assert state.budget.max_iterations == config.retry.max_dev_iterations
     assert state.adaptive_dev_timeout_seconds == round(1200 * MEDIUM_HEADROOM_FACTOR)
     assert state.adaptive_dev_cost_estimate_usd == 12.0
     assert "explicit dev forge.yaml override" in state.adaptive_limits_audit["rationale"]

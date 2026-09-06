@@ -1507,7 +1507,10 @@ def _run_dev_phase(
     _dev_profile = _dc_replace(
         config.dev_profile,
         timeout_seconds=_dev_timeout,
-        max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
+        # The runner's turn ceiling is a profile setting.  Adaptive dev_max
+        # sizes retry/timeout policy and must never overwrite this independent
+        # per-invocation limit (or the runner default represented by None).
+        max_iterations=config.dev_profile.max_iterations,
         stuck_detection=_scaled_stuck,
         sandbox_capability_profile=config.sandbox.capability_profile,
         sandbox_write_roots=config.sandbox.write_roots,
