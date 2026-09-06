@@ -1617,6 +1617,11 @@ never feeds routing as a capability signal. Their spend is still recorded, under
 `harness_terminated` in `.forge/model_profiles.yaml`, which also carries the
 per-cause breakdown (`by_cause`).
 
+Only a run forge actually *ended* is counted here. If an attempt burned its
+iterations without submitting but a retry then finished the story, nothing was
+terminated — the model completed the work, and the run folds into `runs` and
+`rate` as the ordinary success or failure it was.
+
 Read a high `terminated` with a small `runs` as "forge rarely let this model
 finish here", not as "this model is weak here".
 

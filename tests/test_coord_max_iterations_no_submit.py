@@ -147,14 +147,59 @@ def test_coordinator_cutoff_is_not_recorded_as_model_capability_failure(
     result = run_task(config, task)
 
     assert result.success is False
-    # dev_phase recorded the cut-off durably on state...
-    assert result.state.dev_max_iterations_no_submit is True
+    # dev_phase recorded the cut-off on state at the branch that ended the run...
+    assert result.state.dev_max_iterations_no_submit_terminated is True
     # ...and the bridge carries it across the seam as a harness termination, so
     # the aggregator segregates the run instead of decrementing the model.
     outcome = build_run_outcome(config, result.state, result.success)
     assert outcome.dev_termination_cause == "max_iterations_no_submit"
     assert outcome.dev_timeout_killed is False
     mock_pool.assert_not_called()
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_no_submit_retry_that_completes_is_credited_to_the_model(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """End to end: a no-submit attempt whose retry finishes still credits the model.
+
+    The coordinator ends a run for this reason only when the retry budget is
+    spent. Here the first attempt burned its iterations without submitting but
+    the retry completed and the run succeeded — the coordinator never terminated
+    anything, so this is ordinary model evidence. Segregating it would drop the
+    model's completed work from its capability history, denying it credit for a
+    success it earned (#2921 review iter 1).
+    """
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [_max_iter_no_submit_result(), _make_agent_result(profile_name="dev")]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    assert result.success is True
+    # The no-submit classification did occur on the first attempt...
+    assert result.state.dev_results[0].failure_code == "max_iterations_reached"
+    # ...but the coordinator never ended the run for it, so the terminal flag is
+    # clear and the run folds into capability stats as the success it was.
+    assert result.state.dev_max_iterations_no_submit_terminated is False
+    outcome = build_run_outcome(config, result.state, result.success)
+    assert outcome.dev_termination_cause is None
+    assert outcome.dev_success is True
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")

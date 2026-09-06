@@ -281,16 +281,16 @@ def test_build_run_outcome_termination_cause_stuck():
 
 
 def test_build_run_outcome_termination_cause_max_iterations_no_submit():
-    """A coordinator iteration limit before submit is not model capability evidence."""
+    """A run the coordinator ended at its iteration budget is not model evidence."""
     state = _state_with_dev_costs([0.30])
-    state.dev_max_iterations_no_submit = True
+    state.dev_max_iterations_no_submit_terminated = True
     outcome = build_run_outcome(_Cfg(), state, success=False)
     assert outcome.dev_termination_cause == "max_iterations_no_submit"
     assert outcome.dev_timeout_killed is False
 
 
 def test_build_run_outcome_no_submit_survives_error_type_overwrite():
-    """The cut-off is read from the sticky flag, not from ``error_type``.
+    """The cut-off is read from the terminal flag, not from ``error_type``.
 
     ``state.error_type`` is last-writer-wins: a later dev iteration assigns its
     own ``failure_code`` over the ``"max_iterations_no_submit"`` classification.
@@ -298,10 +298,27 @@ def test_build_run_outcome_no_submit_survives_error_type_overwrite():
     silently revert to being recorded as a model failure — the exact defect.
     """
     state = _state_with_dev_costs([0.30])
-    state.dev_max_iterations_no_submit = True
+    state.dev_max_iterations_no_submit_terminated = True
     state.error_type = "gate_fail"
     outcome = build_run_outcome(_Cfg(), state, success=False)
     assert outcome.dev_termination_cause == "max_iterations_no_submit"
+
+
+def test_build_run_outcome_no_submit_retry_that_recovered_is_not_segregated():
+    """An occurred-but-recovered no-submit is not a coordinator-terminated run.
+
+    The coordinator only ends the run when the retry budget is spent. If an
+    earlier attempt burned its iterations without submitting and a LATER attempt
+    produced judged work, the model did finish — segregating that run would drop
+    the model's completed work from its capability history. ``error_type`` still
+    carries the earlier classification here, which is exactly why the bridge
+    must not key off it.
+    """
+    state = _state_with_dev_costs([0.30])
+    state.error_type = "max_iterations_no_submit"
+    outcome = build_run_outcome(_Cfg(), state, success=True)
+    assert outcome.dev_termination_cause is None
+    assert outcome.dev_success is True
 
 
 def test_build_run_outcome_genuine_dev_failure_still_counts():

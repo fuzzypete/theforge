@@ -1058,14 +1058,13 @@ def test_seam_harness_kill_does_not_contaminate_capability_stats(tmp_path):
     assert stuck_bc.get("runs", 0) == 0
     assert stuck_bc.get("max_killed_timeout_s", 0.0) == 0.0
 
-    # A coordinator iteration limit before submit also crosses the bridge as a
-    # harness termination, rather than becoming a model failure.
-    # A coordinator iteration limit before submit also crosses the bridge as a
-    # harness termination, rather than becoming a model failure. ``error_type``
-    # is set to a LATER iteration's failure code here, reproducing the
-    # last-writer-wins overwrite that makes it an unusable signal at run end.
+    # A run the coordinator ENDED at its iteration budget with submit never
+    # called crosses the bridge as a harness termination, rather than becoming a
+    # model failure. ``error_type`` is set to a LATER iteration's failure code
+    # here, reproducing the last-writer-wins overwrite that makes it an unusable
+    # signal at run end.
     exhausted_state = _dev_state_medium()
-    exhausted_state.dev_max_iterations_no_submit = True
+    exhausted_state.dev_max_iterations_no_submit_terminated = True
     exhausted_state.error_type = "gate_fail"
     exhausted_data, exhausted_outcome = _apply(config, exhausted_state, success=False)
     assert exhausted_outcome.dev_termination_cause == "max_iterations_no_submit"
@@ -1091,6 +1090,23 @@ def test_seam_harness_kill_does_not_contaminate_capability_stats(tmp_path):
     assert genuine_bc["_successes"] == 0
     assert genuine_bc["success_rate"] == 0.0
     assert "harness_terminated" not in genuine_bc or not genuine_bc["harness_terminated"].get(
+        "runs"
+    )
+
+    # ...and a run where a no-submit attempt occurred but a later retry finished
+    # the work is NOT a coordinator-terminated run: the coordinator never ended
+    # it, the model produced judged work, and the success must be credited. Only
+    # the terminal branch sets the flag, so ``error_type`` still carrying the
+    # cut-off classification from the earlier attempt changes nothing here.
+    recovered_state = _dev_state_medium()
+    recovered_state.error_type = "max_iterations_no_submit"
+    recovered_data, recovered_outcome = _apply(config, recovered_state, success=True)
+    assert recovered_outcome.dev_termination_cause is None
+    recovered_bc = _dev_section(recovered_data)["by_complexity"]["medium"]
+    assert recovered_bc["runs"] == 1
+    assert recovered_bc["_successes"] == 1
+    assert recovered_bc["success_rate"] == 1.0
+    assert "harness_terminated" not in recovered_bc or not recovered_bc["harness_terminated"].get(
         "runs"
     )
 

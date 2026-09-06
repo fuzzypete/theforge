@@ -333,19 +333,25 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
     # aggregator segregates these runs out of the capability statistics. Timeout
     # takes precedence when multiple termination signals happen to be set.
     #
-    # All three read the sticky state flags rather than ``state.error_type``.
-    # ``error_type`` also names the no-submit cut-off, but it is last-writer-wins
-    # (dev_phase overwrites it with a later iteration's ``failure_code``), so the
-    # classification the coordinator makes can be gone by the time this runs —
-    # which is how a coordinator-ended run came to be recorded as a model failure
-    # in the first place (#2921).
+    # The no-submit arm reads a flag dev_phase sets only on the branch that
+    # actually ENDS the run, so a no-submit attempt whose retry went on to
+    # produce judged work is NOT segregated — the model finished, and dropping
+    # that run would deny it credit for completed work. It is a dedicated field
+    # rather than a read of ``state.error_type``, which also names the cut-off
+    # but is last-writer-wins: a later iteration's ``failure_code`` overwrites
+    # it, so the classification can be gone by the time this runs — which is how
+    # a coordinator-ended run came to be recorded as a model failure (#2921).
     dev_termination_cause = (
         "timeout"
         if state.dev_process_timeout_killed
         else (
             "stuck_pattern"
             if state.dev_process_stuck_terminated
-            else ("max_iterations_no_submit" if state.dev_max_iterations_no_submit else None)
+            else (
+                "max_iterations_no_submit"
+                if state.dev_max_iterations_no_submit_terminated
+                else None
+            )
         )
     )
     # Taint marker (ADR-0006 clause 4, #1852): derive the run's aggregate

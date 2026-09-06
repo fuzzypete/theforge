@@ -1767,16 +1767,26 @@ def _run_dev_phase(
         if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
             state.error_type = "max_iterations_no_submit"
             state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT
-            # Record the coordinator-imposed cut-off on state immediately, before
-            # any retry/escalate decision runs — same rationale as the timeout and
-            # stuck-pattern flags, plus one of its own: ``error_type`` is
-            # overwritten by a later iteration's failure_code, so it cannot be
-            # trusted to still say "max_iterations_no_submit" when the profile
-            # bridge reads state at run end. model_profiles_bridge reads this flag
-            # to segregate the run as a harness-imposed termination that must not
-            # be recorded as a capability failure by the model (#2921).
-            state.dev_max_iterations_no_submit = True
             if state.budget.is_exhausted():
+                # This is the branch where the coordinator ENDS the run for its
+                # own budget: no retries remain, so the story dies here having
+                # never had a submitted handoff to judge. Record that on state
+                # for the profile bridge, which reads it to keep the run out of
+                # the model's capability statistics (#2921).
+                #
+                # Deliberately set HERE and not above with the classification.
+                # An earlier no-submit attempt whose retry goes on to produce
+                # judged work is not a coordinator-terminated run — the model
+                # did finish — and must fold into capability stats normally.
+                # Setting the flag on mere occurrence would drop that model's
+                # completed work from its history.
+                #
+                # A dedicated field rather than reading ``state.error_type`` at
+                # run end: error_type is last-writer-wins and a later iteration
+                # assigns its own failure_code over this classification, so it
+                # cannot be trusted to still name the cut-off when the bridge
+                # reads state.
+                state.dev_max_iterations_no_submit_terminated = True
                 state.phase = Phase.ESCALATE
                 state.error = (
                     "Dev agent exhausted its retry budget "
