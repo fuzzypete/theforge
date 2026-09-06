@@ -10,7 +10,10 @@ def test_gate_runs_index_before_pytest() -> None:
     index_cmd = "forge index"
     guard_cmd = "forge check-story-config"
     scrubbed_invocation = "$(SCRUBBED_GATE_CMD)"
-    pytest_cmd = "PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal"
+    # Worker count is $(GATE_WORKERS), defaulted to `auto` so CI and a solo gate are
+    # unchanged; a parallel sprint caps it via the environment. Both halves are
+    # asserted below so the default cannot be silently changed.
+    pytest_cmd = "PYTHONPATH=src python -m pytest tests/ -q -n $(GATE_WORKERS) --dist worksteal"
 
     assert index_cmd in gate_block
     assert guard_cmd in gate_block
@@ -23,3 +26,6 @@ def test_gate_runs_index_before_pytest() -> None:
     )
     # The scrubbed gate command itself carries the pytest invocation.
     assert pytest_cmd in makefile
+    # The default must stay `auto`: CI runs a bare `make gate` and should use every
+    # core. Only a parallel sprint overrides it, through the environment.
+    assert "GATE_WORKERS ?= auto" in makefile

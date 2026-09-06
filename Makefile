@@ -1,7 +1,15 @@
 .PHONY: fmt lint test test-parallel dev-check gate gate-strict gate-serial test-integration clean
 
 SCRUBBED_ENV_VARS := OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY XAI_API_KEY GROQ_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN OPENAI_BASE_URL DOTENV_PATH DOTENV_FILE PYTHON_DOTENV_DISABLED
-GATE_PYTEST_CMD = PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal
+# xdist worker count. `auto` = one worker per logical core, correct when the gate
+# owns the machine (CI, and any solo `make gate`). It is wrong under a parallel
+# sprint: two concurrent gates each claim ~10 workers on a 10-logical/4-performance
+# core box, and each run takes ~3.5x its solo time. Measured 2026-09-06 on 10928
+# tests: -n auto 79.9s solo but two concurrent gates blew a 360s budget and
+# escalated a story; -n 5 is 109.7s solo and two concurrent finish in 159s/169s.
+# Override for local parallel sprints (forge.yaml gate_command), not for CI.
+GATE_WORKERS ?= auto
+GATE_PYTEST_CMD = PYTHONPATH=src python -m pytest tests/ -q -n $(GATE_WORKERS) --dist worksteal
 SCRUBBED_GATE_CMD = env -i PATH=".venv/bin:$$PATH" HOME="$$HOME" PYTHON_DOTENV_DISABLED=1 /bin/sh -c 'unset $(SCRUBBED_ENV_VARS); export PYTHON_DOTENV_DISABLED=1; ruff check src/ tests/ && ruff format --check src/ tests/ && $(GATE_PYTEST_CMD)'
 
 # Format
