@@ -1,0 +1,116 @@
+schema_version: 2
+run_id: 88ef0345d9df
+authoritative_run_record: .forge/audits/runs/88ef0345d9df.json
+generated_at: '2026-09-04T18:10:13.721837+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012
+story:
+  slug: issue-2886
+  name: Diagnose discards a confirmed cause instead of recording it on the issue
+  github_issue: 2886
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The run corrected diagnose LAND-state declaration so confirmed-cause
+    results are classified from the gate-visible diagnosis content instead of being
+    discarded when separately tracked incompleteness marks the artifact partial. It
+    also updated diagnose typing and seam behavior around strict gaps versus lifecycle
+    blockers.
+  approach: The change aligned lifecycle-state derivation with the rendered Diagnosis
+    section that LAND actually evaluates, removed stale assumptions that partial results
+    must declare a blocked state, and tightened contract and flow checks around which
+    incompleteness affects landing versus remaining audit-only.
+  files_modified: *id002
+what_was_learned:
+- claim: When a write is validated against rendered issue content, the producer state
+    must be derived from that same rendered, gate-visible content; deriving it from
+    broader internal completeness metadata can create self-contradictory writes that
+    discard valid completed work.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The first plan step explicitly targeted aligning lifecycle blockers
+      with gate-visible diagnosis content, showing the failure came from using a different
+      basis for declaration than for LAND evaluation.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved the fix specifically because declaration was derived
+      from the rendered Diagnosis section the gate evaluates, demonstrating that shared
+      derivation source was the mechanism that resolved the refusal.
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This flow file is where diagnose decides what state to declare at
+      LAND time, so its inclusion as a changed file supports that the resolution centered
+      on changing state derivation at the write boundary.
+- claim: 'Not every investigation gap should block lifecycle advancement: gaps that
+    are invisible to the issue-body gate but preserved in audit metadata need separate
+    handling from gaps that change the user-visible diagnosis state.'
+  evidence:
+  - type: plan_step
+    step_id: '3'
+    description: The type-level contract step was framed around strict gaps versus
+      lifecycle blockers, showing that the run distinguished between incompleteness
+      that should remain metadata and incompleteness that should change landing state.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review approved the result because confirmed-cause diagnoses
+      with gate-invisible strict gaps still land while those gaps remain audit-visible,
+      directly demonstrating the separation future runs should preserve.
+  - type: file
+    path: src/theforge/diagnose_types.py
+    description: The diagnose type contract file was part of the fix and the review
+      findings both point at it, indicating that the classification boundary between
+      partiality metadata and lifecycle blockers lives in the type semantics.
+- claim: Changes that relax partial-result blocking need explicit verification for
+    symptom-scope classification, because loosening one partiality path can silently
+    drop operator-visible warnings for other incomplete diagnoses.
+  evidence:
+  - type: review_finding
+    finding_id: a4925884574e8005
+    description: Review found that a categorical-symptom diagnosis could newly land
+      as full success without the previous partial warning when symptom_scope_coverage
+      was absent, showing that adjacent partiality rules can regress when the main
+      blocker logic is loosened.
+  - type: diff
+    ref: ea83f93f21146a7d17fa9dd5589a9a22c79dc2ab
+    description: This later iteration was the reviewed follow-up after the finding,
+      indicating the run had to correct behavior beyond the initial state-alignment
+      fix to preserve intended warning semantics.
+learned_patterns:
+- derive-state-from-rendered-output
+- separate-audit-gaps-from-land-blockers
+- recheck-adjacent-partiality-rules
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly focused on keeping LAND classification tied to rendered diagnosis
+    content while guarding against collateral weakening of partial-warning semantics.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 7.8379232
+  dominant_difficulty: "Untangling two similar but distinct notions of incompleteness\u2014\
+    issue-body lifecycle state versus audit-only verification gaps\u2014without regressing\
+    \ other partial-diagnosis paths."

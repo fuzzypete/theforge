@@ -1,0 +1,160 @@
+schema_version: 2
+run_id: 109bccca51ff
+authoritative_run_record: .forge/audits/runs/109bccca51ff.json
+generated_at: '2026-09-04T18:24:49.920007+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.013083750000000002
+story:
+  slug: issue-2795
+  name: Two paths decide whether a branch's work has landed using different evidence,
+    so a squash-merged branch is preserved forever
+  github_issue: 2795
+story_shape:
+  work_type: refactor
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/troubleshooting.md
+- src/theforge/coordinator/branch_landing.py
+- src/theforge/coordinator/workspace.py
+- src/theforge/sprint/dag.py
+- tests/test_branch_landing.py
+- tests/test_sprint_resume.py
+- tests/test_sprint_runner.py
+- tests/test_worktree_lifecycle_hygiene.py
+what_changed:
+  description: This run introduced a shared branch-landing resolver and routed both
+    resume triage and worktree sweeping through it so landed branches, including squash-merged
+    ones, are classified from the same evidence model. It also updated workspace reclamation
+    and operator troubleshooting/reporting around landed, unlanded, and undecidable
+    outcomes.
+  approach: The change extracted branch-landing decisions into a dedicated coordinator
+    module, preserved the richer evidence sources resume triage already distinguished,
+    and then replaced duplicated call-site logic in the sprint DAG and workspace sweep
+    with that resolver while tightening base-branch content checks and topology handling
+    through review-driven fixes.
+  files_modified: *id002
+what_was_learned:
+- claim: A merged-PR signal is not sufficient by itself to reclaim a branch; before
+    treating a branch as landed for cleanup, the resolver must also confirm the branch's
+    content reached the configured base branch.
+  evidence:
+  - type: review_finding
+    finding_id: 1f6379cfb5c34efc
+    description: Review found that trusting GitHub's merged-PR result before checking
+      whether the branch's content was actually present on the configured base could
+      mark still-unlanded work as landed, which would let the sweep reclaim a clean
+      worktree incorrectly.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 was blocked specifically because merged-PR evidence could
+      delete work that had not reached the configured base, demonstrating that landing
+      decisions for cleanup must be gated by base-branch content, not merge metadata
+      alone.
+- claim: Topology evidence for landing must be evaluated against the configured base
+    branch, not against arbitrary origin refs, or unrelated tracking branches can
+    make unlanded work look safe to remove.
+  evidence:
+  - type: review_finding
+    finding_id: a1a1204ff005df4e
+    description: Review caught a case where commits appearing on an unrelated origin-tracking
+      ref caused the sweep to remove a clean branch even though its content had not
+      landed on the configured base branch, showing that ref-agnostic origin presence
+      is the wrong predicate.
+  - type: file
+    path: src/theforge/coordinator/workspace.py
+    description: Workspace reclamation was one of the decision points under review,
+      and the finding against it shows the cleanup path must consume base-branch-aware
+      landing classification rather than a generic 'present on origin somewhere' check.
+- claim: When consolidating duplicate decision paths behind a shared resolver, every
+    prior bypass must be removed; a single remaining direct check can preserve the
+    old disagreement and negate the refactor.
+  evidence:
+  - type: review_finding
+    finding_id: 6ac1d02a5351ffb0
+    description: Review found resume triage still returning skip_merged from a direct
+      prior-APPROVE audit check after the shared resolver produced no landed result,
+      proving that partial migration leaves conflicting answers alive even after a
+      central resolver exists.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 reported blocking gaps where the sweep and resume triage
+      still made landing decisions outside the shared resolver path, showing that
+      centralizing logic requires auditing all call sites for residual independent
+      classification.
+- claim: A shared landing resolver needs an explicit topology path for ordinary merge
+    commits, because audit, PR, and closing-reference evidence may all be absent even
+    when the work has genuinely landed.
+  evidence:
+  - type: review_finding
+    finding_id: 4c06ef7fdcc08c0a
+    description: Review identified that a branch merged by a normal merge commit resolved
+      as undecidable when no audit, PR, or closing-reference evidence existed, demonstrating
+      that merge topology itself must be a first-class landing signal.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 noted that topology evidence failed on a real merge, which
+      shows a resolver that preserves only metadata-based evidence sources will under-classify
+      legitimately landed branches.
+learned_patterns:
+- base-branch-gated-landing
+- no-bypass-after-centralization
+- topology-as-primary-evidence
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: a1a1204ff005df4e
+    severity: P1
+    file: src/theforge/coordinator/workspace.py
+    description: The worktree sweep removed a clean branch whose commits were present
+      on an unrelated origin tracking ref but whose content had not landed on the
+      configured base branch.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 4c06ef7fdcc08c0a
+    severity: P1
+    file: src/theforge/coordinator/branch_landing.py
+    description: A branch merged by a normal merge commit without audit, PR, or closing-reference
+      evidence resolved as undecidable instead of landed.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 6ac1d02a5351ffb0
+    severity: P1
+    file: src/theforge/sprint/dag.py
+    description: Resume triage still returned skip_merged from a direct prior-APPROVE
+      audit check after the shared resolver path had produced no landed result.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 1f6379cfb5c34efc
+    severity: P1
+    file: src/theforge/coordinator/branch_landing.py
+    description: When GitHub reports a merged PR for a branch whose current content
+      is still absent from the configured base branch, the resolver returns landed
+      before checking the content and the sweep can reclaim that clean worktree.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly surfaced safety bugs at the boundaries between evidence sources:
+    cleanup decisions were only correct once every path used the same resolver and
+    that resolver checked both topology and configured-base content.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 22.1113505
+  dominant_difficulty: Unifying two long-lived decision paths without weakening the
+    safety boundary for deleting potentially unlanded work.

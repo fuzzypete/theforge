@@ -1,0 +1,78 @@
+schema_version: 2
+run_id: b13cc75a43db
+authoritative_run_record: .forge/audits/runs/b13cc75a43db.json
+generated_at: '2026-09-04T18:43:10.903331+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.007166250000000001
+story:
+  slug: issue-2887
+  name: Diagnose treats a missing agent result as malformed and retries reformatting
+    nothing
+  github_issue: 2887
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+what_changed:
+  description: The diagnose flow was adjusted so the missing delegated-result case
+    is classified through its explicit failure path instead of being treated as a
+    malformed diagnosis and sent through parse reformat retries.
+  approach: The change tightened coordinator-side outcome classification around agent
+    completion states, and verified the behavior with focused regression scenarios
+    for the missing-delegation-result path.
+  files_modified: *id002
+what_was_learned:
+- claim: When diagnose agents can delegate work, result handling must distinguish
+    'no final result was ever produced' from 'a produced result was malformed', because
+    only the latter is recoverable by parse reformat retries.
+  evidence:
+  - type: diff
+    ref: 1cd8f5e940b446b0d6199a3325413eba26e01ca5
+    description: This diff changes diagnose-flow control so the delegated-without-outcome
+      condition is intercepted before parse-retry handling, showing that retrying
+      reformat was previously the wrong recovery path for absent results rather than
+      malformed ones.
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: The coordinator file is where agent outputs are classified into failure
+      paths; its involvement here shows the lesson applies at outcome classification
+      time, before any parser-recovery logic is invoked.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved specifically noting the detector no longer gates
+      on runner success state, which demonstrates that correct classification depended
+      on recognizing the missing delegated outcome directly rather than inferring
+      from a generic parse failure.
+learned_patterns:
+- absent-vs-malformed-result
+- delegation-outcome-before-parse-retry
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on the detector's classification condition, especially avoiding
+    dependence on runner success state for this failure path.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.0769735
+  dominant_difficulty: Separating an incomplete delegated run from an ordinary parse
+    failure in the coordinator's result-classification flow.

@@ -1,0 +1,129 @@
+schema_version: 2
+run_id: cca06b158a2a
+authoritative_run_record: .forge/audits/runs/cca06b158a2a.json
+generated_at: '2026-09-05T22:07:29.204417+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012092499999999999
+story:
+  slug: issue-2906
+  name: The audit substrate reports a lock held by a sibling worker as corruption,
+    escalating the story
+  github_issue: 2906
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- database
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/adaptive_iterations.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/sprint/runner.py
+- tests/test_audit_storage_read_model_boundary.py
+- tests/test_audit_substrate_lock_contention.py
+- tests/test_sprint_infrastructure_attribution.py
+what_changed:
+  description: The run separated SQLite lock contention from substrate corruption
+    in audit storage handling and propagated that distinction through sprint failure
+    attribution. It also updated the runner path so operator-facing classification
+    reflects infrastructure lock failures instead of collapsing them into unknown
+    RCA.
+  approach: The change introduced contention-aware audit access behavior around SQLite
+    open/read paths, treated transient lock states as bounded concurrency conditions
+    rather than corruption, and threaded the resulting failure identity through sprint
+    attribution and verification scenarios covering sibling-worker contention.
+  files_modified: *id002
+what_was_learned:
+- claim: When a shared SQLite-backed subsystem is used by parallel sprint workers,
+    lock contention has to be modeled as a first-class transient outcome and preserved
+    through error attribution; otherwise forge's own concurrency can transform a diagnosable
+    infrastructure condition into an opaque story failure.
+  evidence:
+  - type: diff
+    ref: a20d5da333acd6635738c4914f7d72ee7e1aadf5
+    description: This diff ties together audit storage changes with runner attribution
+      changes, showing the fix required both distinguishing lock-related SQLite failures
+      from corruption at the storage boundary and carrying that distinction outward
+      so the resulting story failure is not reported as unknown.
+  - type: file
+    path: src/theforge/coordinator/audit_storage.py
+    description: This file is where audit database access semantics are defined, so
+      changes here demonstrate that the substrate boundary itself needed to recognize
+      lock contention as a separate, non-corruption class of failure before callers
+      could react appropriately.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: This file handles sprint execution outcomes, and its modification
+      demonstrates that correctly handling contention was not complete at the storage
+      layer alone; the runner also had to preserve the specific infrastructure cause
+      instead of flattening it into generic escalation.
+  - type: file
+    path: tests/test_sprint_infrastructure_attribution.py
+    description: This test file shows the behavior was verified at the operator-facing
+      attribution layer, demonstrating that preserving precise failure identity across
+      layers was part of the required solution, not just a local storage fix.
+  - type: review_cycle
+    cycle: '1'
+    description: The approval explicitly noted successful separation of audit-substrate
+      lock contention from database corruption across query surfaces, confirming that
+      the key lesson from the run was preserving that distinction consistently rather
+      than in only one code path.
+- claim: For contention-sensitive shared-state bugs, verification has to exercise
+    multiple access surfaces under concurrent worker conditions, because fixing only
+    one read/write path leaves sibling-worker resumes able to fail through a different
+    substrate entry point.
+  evidence:
+  - type: file
+    path: tests/test_audit_substrate_lock_contention.py
+    description: This dedicated contention test file demonstrates that the run verified
+      behavior under the same kind of concurrent access pattern that triggered the
+      incident, which is the mechanism needed to expose path-specific lock handling
+      gaps.
+  - type: file
+    path: src/theforge/coordinator/audit_substrate.py
+    description: This file fronts substrate operations, and its inclusion alongside
+      the larger audit storage changes shows that contention handling had to be checked
+      at substrate entry points, not assumed correct once one lower-level function
+      was updated.
+  - type: file
+    path: tests/test_audit_storage_read_model_boundary.py
+    description: This boundary-focused test file indicates the run verified behavior
+      at a specific storage interface, supporting the lesson that contention bugs
+      must be checked at each access boundary that can open or query the shared database.
+  - type: review_cycle
+    cycle: '1'
+    description: The review note that separation worked across all query surfaces
+      directly demonstrates that multi-surface verification mattered; the risk was
+      not merely whether one code path was fixed, but whether every relevant substrate
+      access path behaved consistently under locks.
+learned_patterns:
+- sqlite-lock-not-corruption
+- preserve-specific-infrastructure-failure
+- verify-concurrency-across-access-surfaces
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether lock-contention handling and classification stayed
+    consistent across every audit query surface and outward attribution path.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 2.176596
+  dominant_difficulty: Concurrency-sensitive failure semantics had to remain consistent
+    from low-level SQLite access through operator-facing sprint attribution.
