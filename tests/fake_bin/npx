@@ -34,6 +34,13 @@ Codex (FAKE_CODEX_MODE):
                   --skip-git-repo-check was passed; with the flag, behave like
                   json_usage. Proves forge can run codex in the .git-less
                   git-archive baseline checkout (#2164).
+  model_refused — mimic a provider refusal issued BEFORE generation: the turn
+                  starts, then the provider returns an immediate HTTP 400
+                  invalid_request_error for an unsupported model, and the CLI
+                  exits 1 with no usage anywhere (#2913). Nothing was billed.
+  upstream_error — the same shape but with an unmeasurable failure: the turn
+                  starts and fails on an upstream 500, which could have consumed
+                  tokens and so must stay cost-unknown
   launch_refusal — always refuse at launch (deprecation warning + trust-gate
                   stderr, exit 1, no JSONL events at all), so the pre-turn
                   launch-failure classification can be exercised
@@ -202,6 +209,33 @@ if any(a.startswith("@openai/codex") for a in args):
         while time.monotonic() < deadline:
             time.sleep(0.1)
         sys.exit(0)
+    if mode in ("model_refused", "upstream_error"):
+        if "--json" not in args:
+            sys.stderr.write("fake npx(codex): event mode requested without --json\n")
+            sys.exit(2)
+        print(json.dumps({"type": "thread.started", "thread_id": "th_fake"}))
+        print(json.dumps({"type": "turn.started"}))
+        if mode == "model_refused":
+            # Verbatim shape of the provider's pre-generation refusal (#2913).
+            print(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "status": 400,
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": (
+                                "The 'gpt-5.4' model is not supported when using "
+                                "Codex with a ChatGPT account."
+                            ),
+                        },
+                    }
+                )
+            )
+        else:
+            print(json.dumps({"type": "turn.failed", "error": {"message": "upstream 500"}}))
+        sys.stdout.flush()
+        sys.exit(1)
     if mode in ("git_trust_gate", "launch_refusal"):
         # The real refusal, verbatim from Codex CLI v0.14x, preceded by the
         # deprecation notice it emits first (see #2164's captured stderr).
