@@ -145,6 +145,29 @@ def _dropped_intake_outcome(slug: str) -> IntakeOutcome:
     )
 
 
+def _dropped_intake_outcome_with_cost(slug: str, cost_usd: float) -> IntakeOutcome:
+    """An intake gate rejection that paid an agent to attempt a rewrite first."""
+    return IntakeOutcome(
+        slug=slug,
+        kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+        findings=(),
+        detail="still unshaped after the rewrite attempt",
+        audit={
+            "remediation_source": "agent",
+            "agent": {
+                "attempted": True,
+                "detail": "rewrote ACs",
+                "profile_name": "intake",
+                "model_used": "claude",
+                "cost_usd": cost_usd,
+                "transport_used": "cli",
+            },
+            "issue_updated": False,
+            "comment_posted": False,
+        },
+    )
+
+
 def _row_costs(snapshots: list[dict], slug: str) -> list[float | None]:
     costs: list[float | None] = []
     for snapshot in snapshots:
@@ -904,3 +927,75 @@ class TestSeededPriorCostSurvivesAnEarlyTerminal:
             "counted once — the seed is read, not consumed, so wrap-up does not "
             "add it a second time"
         )
+
+    def test_seeded_prior_cost_survives_a_nonzero_intake_attribution(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Intake spend adds to a seeded prior cost — it does not replace it.
+
+        A prior-generation DONE story carries its $6.00 as a SEED on the
+        canonical row. ``register`` leaves that seed alone only while the
+        incoming figure is falsy, so once a $1.00 intake-remediation attempt
+        gives the story a nonzero attribution the initial live-state write
+        overwrites $6.00 with $1.00 — while the ledger still counts $7.00.
+        """
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _config_with_intake(tmp_path)
+        sprint_id = _seed_prior_generation(tmp_path, outcome="DONE")
+        _write_prior_sprint_audit(tmp_path, sprint_id, PRIOR_COST_USD)
+
+        snapshots: list[dict] = []
+        published: list[list[dict]] = []
+        _spy_on_state_writes(monkeypatch, snapshots)
+        _spy_on_accumulated_writes(monkeypatch, published)
+
+        intake_cost = 1.0
+
+        def fake_intake(_tasks, _root, **_kwargs):
+            return {"feature-a": _dropped_intake_outcome_with_cost("feature-a", intake_cost)}
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", return_value=_retry_triage()),
+            patch("theforge.sprint.runner.run_intake_remediation", side_effect=fake_intake),
+            patch(
+                "theforge.sprint.runner._build_intake_agent_caller",
+                return_value=(lambda *a, **k: None, ""),
+            ),
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task") as run_task,
+        ):
+            result = run_sprint_ctx(
+                config, manifest_path, reexec=True, run_id="run-seeded-plus-intake"
+            )
+
+        assert run_task.call_count == 0, "the intake gate dropped the story before dispatch"
+        expected = PRIOR_COST_USD + intake_cost
+
+        live_costs = _row_costs(snapshots, "feature-a")
+        assert live_costs, "the run must have written a live state row for feature-a"
+        assert all(c is not None and c >= PRIOR_COST_USD for c in live_costs), (
+            "a nonzero intake attribution must add to the seeded prior cost, not "
+            f"replace it; saw {live_costs}"
+        )
+        assert live_costs[-1] == pytest.approx(expected)
+
+        accumulated_costs = [
+            row.get("cost_usd")
+            for stories in published
+            for row in stories
+            if row.get("slug") == "feature-a"
+        ]
+        assert all(c is not None and c >= PRIOR_COST_USD for c in accumulated_costs), (
+            f"the accumulated row must not regress below the prior spend; saw {accumulated_costs}"
+        )
+
+        accumulated = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = {row["slug"]: row for row in accumulated.get("stories", [])}
+        assert rows["feature-a"]["cost_usd"] == pytest.approx(expected)
+        # The row and the ledger describe the same money — counted once each.
+        assert result.total_cost_usd == pytest.approx(expected)

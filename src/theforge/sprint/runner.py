@@ -4094,13 +4094,23 @@ def _set_outcome(
         # a story's persisted cost picks up the spend its coordinator state does
         # not report — at the moment the row is written, not at a wrap-up that a
         # stopped sprint never reaches (#2922).
+        #
+        # ``include_seed`` for the same reason the initial live-state rows use
+        # it: ``transition`` assigns cost_usd unconditionally, so writing a
+        # figure here over a story whose seeded prior cost is still on its row
+        # would erase that seed. The activating paths — the worker projector and
+        # the terminal accumulated write — have already moved the seed into
+        # carried attribution by the time they reach here, so this reads $0.00
+        # for them and changes nothing.
         _incoming_cost = fields["cost_usd"]
         _measured_cost = (
             float(_incoming_cost)
             if isinstance(_incoming_cost, (int, float)) and not isinstance(_incoming_cost, bool)
             else None
         )
-        fields["cost_usd"] = _projected_story_cost(state, slug, _measured_cost, canonical=True)
+        fields["cost_usd"] = _projected_story_cost(
+            state, slug, _measured_cost, canonical=True, include_seed=True
+        )
     canonical_outcome = coerce_outcome(outcome)
     if canonical_outcome.is_terminal and "finished_at" not in fields:
         fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -7153,8 +7163,21 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     # row holding the pre-restart spend, before any work — and so
                     # before anything can stop the process — rather than waiting
                     # on a wrap-up reattachment (#2922).
+                    #
+                    # ``include_seed`` because this write can REPLACE a seeded
+                    # cost rather than leave it alone. ``register`` preserves the
+                    # seed only while the incoming figure is falsy, so a story
+                    # whose prior generation left $6.00 seeded on its row and
+                    # which then picks up $1.00 of intake attribution would have
+                    # the $6.00 overwritten by the $1.00. The seed is read here,
+                    # not consumed: the wrap-up reconciliation never adds it, so
+                    # reading it is what keeps the row whole.
                     "cost_usd": _projected_story_cost(
-                        _sprint_state, _slug, _dropped_row_cost(_slug), canonical=True
+                        _sprint_state,
+                        _slug,
+                        _dropped_row_cost(_slug),
+                        canonical=True,
+                        include_seed=True,
                     ),
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "batch_group": batch_group_by_slug.get(_slug),
