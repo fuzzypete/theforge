@@ -409,8 +409,11 @@ def _entry_rows(
                             bucket.get("success_rate", 0.0),
                         ),
                         # Harness-imposed terminations (deadline kill / stuck-
-                        # pattern terminate) are recorded but excluded from runs/
-                        # rate (#1763), so surface the tally separately here.
+                        # pattern terminate / coordinator iteration budget spent
+                        # without submit) are recorded but excluded from runs/
+                        # rate (#1763, #2921), so surface the tally separately
+                        # here. The per-cause breakdown lives under
+                        # ``harness_terminated.by_cause`` in model_profiles.yaml.
                         "terminated": int((bucket.get("harness_terminated") or {}).get("runs", 0)),
                     }
                 )

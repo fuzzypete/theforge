@@ -769,6 +769,21 @@ class CoordinatorState:
     # reliable signal. This is the reliable signal that the dev process was ended
     # by stuck-pattern detection (runner failure_code == 'stuck_pattern').
     dev_process_stuck_terminated: bool = False
+    # "The coordinator ENDED this run because its dev retry budget was spent
+    # with submit never called." Set in dev_phase only on the terminal branch
+    # that escalates for this reason, so it marks a run forge itself cut off —
+    # not merely one in which a no-submit attempt occurred. An earlier no-submit
+    # attempt whose retry goes on to produce judged work leaves this False: the
+    # model finished, and that run folds into capability stats normally.
+    #
+    # This is why it is a dedicated field and not a read of ``state.error_type``
+    # at run end. error_type also names the cut-off, but it is last-writer-wins
+    # (dev_phase assigns ``state.error_type = dev_result.failure_code``), so a
+    # later iteration overwrites the classification before the profile bridge
+    # ever sees it. model_profiles_bridge reads this flag to keep a
+    # coordinator-terminated run out of the model's capability statistics
+    # (#2921).
+    dev_max_iterations_no_submit_terminated: bool = False
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
         default_factory=list

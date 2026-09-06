@@ -327,14 +327,32 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         int(state.adaptive_dev_timeout_seconds) if state.adaptive_dev_timeout_seconds else None
     )
     # Termination-cause taxonomy: why the harness ended the dev process, if it
-    # did. A harness-imposed ending (a deadline kill or a stuck-pattern terminate)
-    # is evidence about the budget or the harness, not about the model, so the
+    # did. A harness-imposed ending (a deadline kill, a stuck-pattern terminate,
+    # or the coordinator exhausting its iteration budget before submit) is
+    # evidence about the budget or the harness, not about the model, so the
     # aggregator segregates these runs out of the capability statistics. Timeout
-    # takes precedence when both flags happen to be set.
+    # takes precedence when multiple termination signals happen to be set.
+    #
+    # The no-submit arm reads a flag dev_phase sets only on the branch that
+    # actually ENDS the run, so a no-submit attempt whose retry went on to
+    # produce judged work is NOT segregated — the model finished, and dropping
+    # that run would deny it credit for completed work. It is a dedicated field
+    # rather than a read of ``state.error_type``, which also names the cut-off
+    # but is last-writer-wins: a later iteration's ``failure_code`` overwrites
+    # it, so the classification can be gone by the time this runs — which is how
+    # a coordinator-ended run came to be recorded as a model failure (#2921).
     dev_termination_cause = (
         "timeout"
         if state.dev_process_timeout_killed
-        else ("stuck_pattern" if state.dev_process_stuck_terminated else None)
+        else (
+            "stuck_pattern"
+            if state.dev_process_stuck_terminated
+            else (
+                "max_iterations_no_submit"
+                if state.dev_max_iterations_no_submit_terminated
+                else None
+            )
+        )
     )
     # Taint marker (ADR-0006 clause 4, #1852): derive the run's aggregate
     # trust_status from its mechanically-computed trust checks — the same
