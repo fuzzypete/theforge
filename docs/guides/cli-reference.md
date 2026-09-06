@@ -1605,6 +1605,21 @@ forge profiles reset --model <model-id>      # reset counters for one canonical 
 Every subcommand also accepts `--project-root <path>` (default: cwd, or the
 config's project root for `strength`).
 
+### The `terminated` column
+
+`list` reports dev rows with a `terminated` count alongside `runs`/`rate`. It
+counts runs forge itself ended — a wall-clock deadline kill, a stuck-pattern
+terminate, or the coordinator spending its dev iteration budget with the agent
+never calling submit. These are evidence about forge's limits, not about the
+model's work, so they are deliberately **excluded** from `runs`, `successes` and
+`rate`: a coordinator cut-off never lowers a model's recorded success rate, and
+never feeds routing as a capability signal. Their spend is still recorded, under
+`harness_terminated` in `.forge/model_profiles.yaml`, which also carries the
+per-cause breakdown (`by_cause`).
+
+Read a high `terminated` with a small `runs` as "forge rarely let this model
+finish here", not as "this model is weak here".
+
 ### `forge profiles strength`
 
 A catalog entry's `tier`/`capability` is declared once and gates eligibility;

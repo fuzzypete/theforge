@@ -769,6 +769,18 @@ class CoordinatorState:
     # reliable signal. This is the reliable signal that the dev process was ended
     # by stuck-pattern detection (runner failure_code == 'stuck_pattern').
     dev_process_stuck_terminated: bool = False
+    # Sticky "the coordinator cut the dev process off at its iteration budget
+    # with submit never called at least once" flag. Set once at classification
+    # time in dev_phase (never cleared), alongside the two flags above and for a
+    # sharper reason than theirs: ``state.error_type`` also carries
+    # ``"max_iterations_no_submit"``, but it is last-writer-wins and a later
+    # iteration's ``failure_code`` overwrites it (dev_phase assigns
+    # ``state.error_type = dev_result.failure_code``), so by the time the profile
+    # bridge runs the classification may be gone. This flag is the durable
+    # signal that the run's dev work was ended by forge's own budget rather than
+    # by anything the model produced — model_profiles_bridge reads it to keep
+    # the run out of that model's capability statistics (#2921).
+    dev_max_iterations_no_submit: bool = False
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
         default_factory=list

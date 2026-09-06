@@ -120,6 +120,47 @@ def test_max_iterations_without_submit_stops_at_dev_retry_budget(
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
 @patch_gate_shell()
+def test_coordinator_cutoff_is_not_recorded_as_model_capability_failure(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """End to end: a run forge itself cut off never becomes a model dev failure.
+
+    The coordinator ends this run because ITS iteration budget is spent with
+    submit never called — a statement about forge's budget, not about the model's
+    work. The classification must survive from dev_phase all the way to the
+    RunOutcome the profile aggregator folds, where a non-None termination cause
+    keeps the run out of runs/success_rate (#2921).
+    """
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [_max_iter_no_submit_result(), _max_iter_no_submit_result()]
+
+    result = run_task(config, task)
+
+    assert result.success is False
+    # dev_phase recorded the cut-off durably on state...
+    assert result.state.dev_max_iterations_no_submit is True
+    # ...and the bridge carries it across the seam as a harness termination, so
+    # the aggregator segregates the run instead of decrementing the model.
+    outcome = build_run_outcome(config, result.state, result.success)
+    assert outcome.dev_termination_cause == "max_iterations_no_submit"
+    assert outcome.dev_timeout_killed is False
+    mock_pool.assert_not_called()
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
 def test_audit_records_distinct_code_for_max_iterations_without_submit(
     mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
 ):

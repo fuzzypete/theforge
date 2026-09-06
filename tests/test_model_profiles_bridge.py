@@ -280,6 +280,39 @@ def test_build_run_outcome_termination_cause_stuck():
     assert outcome.dev_timeout_killed is False
 
 
+def test_build_run_outcome_termination_cause_max_iterations_no_submit():
+    """A coordinator iteration limit before submit is not model capability evidence."""
+    state = _state_with_dev_costs([0.30])
+    state.dev_max_iterations_no_submit = True
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause == "max_iterations_no_submit"
+    assert outcome.dev_timeout_killed is False
+
+
+def test_build_run_outcome_no_submit_survives_error_type_overwrite():
+    """The cut-off is read from the sticky flag, not from ``error_type``.
+
+    ``state.error_type`` is last-writer-wins: a later dev iteration assigns its
+    own ``failure_code`` over the ``"max_iterations_no_submit"`` classification.
+    If the bridge read ``error_type``, the coordinator-caused termination would
+    silently revert to being recorded as a model failure — the exact defect.
+    """
+    state = _state_with_dev_costs([0.30])
+    state.dev_max_iterations_no_submit = True
+    state.error_type = "gate_fail"
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause == "max_iterations_no_submit"
+
+
+def test_build_run_outcome_genuine_dev_failure_still_counts():
+    """A model-produced failure is untouched: no cut-off flag, no segregation."""
+    state = _state_with_dev_costs([0.30])
+    state.error_type = "gate_fail"
+    outcome = build_run_outcome(_Cfg(), state, success=False)
+    assert outcome.dev_termination_cause is None
+    assert outcome.dev_success is False
+
+
 def test_build_run_outcome_termination_cause_timeout_precedence():
     """When both flags are set, timeout takes precedence over stuck."""
     state = _state_with_dev_costs([0.30])

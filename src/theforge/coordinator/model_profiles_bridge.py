@@ -327,14 +327,26 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         int(state.adaptive_dev_timeout_seconds) if state.adaptive_dev_timeout_seconds else None
     )
     # Termination-cause taxonomy: why the harness ended the dev process, if it
-    # did. A harness-imposed ending (a deadline kill or a stuck-pattern terminate)
-    # is evidence about the budget or the harness, not about the model, so the
+    # did. A harness-imposed ending (a deadline kill, a stuck-pattern terminate,
+    # or the coordinator exhausting its iteration budget before submit) is
+    # evidence about the budget or the harness, not about the model, so the
     # aggregator segregates these runs out of the capability statistics. Timeout
-    # takes precedence when both flags happen to be set.
+    # takes precedence when multiple termination signals happen to be set.
+    #
+    # All three read the sticky state flags rather than ``state.error_type``.
+    # ``error_type`` also names the no-submit cut-off, but it is last-writer-wins
+    # (dev_phase overwrites it with a later iteration's ``failure_code``), so the
+    # classification the coordinator makes can be gone by the time this runs —
+    # which is how a coordinator-ended run came to be recorded as a model failure
+    # in the first place (#2921).
     dev_termination_cause = (
         "timeout"
         if state.dev_process_timeout_killed
-        else ("stuck_pattern" if state.dev_process_stuck_terminated else None)
+        else (
+            "stuck_pattern"
+            if state.dev_process_stuck_terminated
+            else ("max_iterations_no_submit" if state.dev_max_iterations_no_submit else None)
+        )
     )
     # Taint marker (ADR-0006 clause 4, #1852): derive the run's aggregate
     # trust_status from its mechanically-computed trust checks — the same

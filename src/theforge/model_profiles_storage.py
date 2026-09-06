@@ -168,11 +168,13 @@ class RunOutcome:
     # The granted per-story timeout (seconds) at which a killed run was terminated.
     dev_timeout_limit_s: int | None = None
     # Why the harness ended the dev process, if it did: ``"timeout"`` (deadline
-    # kill) or ``"stuck_pattern"`` (stuck-pattern terminate); ``None`` for a run
-    # the model itself finished (success or genuine failure). A harness-imposed
-    # ending is evidence about the budget or the harness, not the model, so the
-    # aggregator segregates these runs into a visible ``harness_terminated``
-    # sub-dict and keeps them out of success_rate/avg_iterations/avg_cost stats.
+    # kill), ``"stuck_pattern"`` (stuck-pattern terminate), or
+    # ``"max_iterations_no_submit"`` (coordinator iteration limit); ``None`` for
+    # a run the model itself finished (success or genuine failure). A
+    # harness-imposed ending is evidence about the budget or the harness, not the
+    # model, so the aggregator segregates these runs into a visible
+    # ``harness_terminated`` sub-dict and keeps them out of
+    # success_rate/avg_iterations/avg_cost stats.
     dev_termination_cause: str | None = None
     preflight_model: str | None = None
     dev_actual_model: str | None = None
@@ -398,7 +400,8 @@ def _fold_duration(
 def _fold_harness_terminated(bucket: dict, cause: str | None, cost_usd: float | None) -> None:
     """Record a harness-imposed termination in ``bucket['harness_terminated']``.
 
-    Harness-terminated runs (deadline kill, stuck-pattern terminate) are kept out
+    Harness-terminated runs (deadline kill, stuck-pattern terminate, coordinator
+    iteration budget exhausted with submit never called) are kept out
     of the capability accumulators (``runs``/``_successes``/``_iterations_sum`` →
     ``success_rate``/``avg_iterations``) entirely so the orchestrator can never
     steer away from a model because it starved the run (#1763). They are instead

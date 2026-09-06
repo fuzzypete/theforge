@@ -1767,6 +1767,15 @@ def _run_dev_phase(
         if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
             state.error_type = "max_iterations_no_submit"
             state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT
+            # Record the coordinator-imposed cut-off on state immediately, before
+            # any retry/escalate decision runs — same rationale as the timeout and
+            # stuck-pattern flags, plus one of its own: ``error_type`` is
+            # overwritten by a later iteration's failure_code, so it cannot be
+            # trusted to still say "max_iterations_no_submit" when the profile
+            # bridge reads state at run end. model_profiles_bridge reads this flag
+            # to segregate the run as a harness-imposed termination that must not
+            # be recorded as a capability failure by the model (#2921).
+            state.dev_max_iterations_no_submit = True
             if state.budget.is_exhausted():
                 state.phase = Phase.ESCALATE
                 state.error = (
