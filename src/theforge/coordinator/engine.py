@@ -490,7 +490,12 @@ def _coordinator_loop(
             state.preflight_complexity,
             state.preflight_complexity_score,
         )
-        _static_dev_max = config.dev_profile.max_iterations or config.retry.max_dev_iterations
+        # ``max_dev_iterations`` counts phase retry attempts, while the dev
+        # profile limit bounds turns within one agent invocation.  An unset
+        # profile value must preserve the API runner's own agent-loop default.
+        from theforge.runners.schema_utils import _DEFAULT_MAX_ITERATIONS  # noqa: PLC0415
+
+        _static_dev_max = config.dev_profile.max_iterations or _DEFAULT_MAX_ITERATIONS
         _static_dev_cost_estimate = config.dev_profile.budget_usd
         _explicit_dev_override = "dev" in getattr(state, "_explicit_roles", set())
         # Adaptive iterations now reads the SQLite audit substrate; we pass
@@ -703,7 +708,9 @@ def _coordinator_loop(
     # (total_count).  Mutations go exclusively through budget.consume() and
     # budget.reset_cycle() so that every consumption is recorded in
     # budget.consumption_log.
-    state.budget.max_iterations = state.adaptive_dev_max
+    # RetryBudget tracks development attempts, not agent turns within each
+    # attempt.  Keep its policy value independent of the invocation ceiling.
+    state.budget.max_iterations = config.retry.max_dev_iterations
 
     while True:
         if stop_event is not None and stop_event.is_set():
