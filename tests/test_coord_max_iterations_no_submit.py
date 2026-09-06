@@ -14,6 +14,7 @@ from tests.coord_test_helpers import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import Phase
 from theforge.runners import AgentResult
 from theforge.sprint.audit import _write_sprint_audit
 
@@ -83,6 +84,36 @@ def test_max_iterations_without_submit_is_distinct_outcome(
     assert result.success is True
     assert result.state.dev_results[0].failure_code == "max_iterations_reached"
     assert result.state.dev_handoff_snapshots[0]["source"] == "missing"
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_max_iterations_without_submit_stops_at_dev_retry_budget(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """No-submit failures consume the same bounded DEV retry budget as timeouts."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [_max_iter_no_submit_result(), _max_iter_no_submit_result()]
+
+    result = run_task(config, task)
+
+    assert result.success is False
+    assert result.phase == Phase.ESCALATE
+    assert mock_dev.call_count == config.retry.max_dev_iterations
+    assert result.state.budget.total_count == config.retry.max_dev_iterations
+    assert result.state.budget.is_exhausted() is True
+    assert "exhausted its retry budget" in (result.message or "")
+    mock_pool.assert_not_called()
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -180,7 +211,7 @@ def test_repeated_no_submit_retries_do_not_duplicate_guidance_block(
             "dev_profile": config.dev_profile.__class__(
                 **{**config.dev_profile.__dict__, "budget_usd": 10.0}
             ),
-            "retry": config.retry.__class__(max_dev_iterations=4, max_review_cycles=2),
+            "retry": config.retry.__class__(max_dev_iterations=5, max_review_cycles=2),
         }
     )
     task = _make_task(tmp_path)
