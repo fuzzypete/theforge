@@ -1764,6 +1764,30 @@ def _run_dev_phase(
         if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
             state.error_type = "max_iterations_no_submit"
             state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT
+            if state.budget.is_exhausted():
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    "Dev agent exhausted its retry budget "
+                    f"({state.budget.max_iterations} iteration(s)) after reaching its "
+                    "internal iteration limit without calling submit"
+                )
+                record_dev_iteration_telemetry(
+                    state,
+                    workspace_path,
+                    max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                    gate_result="MAX_ITERATIONS_NO_SUBMIT",
+                    runner_failure_summary=_captured_agent_text(dev_result),
+                )
+                _log(f"✗ ESCALATE   {state.error}")
+                if logger:
+                    logger._safe_emit("escalate", reason=state.error, phase="DEV")
+                _escalate_notify(task, state, notify, config)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
             if not state.dev_escalated:
                 _old_model = config.dev_profile.model
                 if config.retry.auto_model_escalation and config.models is not None:
