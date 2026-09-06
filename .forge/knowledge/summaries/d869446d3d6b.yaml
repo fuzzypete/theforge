@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: d869446d3d6b
 authoritative_run_record: .forge/audits/runs/d869446d3d6b.json
-generated_at: '2026-09-06T17:03:53.611484+00:00'
+generated_at: '2026-09-06T17:15:23.903174+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.01032375
+  cost_usd: 0.00336775
 story:
   slug: issue-2920
   name: A dev agent on the API transport is terminated after three turns, far below
@@ -35,74 +35,29 @@ changed_files: &id002
 - tests/test_coord_adaptive_iterations.py
 - tests/test_coord_dev_timeout_retry.py
 what_changed:
-  description: The run corrected dev-phase iteration resolution so API-transport agent
-    turn limits are no longer derived from retry attempt counts, and documented the
-    intended default behavior for the dev iteration setting. It also updated coordinator
-    state/engine wiring and added regression coverage around adaptive iteration resolution
-    and dev timeout retry behavior.
-  approach: 'The fix separated the two limit paths at the coordinator level: retry-policy
-    values continued to control attempt counts, while dev agent-turn limits followed
-    the dev-profile/default resolution path used by the runner. The change was verified
-    with targeted tests that exercise the previously conflated API dev case and the
-    retry interaction.'
+  description: The run corrected how dev-phase iteration limits are resolved so API
+    dev agent-turn ceilings no longer inherit the retry attempt count when the dev-specific
+    setting is unset. It also updated the input reference to clarify the API-mode
+    default for the dev iteration ceiling.
+  approach: The fix separated the configuration path for per-attempt dev agent turns
+    from the retry-policy path, preserving the runner/default resolution for dev iterations
+    while keeping adaptive and state handling aligned with that distinction.
   files_modified: *id002
-what_was_learned:
-- claim: When a system has both per-attempt agent-turn limits and per-phase retry-attempt
-    limits, future changes should verify they are resolved through separate code paths
-    end-to-end; similarly named 'iterations' settings can be silently conflated at
-    coordinator boundaries.
-  evidence:
-  - type: diff
-    ref: 011c2246990ba7d01edfcd1508866a237d827580
-    description: This diff changes coordinator logic rather than runner internals
-      to stop feeding a retry-derived value into dev iteration resolution, demonstrating
-      that the observed failure came from a boundary where two independently named
-      iteration controls were being merged.
-  - type: file
-    path: src/theforge/coordinator/engine.py
-    description: Engine changes are part of the fix path, showing the distinction
-      had to be enforced where attempt orchestration hands limits into dev execution;
-      that is the seam a future run should inspect first when iteration counts look
-      wrong.
-  - type: review_cycle
-    cycle: '1'
-    description: The approval explicitly notes that the change 'keeps retry-attempt
-      limits separate from API agent-turn limits,' confirming the key reusable lesson
-      was the need to preserve separation between those two units throughout orchestration.
-- claim: For unset dev iteration settings, future runs should check the default-resolution
-    path directly instead of assuming adaptive or retry settings are safe fallbacks,
-    especially on API transport.
-  evidence:
-  - type: file
-    path: docs/guides/inputs-reference.md
-    description: The documentation update records the intended source of the dev iteration
-      default, which is relevant because this incident arose when an unset dev-specific
-      setting effectively picked up a value from elsewhere.
-  - type: file
-    path: src/theforge/coordinator/state.py
-    description: State-layer changes indicate that preserving the correct origin of
-      the dev iteration value required explicit handling during configuration/state
-      resolution, not just a last-mile adjustment at execution time.
-  - type: diff
-    ref: 5b0058142dd503dfa726e2c340163191edfb91a4
-    description: This diff includes the regression-oriented adjustments around retry
-      interaction, showing that the bug manifested when fallback/resolution behavior
-      crossed concerns; a future run should therefore validate the unset-setting path
-      explicitly.
+what_was_learned: []
 learned_patterns:
-- separate-limit-units
-- default-resolution-over-fallback
+- separate-attempts-from-turn-budgets
+- preserve-default-resolution-paths
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - Review centered on preserving the separation between retry attempt counts and
-    API dev agent-turn ceilings while keeping the runner default path intact.
+  - Review confirmed the authoritative concern was keeping retry-attempt limits distinct
+    from API dev agent-turn limits while preserving the runner default path.
 complexity_signal:
   actual_iterations: 1
   review_cycles: 1
   plan_regenerations: null
   cost_usd: 4.0253444
-  dominant_difficulty: The hard part was tracing a transport-specific failure back
-    to configuration/coordination logic where two different iteration units were being
-    conflated.
+  dominant_difficulty: Two similarly named iteration settings counted different units,
+    so the hard part was tracing and separating where each limit should be resolved
+    and propagated.

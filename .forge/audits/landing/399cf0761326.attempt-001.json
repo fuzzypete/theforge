@@ -1,0 +1,15 @@
+{
+  "detail": "landing reported merged but could not be named: missing landed_commit",
+  "gated_commit": "2a4cb9b7ef9a682595bad9353bbe94363ae4160f",
+  "kind": "landing_attempt",
+  "landing_mode": "merge-pr",
+  "observed_at": "2026-09-06T17:19:55.546910+00:00",
+  "observer": "sprint.queued-pr",
+  "outcome": "unknown",
+  "pr_url": "https://github.com/fuzzypete/theforge/pull/2938",
+  "run_id": "399cf0761326",
+  "schema_version": 1,
+  "slug": "issue-2921",
+  "source_commit": "2a4cb9b7ef9a682595bad9353bbe94363ae4160f",
+  "target_branch": "release/v0.16"
+}
