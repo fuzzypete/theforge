@@ -43,12 +43,15 @@ from typing import Callable
 
 from theforge.agent_types import AgentResult
 from theforge.config.types import ModelProfile
+from theforge.eval.semantic_input import build_semantic_evaluation_input
 from theforge.eval.semantic_prompt import PROMPT_CONTRACT_VERSION
 from theforge.eval.semantic_readiness import (
     SEMANTIC_REVIEW_REQUIRED_STATE,
+    STATE_EVALUATION_FAILED,
     STATE_UNEVALUATED,
     SemanticReadiness,
-    derive_semantic_readiness,
+    derive_semantic_readiness_for_revision,
+    semantic_requirement,
 )
 from theforge.eval.semantic_storage import (
     BASELINE_PROVENANCE_AUTOMATIC,
@@ -113,12 +116,20 @@ def _revision_scheduling_lock(project_root: Path, key: str):
         yield False
         return
     except OSError as exc:
-        # An unwritable lock directory must not become a new refusal path; fall
-        # back to unserialized scheduling, which is what the code did before.
-        _log.warning("semantic scheduling lock unavailable for %s: %s", key, exc)
+        # No lock, no scheduling. Proceeding unserialized would let two
+        # concurrent admissions evaluate the same revision under the same
+        # prompt contract, which is the bound AC5 states; deferring costs a
+        # withheld document that the next transition evaluates once the lock
+        # directory is usable again, and spends nothing meanwhile.
+        _log.warning(
+            "semantic scheduling lock unavailable for %s (%s); deferring the evaluation "
+            "rather than running it unserialized",
+            key,
+            exc,
+        )
         if handle is not None:
             handle.close()
-        yield True
+        yield False
         return
 
     try:
@@ -135,6 +146,34 @@ def _lock_key(issue_ref: str, input_digest: str, prompt_contract_version: str) -
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _failed_readiness(
+    *,
+    issue_ref: str,
+    input_digest: str,
+    canonical_type: str | None,
+    lifecycle_state: str,
+    detail: str,
+) -> SemanticReadiness:
+    """Build an ``evaluation_failed`` readiness without consulting the store.
+
+    Used where the store itself is the thing that failed. The requirement axis
+    is still policy applied to the document's own type, so a `not_required`
+    document is not withheld by an audit-storage problem that has no bearing on
+    its admission.
+    """
+    return SemanticReadiness(
+        issue_ref=issue_ref,
+        input_digest=input_digest,
+        canonical_type=canonical_type,
+        requirement=semantic_requirement(
+            canonical_type=canonical_type,
+            lifecycle_state=lifecycle_state,
+        ),
+        state=STATE_EVALUATION_FAILED,
+        detail=detail,
+    )
+
+
 def _record_cannot_attempt(
     *,
     store: SemanticReviewStore,
@@ -144,13 +183,18 @@ def _record_cannot_attempt(
     profile_name: str,
     model_name: str,
     failure_detail: str,
-) -> None:
+) -> bool:
     """Persist an ``evaluation_failed`` record for an invocation that never ran.
 
     AC4 names "cannot be attempted at all" alongside failure, timeout and
     refusal. Without this the document would report ``unevaluated`` — accurate
     about the record but silent about the attempt — and the next transition
     would spend again on a call that cannot succeed.
+
+    Returns whether the record reached the store. It may not: the store is
+    exactly what fails in some of these cases, which is why the caller reports
+    the failure from the return value rather than from a re-derivation that
+    would read back as merely unevaluated.
     """
     try:
         store.append_record(
@@ -172,11 +216,11 @@ def _record_cannot_attempt(
             )
         )
     except Exception as exc:  # noqa: BLE001
-        # The store is the only place a failure can be recorded; if it cannot be
-        # written the document stays unevaluated, which still withholds.
         _log.warning(
             "could not record semantic evaluation failure for %s: %s", readiness.issue_ref, exc
         )
+        return False
+    return True
 
 
 def ensure_semantic_evaluation(
@@ -210,16 +254,36 @@ def ensure_semantic_evaluation(
 
     semantic_store = store or SemanticReviewStore(project_root)
     issue_ref = normalize_issue_ref(issue_number)
+    evaluation_input = build_semantic_evaluation_input(title=title, body=body, labels=labels)
+
+    def _store_failure(exc: Exception) -> SemanticReadiness:
+        return _failed_readiness(
+            issue_ref=issue_ref,
+            input_digest=evaluation_input.input_digest,
+            canonical_type=evaluation_input.canonical_type,
+            lifecycle_state=lifecycle_state,
+            detail=f"the semantic audit record for the current revision could not be read: {exc}",
+        )
 
     def _derive() -> SemanticReadiness:
-        return derive_semantic_readiness(
-            issue_ref=issue_ref,
-            title=title,
-            body=body,
-            labels=labels,
-            store=semantic_store,
-            lifecycle_state=lifecycle_state,
-        )
+        """Derive from the store, reporting a store failure as one.
+
+        Unreadable audit state is not evidence of readiness. Letting the
+        exception escape would land in each caller's fail-open handler and admit
+        a policy-required document with no semantic state at all — the outcome
+        AC4 forbids — so it is answered here, fail-closed.
+        """
+        try:
+            return derive_semantic_readiness_for_revision(
+                issue_ref=issue_ref,
+                input_digest=evaluation_input.input_digest,
+                canonical_type=evaluation_input.canonical_type,
+                store=semantic_store,
+                lifecycle_state=lifecycle_state,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("semantic audit records unreadable for %s: %s", issue_ref, exc)
+            return _store_failure(exc)
 
     readiness = _derive()
     if not readiness.required:
@@ -232,40 +296,70 @@ def ensure_semantic_evaluation(
         # has had its attempt and re-running would spend on evidence that
         # already exists.
         return readiness
-    if (
-        semantic_store.latest_attempt_for_revision(
-            issue_ref=issue_ref,
-            input_digest=readiness.input_digest,
+
+    def _attempted() -> bool | None:
+        """True/False when the store can answer, ``None`` when it cannot."""
+        try:
+            return (
+                semantic_store.latest_attempt_for_revision(
+                    issue_ref=issue_ref,
+                    input_digest=readiness.input_digest,
+                    prompt_contract_version=prompt_contract_version,
+                )
+                is not None
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("semantic audit records unreadable for %s: %s", issue_ref, exc)
+            return None
+
+    def _cannot_attempt(model_id: str, detail: str) -> SemanticReadiness:
+        """Record and report an evaluation that could not be attempted at all."""
+        _record_cannot_attempt(
+            store=semantic_store,
+            readiness=readiness,
+            model_id=model_id,
             prompt_contract_version=prompt_contract_version,
+            profile_name=profile_name,
+            model_name=model_name,
+            failure_detail=detail,
         )
-        is not None
-    ):
-        return readiness
+        # Reported from here rather than re-derived: when the store is what
+        # failed, the record is not there to read back, and the revision would
+        # report as merely unevaluated instead of as the failure it is.
+        return _failed_readiness(
+            issue_ref=issue_ref,
+            input_digest=evaluation_input.input_digest,
+            canonical_type=evaluation_input.canonical_type,
+            lifecycle_state=lifecycle_state,
+            detail=detail,
+        )
 
     profile_name = getattr(profile, "name", "") or ""
     model_name = getattr(profile, "model", "") or ""
+
+    attempted = _attempted()
+    if attempted is None:
+        return _store_failure(RuntimeError("semantic audit records could not be read"))
+    if attempted:
+        return readiness
+
     try:
         model_id = semantic_model_id(_audit_profile(profile))
     except Exception as exc:  # noqa: BLE001
         # The configured profile does not resolve to a model identity, so the
-        # evaluation cannot be attempted at all. Record the failure rather than
-        # leaving the revision looking merely unevaluated.
-        _record_cannot_attempt(
-            store=semantic_store,
-            readiness=readiness,
-            model_id="",
-            prompt_contract_version=prompt_contract_version,
-            profile_name=profile_name,
-            model_name=model_name,
-            failure_detail=f"semantic evaluation could not be attempted: {exc}",
-        )
-        return _derive()
+        # evaluation cannot be attempted at all.
+        return _cannot_attempt("", f"semantic evaluation could not be attempted: {exc}")
 
     key = _lock_key(issue_ref, readiness.input_digest, prompt_contract_version)
     with _revision_scheduling_lock(project_root, key) as may_schedule:
         if not may_schedule:
+            # Either a peer holds this revision's lock or the lock itself is
+            # unavailable. Both are deferrals, not results: nothing is spent,
+            # nothing is recorded, and the document keeps whatever state it
+            # already has — which for an unevaluated required revision is
+            # withheld.
             _log.info(
-                "semantic evaluation of %s (%s) is already being scheduled elsewhere",
+                "semantic evaluation of %s (%s) deferred; not scheduling it here",
                 issue_ref,
                 readiness.input_digest,
             )
@@ -273,14 +367,10 @@ def ensure_semantic_evaluation(
 
         # Re-check under the lock: a peer may have completed between the read
         # above and the lock acquisition.
-        if (
-            semantic_store.latest_attempt_for_revision(
-                issue_ref=issue_ref,
-                input_digest=readiness.input_digest,
-                prompt_contract_version=prompt_contract_version,
-            )
-            is not None
-        ):
+        rechecked = _attempted()
+        if rechecked is None:
+            return _store_failure(RuntimeError("semantic audit records could not be read"))
+        if rechecked:
             return _derive()
 
         # A frozen baseline is a human calibration claim about a revision, and
@@ -312,18 +402,65 @@ def ensure_semantic_evaluation(
             # review_issue_semantically records its own failures for everything
             # that happens once invocation starts; reaching here means the call
             # could not be attempted (baseline conflict, store failure, an
-            # agent-launch wrapper error that escaped). Record it so the
-            # document reports the failure rather than being admitted with no
-            # semantic state at all.
+            # agent-launch wrapper error that escaped). Report it as the failure
+            # it is rather than letting the document read as unevaluated.
             _log.warning("automatic semantic evaluation of %s failed: %s", issue_ref, exc)
-            _record_cannot_attempt(
-                store=semantic_store,
-                readiness=readiness,
-                model_id=model_id,
-                prompt_contract_version=prompt_contract_version,
-                profile_name=profile_name,
-                model_name=model_name,
-                failure_detail=f"semantic evaluation could not be attempted: {exc}",
-            )
+            return _cannot_attempt(model_id, f"semantic evaluation could not be attempted: {exc}")
 
     return _derive()
+
+
+def semantic_dispatch_withholding(
+    *,
+    issue_number: int,
+    revision_digest: str,
+    revision_type: str | None,
+    project_root: Path,
+    store: SemanticReviewStore | None = None,
+    lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+) -> SemanticReadiness | None:
+    """Return the readiness withholding the revision about to be dispatched, if any.
+
+    Admission reads a revision, evaluates it and decides; the sprint then
+    fetches the issue again to build the story it dispatches. Between those two
+    reads the document can change, and the fetched revision would otherwise
+    inherit an admission decision made about text that no longer exists — the
+    one way a document could reach a dev agent without a ratified review of
+    *the revision the agent is handed*.
+
+    This closes that handoff. The caller passes the revision identity of the
+    payload it actually built (``TaskStory.source_revision_digest`` /
+    ``source_revision_type``, computed by ``GitHubIssueSource.fetch`` from the
+    same title/body/labels the story carries), and readiness is re-derived
+    against it. Read-only and free: no ``gh`` call, no evaluation, no spend. A
+    revision that changed under the sprint is simply withheld, and the next
+    entry evaluates it in its own right.
+
+    Returns ``None`` when the dispatched revision is admissible — including
+    when policy requires no review of it — and the withholding readiness
+    otherwise.
+    """
+    from theforge.eval.semantic_runner import normalize_issue_ref  # noqa: PLC0415
+
+    issue_ref = normalize_issue_ref(issue_number)
+    semantic_store = store or SemanticReviewStore(project_root)
+    try:
+        readiness = derive_semantic_readiness_for_revision(
+            issue_ref=issue_ref,
+            input_digest=revision_digest,
+            canonical_type=revision_type,
+            store=semantic_store,
+            lifecycle_state=lifecycle_state,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("semantic audit records unreadable for %s: %s", issue_ref, exc)
+        readiness = _failed_readiness(
+            issue_ref=issue_ref,
+            input_digest=revision_digest,
+            canonical_type=revision_type,
+            lifecycle_state=lifecycle_state,
+            detail=(
+                f"the semantic audit record for the dispatched revision could not be read: {exc}"
+            ),
+        )
+    return readiness if readiness.withholds_admission else None

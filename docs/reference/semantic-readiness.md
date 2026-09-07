@@ -77,7 +77,15 @@ The rules that bound it:
   evaluation of the same text.
 - **Against the revision that occasioned it.** The text evaluated is the text
   the gate just read, so an edit landing mid-run cannot produce a record of a
-  revision no admission decision was made against.
+  revision no admission decision was made against. The same identity is checked
+  once more at the end: a sprint re-reads every issue to build the story it
+  dispatches, and a story whose revision moved between admission and that read
+  is withheld rather than dispatched on a decision made about text that no
+  longer exists.
+- **Once, or not at all.** Scheduling is serialized per revision. Where the
+  serialization cannot be established, the evaluation is deferred — the
+  document stays withheld and the next transition evaluates it — rather than
+  run unserialized.
 - **Never a ratification.** Automatic invocation changes *whether an evaluation
   happens*, never what a result means. A raised finding still withholds
   admission until an operator ratifies it, exactly as when the evaluator is
@@ -85,7 +93,8 @@ The rules that bound it:
 - **Fail-closed.** An evaluation that fails, times out, is refused, produces
   unrecognised output, or cannot be attempted at all is recorded as
   `evaluation_failed`. No failure mode leaves a document reading as
-  evaluated-clean.
+  evaluated-clean — including a failure of the audit store itself, which is
+  reported as `evaluation_failed` rather than read as an absence of concerns.
 
 `forge review-semantic` is unchanged and still works for any document,
 including one policy does not require a review of, recording its result on the

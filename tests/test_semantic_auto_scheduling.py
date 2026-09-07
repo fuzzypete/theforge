@@ -46,6 +46,9 @@ from theforge.eval.semantic_types import (
 # Captured at import, before conftest's ``_neutral_semantic_readiness_overlay``
 # replaces these module attributes: the suite-wide fixture keeps the overlay out
 # of tests that are not about it, and these tests *are* about it.
+from theforge.eval.semantic_auto import (  # isort: skip
+    semantic_dispatch_withholding as _live_dispatch_withholding,
+)
 from theforge.ready_queue import _semantic_readiness as _live_ready_queue_readiness
 
 from theforge.sprint.manifest import (  # isort: skip
@@ -782,3 +785,421 @@ def test_listing_a_required_unevaluated_issue_spends_nothing(tmp_path: Path) -> 
 
     assert [entry.verdict for entry in entries] == [SEMANTIC_NOT_RATIFIED_CODE]
     assert SemanticReviewStore(tmp_path).iter_records() == []
+
+
+# ── Review iteration 1: identity, storage failure, locking, revision handoff ──
+
+
+def test_two_issues_with_identical_content_each_get_their_own_record(
+    tmp_path: Path,
+) -> None:
+    """The content cache is shared; the record naming an issue is not.
+
+    Two documents can be word-for-word identical, which makes their input
+    digests identical too. Replaying the cached outcome under the first issue's
+    reference left the second with no record of its own — evaluated as far as
+    spend was concerned, unevaluated as far as admission was concerned, forever.
+    """
+    store = SemanticReviewStore(tmp_path)
+    first = _Runner()
+    ensure_semantic_evaluation(
+        issue_number=2907,
+        title=TITLE,
+        body=BODY,
+        labels=("enhancement",),
+        project_root=tmp_path,
+        secrets=None,
+        profile=_profile(),
+        store=store,
+        agent_runner=first,
+    )
+
+    second = _Runner()
+    readiness = ensure_semantic_evaluation(
+        issue_number=3001,
+        title=TITLE,
+        body=BODY,
+        labels=("enhancement",),
+        project_root=tmp_path,
+        secrets=None,
+        profile=_profile(),
+        store=store,
+        agent_runner=second,
+    )
+
+    # The outcome is reused (no second agent call), but it is recorded as the
+    # second issue's own evaluation.
+    assert first.calls == 1
+    assert second.calls == 0
+    assert readiness.issue_ref == "issue-3001"
+    assert readiness.state == STATE_AWAITING_RATIFICATION
+    replayed = store.latest_successful_record(issue_ref="issue-3001", input_digest=_digest())
+    assert replayed is not None
+    assert replayed.cache_hit is True
+    assert replayed.canonical_type == "enhancement"
+    # And the first issue still has its own.
+    assert store.latest_successful_record(issue_ref="issue-2907", input_digest=_digest())
+
+
+def test_manual_review_of_a_content_twin_records_under_the_reviewed_issue(
+    tmp_path: Path,
+) -> None:
+    from theforge.eval.semantic_runner import review_issue_semantically
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+
+    payload = json.dumps({"title": TITLE, "body": BODY, "labels": [{"name": "enhancement"}]})
+    runner = _Runner()
+    result = review_issue_semantically(
+        issue_number=3001,
+        project_root=tmp_path,
+        secrets=None,
+        profile=_profile(),
+        store=store,
+        gh_issue_view=lambda _n, _r: subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=payload, stderr=""
+        ),
+        agent_runner=runner,
+    )
+
+    assert runner.calls == 0
+    assert result.record.cache_hit is True
+    assert result.record.issue_ref == "issue-3001"
+
+
+def test_unreadable_audit_records_withhold_rather_than_admit(tmp_path: Path) -> None:
+    """Unreadable audit state is not evidence of readiness."""
+
+    class _BrokenStore(SemanticReviewStore):
+        def iter_records(self):
+            raise OSError("records.jsonl is unreadable")
+
+    runner = _Runner()
+    readiness = _schedule(tmp_path, runner, store=_BrokenStore(tmp_path))
+
+    assert runner.calls == 0
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+    assert readiness.reason_code == SEMANTIC_EVALUATION_FAILED_CODE
+
+
+def test_unreadable_audit_records_leave_a_not_required_document_alone(
+    tmp_path: Path,
+) -> None:
+    class _BrokenStore(SemanticReviewStore):
+        def iter_records(self):
+            raise OSError("records.jsonl is unreadable")
+
+    readiness = _schedule(
+        tmp_path, _Runner(), labels=("documentation",), store=_BrokenStore(tmp_path)
+    )
+
+    assert not readiness.withholds_admission
+
+
+def test_a_shape_gate_reading_a_broken_store_skips_rather_than_admits(
+    tmp_path: Path,
+) -> None:
+    """The gate's fail-open handler must never see a storage failure (AC4)."""
+    from theforge.cli.sprint import _semantic_readiness_scheduler
+    from theforge.sprint.shape_gate import apply_shape_gate
+
+    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+
+    def _fetch(_number, _root):
+        return {
+            "title": TITLE,
+            "body": BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "closedAt": None,
+            "stateReason": None,
+            "updatedAt": None,
+            "lastEditedAt": None,
+            "comments": [],
+            "timeline": [],
+        }
+
+    def _broken_iter_records(_self):
+        raise OSError("records.jsonl is unreadable")
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(SemanticReviewStore, "iter_records", _broken_iter_records)
+        result = apply_shape_gate(
+            [{"number": 2907, "title": TITLE}],
+            tmp_path,
+            fetch_detail=_fetch,
+            semantic_readiness=_semantic_readiness_scheduler(config),
+        )
+
+    assert result.runnable == []
+    assert [entry.reason_codes for entry in result.skipped] == [(SEMANTIC_EVALUATION_FAILED_CODE,)]
+
+
+def test_a_failure_that_cannot_be_persisted_is_still_reported_as_a_failure(
+    tmp_path: Path,
+) -> None:
+    """The store is what failed, so the failure cannot be read back from it."""
+
+    class _UnwritableStore(SemanticReviewStore):
+        def append_record(self, record):
+            raise OSError("records.jsonl is not writable")
+
+    readiness = _schedule(tmp_path, _Runner(raises=True), store=_UnwritableStore(tmp_path))
+
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+    assert "could not be attempted" in readiness.detail
+
+
+def test_a_baseline_frozen_between_the_check_and_the_freeze_is_reported_as_failed(
+    tmp_path: Path,
+) -> None:
+    """The automatic empty freeze loses to a human baseline that lands first."""
+
+    class _RacingStore(SemanticReviewStore):
+        def frozen_baseline(self, input_digest):
+            return None  # the check sees nothing...
+
+        def freeze_baseline(self, **_kwargs):
+            raise ValueError(f"baseline for {_digest()} is already frozen and cannot be changed")
+
+    runner = _Runner()
+    readiness = _schedule(tmp_path, runner, store=_RacingStore(tmp_path))
+
+    assert runner.calls == 0
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+
+
+def test_an_unusable_lock_defers_rather_than_scheduling_unserialized(
+    tmp_path: Path,
+) -> None:
+    """No lock, no scheduling — an unserialized invocation would break the bound."""
+    runner = _Runner()
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "theforge.eval.semantic_auto.Path.mkdir",
+            lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("no lock dir")),
+        )
+        readiness = _schedule(tmp_path, runner)
+
+    assert runner.calls == 0
+    assert SemanticReviewStore(tmp_path).iter_records() == []
+    assert readiness.state == STATE_UNEVALUATED
+    assert readiness.withholds_admission
+
+
+def test_a_lock_file_that_cannot_be_opened_defers_too(tmp_path: Path) -> None:
+    from theforge.eval import semantic_auto
+
+    def _refuse_open(*_args, **_kwargs):
+        raise OSError("lock file cannot be opened")
+
+    runner = _Runner()
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(semantic_auto.Path, "open", _refuse_open)
+        readiness = _schedule(tmp_path, runner)
+
+    assert runner.calls == 0
+    assert readiness.state == STATE_UNEVALUATED
+    assert readiness.withholds_admission
+
+
+def test_a_refused_or_timed_out_agent_result_is_recorded_as_a_failure(
+    tmp_path: Path,
+) -> None:
+    """A non-success AgentResult never reads as a clean evaluation."""
+
+    class _RefusingRunner(_Runner):
+        def __call__(self, **_kwargs):
+            self.calls += 1
+            return _agent_result("timed out after 60s", success=False)
+
+    runner = _RefusingRunner()
+    readiness = _schedule(tmp_path, runner)
+
+    assert runner.calls == 1
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+    records = SemanticReviewStore(tmp_path).records_for_digest(_digest())
+    assert [record.status for record in records] == [STATUS_EVALUATION_FAILED]
+
+
+def test_an_empty_agent_output_is_a_failure_not_a_clean_result(tmp_path: Path) -> None:
+    readiness = _schedule(tmp_path, _Runner("   "))
+
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+
+
+# ── The revision handoff between admission and dispatch ──────────────────────
+
+
+def _ratify(store: SemanticReviewStore, *, issue_ref: str, digest: str) -> None:
+    record = store.latest_successful_record(issue_ref=issue_ref, input_digest=digest)
+    assert record is not None
+    store.append_ratification(
+        SemanticRatificationRecord(
+            issue_ref=issue_ref,
+            input_digest=digest,
+            model_id=record.model_id,
+            prompt_contract_version=record.prompt_contract_version,
+            ratified_at="2026-09-06T00:00:00+00:00",
+            decisions=tuple(
+                SemanticConcernDecision(finding_digest=d, decision=DECISION_REJECTED)
+                for d in record.finding_digests()
+            ),
+        )
+    )
+
+
+def test_the_dispatched_revision_must_be_the_one_admission_cleared(tmp_path: Path) -> None:
+    semantic_dispatch_withholding = _live_dispatch_withholding
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+    _ratify(store, issue_ref="issue-2907", digest=_digest())
+
+    # The revision admission cleared dispatches.
+    assert (
+        semantic_dispatch_withholding(
+            issue_number=2907,
+            revision_digest=_digest(),
+            revision_type="enhancement",
+            project_root=tmp_path,
+        )
+        is None
+    )
+    # An edit landing between admission and the sprint's own fetch does not.
+    stale = semantic_dispatch_withholding(
+        issue_number=2907,
+        revision_digest=_digest(EDITED_BODY),
+        revision_type="enhancement",
+        project_root=tmp_path,
+    )
+    assert stale is not None
+    assert stale.reason_code == SEMANTIC_NOT_RATIFIED_CODE
+
+
+def test_the_dispatch_check_leaves_a_not_required_document_alone(tmp_path: Path) -> None:
+    semantic_dispatch_withholding = _live_dispatch_withholding
+
+    assert (
+        semantic_dispatch_withholding(
+            issue_number=2907,
+            revision_digest=_digest(labels=("documentation",)),
+            revision_type="documentation",
+            project_root=tmp_path,
+        )
+        is None
+    )
+
+
+def test_the_dispatch_check_withholds_when_the_store_cannot_be_read(tmp_path: Path) -> None:
+    semantic_dispatch_withholding = _live_dispatch_withholding
+
+    class _BrokenStore(SemanticReviewStore):
+        def iter_records(self):
+            raise OSError("records.jsonl is unreadable")
+
+    withheld = semantic_dispatch_withholding(
+        issue_number=2907,
+        revision_digest=_digest(),
+        revision_type="enhancement",
+        project_root=tmp_path,
+        store=_BrokenStore(tmp_path),
+    )
+    assert withheld is not None
+    assert withheld.reason_code == SEMANTIC_EVALUATION_FAILED_CODE
+
+
+def test_a_fetched_issue_story_carries_the_revision_it_was_built_from(
+    tmp_path: Path,
+) -> None:
+    """The identity the dispatch check reads comes from the fetch itself."""
+    from theforge.sprint.sources import GitHubIssueSource
+
+    payload = json.dumps(
+        {
+            "title": TITLE,
+            "body": BODY,
+            "state": "OPEN",
+            "labels": [{"name": "Enhancement"}],
+            "comments": [],
+        }
+    )
+
+    def _fake_run(cmd, **_kwargs):
+        if "issue" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=payload, stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr("theforge.sprint.sources.subprocess.run", _fake_run)
+        task = GitHubIssueSource().fetch("2907", tmp_path)
+
+    # Case-insensitive label resolution, and taken over the raw body, so it
+    # equals the digest admission derived from the gate's own fetch.
+    assert task.source_revision_digest == _digest()
+    assert task.source_revision_type == "enhancement"
+
+
+def test_query_mode_withholds_a_story_whose_revision_moved_before_resolution(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace as _replace
+
+    from theforge.cli.sprint import _withhold_stale_semantic_revisions
+    from theforge.sprint.manifest import ResolvedSprint
+    from theforge.task.story import TaskStory
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+    _ratify(store, issue_ref="issue-2907", digest=_digest())
+
+    admitted = TaskStory(
+        name=TITLE,
+        slug="issue-2907",
+        story_text=BODY,
+        github_issue=2907,
+        source_revision_digest=_digest(),
+        source_revision_type="enhancement",
+    )
+    stale = _replace(admitted, source_revision_digest=_digest(EDITED_BODY))
+    config = SimpleNamespace(project_root=tmp_path)
+
+    def _resolved(task):
+        return ResolvedSprint(
+            name="s", budget_usd=1.0, stories=[(task, object(), "issue:2907")], max_parallel=1
+        )
+
+    from theforge.eval import semantic_auto
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
+        kept = _withhold_stale_semantic_revisions(_resolved(admitted), config)
+        dropped = _withhold_stale_semantic_revisions(_resolved(stale), config)
+
+    assert len(kept.stories) == 1
+    assert dropped.stories == []
+
+
+def test_a_file_story_is_never_withheld_by_the_dispatch_check(tmp_path: Path) -> None:
+    from theforge.cli.sprint import _withhold_stale_semantic_revisions
+    from theforge.sprint.manifest import ResolvedSprint
+    from theforge.task.story import TaskStory
+
+    story = TaskStory(name="A story", slug="a-story", story_text="body")
+    resolved = ResolvedSprint(
+        name="s", budget_usd=1.0, stories=[(story, object(), "story.md")], max_parallel=1
+    )
+
+    assert (
+        _withhold_stale_semantic_revisions(
+            resolved, SimpleNamespace(project_root=tmp_path)
+        ).stories
+        == resolved.stories
+    )

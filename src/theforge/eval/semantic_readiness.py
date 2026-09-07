@@ -201,8 +201,32 @@ def derive_semantic_readiness(
     operator's.
     """
     evaluation_input = build_semantic_evaluation_input(title=title, body=body, labels=labels)
-    digest = evaluation_input.input_digest
-    canonical_type = evaluation_input.canonical_type
+    return derive_semantic_readiness_for_revision(
+        issue_ref=issue_ref,
+        input_digest=evaluation_input.input_digest,
+        canonical_type=evaluation_input.canonical_type,
+        store=store,
+        lifecycle_state=lifecycle_state,
+    )
+
+
+def derive_semantic_readiness_for_revision(
+    *,
+    issue_ref: str,
+    input_digest: str,
+    canonical_type: str | None,
+    store: SemanticReviewStore,
+    lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+) -> SemanticReadiness:
+    """Derive readiness for a revision whose identity the caller already computed.
+
+    The revision-identity form of :func:`derive_semantic_readiness`, for callers
+    that hold a digest rather than the text it was taken over — notably the
+    dispatch-time check that the revision about to be handed to a dev agent is
+    the revision admission evaluated (#2907). Same derivation, same states; only
+    the way the identity arrives differs.
+    """
+    digest = input_digest
     requirement = semantic_requirement(
         canonical_type=canonical_type,
         lifecycle_state=lifecycle_state,

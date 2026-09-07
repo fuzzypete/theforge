@@ -463,6 +463,27 @@ def build_tasks_from_manifest(
                 closed_slugs.add(f"issue-{ref}")
             continue
 
+        # The entry was admitted on the revision the admission pass read; this
+        # fetch may have returned a newer one. Check the revision actually built
+        # before it is dispatched (#2907) — a store read, no ``gh`` call.
+        if isinstance(entry, dict) and "issue" in entry and task.source_revision_digest:
+            from ..eval.semantic_auto import semantic_dispatch_withholding  # noqa: PLC0415
+
+            stale = semantic_dispatch_withholding(
+                issue_number=int(entry["issue"]),
+                revision_digest=task.source_revision_digest,
+                revision_type=task.source_revision_type,
+                project_root=project_root,
+            )
+            if stale is not None:
+                print(
+                    f"[sprint] WARNING: skipping issue:{entry['issue']} — the fetched "
+                    f"revision is not the one admission cleared ({stale.reason_code}: "
+                    f"{stale.detail})",
+                    file=sys.stderr,
+                )
+                continue
+
         # Apply overrides from dict entries
         if isinstance(entry, dict):
             overrides: dict = {}

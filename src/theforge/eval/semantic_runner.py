@@ -214,14 +214,26 @@ def _failure_record(
 def _cache_record(
     *,
     cached: SemanticEvaluationRecord,
+    issue: SemanticIssue,
+    evaluation_input: SemanticEvaluationInput,
     profile: ModelProfile,
     started_at: str,
     completed_at: str,
     duration_seconds: float,
 ) -> SemanticEvaluationRecord:
+    """Replay a cached outcome as a record *of the issue being reviewed*.
+
+    The cache is keyed by content identity (digest, model, prompt contract), so
+    two distinct issues whose title/body/canonical type are identical share an
+    entry. Copying the cached ``issue_ref`` filed the replay under whichever
+    issue happened to be evaluated first, leaving the issue actually under
+    review with no record of its own — unevaluated in perpetuity however many
+    times it was reviewed (#2907). The outcome is shared; the record naming it
+    belongs to the issue whose review produced it.
+    """
     return SemanticEvaluationRecord(
-        issue_ref=cached.issue_ref,
-        canonical_type=cached.canonical_type,
+        issue_ref=issue.issue_ref,
+        canonical_type=evaluation_input.canonical_type,
         input_digest=cached.input_digest,
         model_id=cached.model_id,
         prompt_contract_version=cached.prompt_contract_version,
@@ -305,6 +317,8 @@ def review_issue_semantically(
         completed_at = utc_now_iso()
         record = _cache_record(
             cached=cached,
+            issue=issue,
+            evaluation_input=evaluation_input,
             profile=evaluation_profile,
             started_at=started_at,
             completed_at=completed_at,

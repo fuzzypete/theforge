@@ -591,6 +591,55 @@ def _semantic_readiness_scheduler(config: object):
     return _readiness
 
 
+def _withhold_stale_semantic_revisions(resolved, config):
+    """Drop stories whose fetched revision is not the one admission cleared.
+
+    The shape gate admits a revision it read; sprint resolution then re-reads
+    every issue to build the stories it dispatches. An edit landing between the
+    two would hand a dev agent text no semantic review speaks for. Each story
+    carries the identity of the revision it was built from, so the check is a
+    store read per story — no ``gh`` call, no evaluation, no spend.
+
+    Best-effort in one direction only: a story with no revision identity (a file
+    story, or an issue source that did not record one) is left alone, and a
+    story whose readiness cannot be derived is withheld rather than admitted.
+    """
+    from dataclasses import replace as _replace  # noqa: PLC0415
+
+    from theforge.eval.semantic_auto import semantic_dispatch_withholding  # noqa: PLC0415
+
+    kept: list = []
+    withheld: list[tuple[int, object]] = []
+    for entry in resolved.stories:
+        task = entry[0]
+        digest = getattr(task, "source_revision_digest", None)
+        if task.github_issue is None or not digest:
+            kept.append(entry)
+            continue
+        readiness = semantic_dispatch_withholding(
+            issue_number=int(task.github_issue),
+            revision_digest=digest,
+            revision_type=getattr(task, "source_revision_type", None),
+            project_root=config.project_root,
+        )
+        if readiness is None:
+            kept.append(entry)
+            continue
+        withheld.append((int(task.github_issue), readiness))
+
+    if not withheld:
+        return resolved
+
+    for number, readiness in withheld:
+        print(
+            f"[forge] WARNING: withholding issue #{number} — the revision fetched for "
+            f"this sprint is not the one admission cleared ({readiness.reason_code}: "
+            f"{readiness.detail})",
+            file=sys.stderr,
+        )
+    return _replace(resolved, stories=kept)
+
+
 _INTAKE_REMEDIATED_ENV = "FORGE_INTAKE_REMEDIATED"
 
 
@@ -1263,6 +1312,14 @@ def _run_query_mode(
     except RuntimeError as exc:
         print(f"[forge] Failed to resolve sprint from {query_desc}: {exc}", file=sys.stderr)
         return 1
+
+    # Resolution re-read every issue from GitHub. A document edited between the
+    # gate's read and this one would otherwise be dispatched on the strength of
+    # an admission decision made about the previous revision, so the revision
+    # each story was actually built from is checked against the record one last
+    # time (#2907). Read-only: a changed revision is withheld here and evaluated
+    # on the next entry.
+    resolved = _withhold_stale_semantic_revisions(resolved, config)
 
     if not resolved.stories:
         print(

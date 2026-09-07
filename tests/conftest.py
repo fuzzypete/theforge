@@ -365,12 +365,19 @@ def _neutral_semantic_readiness_overlay(monkeypatch):
     through the same seam — see ``tests/test_semantic_readiness.py``.
     """
     from theforge import ready_queue as _ready_queue
+    from theforge.eval import semantic_auto as _semantic_auto
     from theforge.sprint import manifest as _manifest
     from theforge.sprint import shape_gate as _shape_gate
 
     monkeypatch.setattr(_shape_gate, "_default_semantic_readiness", lambda **kwargs: None)
     monkeypatch.setattr(_ready_queue, "_semantic_readiness", lambda **kwargs: None)
     monkeypatch.setattr(_manifest, "semantic_manifest_admission", lambda *args: None)
+    # The dispatch-time revision check (#2907) is the same overlay reaching the
+    # last read before a story is handed to a dev agent, and is neutralized on
+    # the same grounds: no fixture in the suite records a ratified review, so
+    # leaving it live would withhold every well-shaped issue for a reason those
+    # tests are not about.
+    monkeypatch.setattr(_semantic_auto, "semantic_dispatch_withholding", lambda **kwargs: None)
 
 
 @pytest.fixture(autouse=True)
