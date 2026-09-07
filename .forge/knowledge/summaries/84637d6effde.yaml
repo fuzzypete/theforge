@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: 84637d6effde
 authoritative_run_record: .forge/audits/runs/84637d6effde.json
-generated_at: '2026-09-07T19:33:00.576862+00:00'
+generated_at: '2026-09-07T19:37:35.906326+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.00551875
+  cost_usd: 0.0034927499999999998
 story:
   slug: issue-2907
   name: A document that policy requires a semantic review for is left unevaluated
@@ -44,33 +44,33 @@ changed_files: &id002
 - tests/conftest.py
 - tests/test_semantic_auto_scheduling.py
 what_changed:
-  description: This run introduced automatic semantic-evaluation scheduling for documents
-    whose policy requires review but whose current revision has no evaluation record,
-    while preserving the existing admission meaning of findings and ratification.
+  description: This run added automatic semantic-evaluation scheduling for documents
+    that policy marks as requiring review but that lack an evaluation for the current
+    revision, while preserving the existing admission and ratification semantics.
     It also documented the automatic path and kept manual invocation available on
     the same recording terms.
-  approach: The change was implemented by adding a dedicated automatic-evaluation
-    path tied to readiness/admission flow, keying evaluation reuse to revision and
-    prompt-contract version, routing failure and unknown outcomes into unevaluated
-    failure states, and verifying the behavior across revision changes, policy-required
-    versus not-required cases, ratification, and bounded invocation.
+  approach: The change introduced a dedicated automatic-evaluation path that hooks
+    into readiness/admission flow, keys evaluation records to document revision plus
+    prompt contract version, reuses existing records when that key is unchanged, and
+    treats failed or unrecognised invocation outcomes as unevaluated failures rather
+    than as clean results.
   files_modified: *id002
 what_was_learned: []
 learned_patterns:
 - revision-scoped-evaluation
-- admission-triggered-auto-producer
+- admission-triggered-background-check
 - failure-defaults-to-unevaluated
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - Review approved the first pass and emphasized that the key risk area was preserving
-    existing ratification semantics while wiring automatic invocation into admission.
+  - Review approved the first pass without surfacing blocking issues; the main verification
+    focus was revision binding, failure handling, ratification preservation, and bounded
+    re-invocation.
 complexity_signal:
   actual_iterations: 1
   review_cycles: 1
   plan_regenerations: false
   cost_usd: 16.1222386
-  dominant_difficulty: Separating scheduling from policy meaning so evaluation could
-    run automatically without changing ratification, revision binding, or failure
-    semantics.
+  dominant_difficulty: Threading automatic invocation into the admission path without
+    changing the meaning of semantic results or ratification state.
