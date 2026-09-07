@@ -20,18 +20,19 @@ An attempt enters the cohort when all three hold:
 2. `artifact.fix_success_criterion` is non-empty;
 3. `landing.location` is non-null and is not a `<dry-run:` marker.
 
-Attempts excluded, counted per clause:
+Historical attempts excluded, counted per clause. Attempts after `until` are not part of this dated record and do not change these figures:
 
 | Exclusion | Attempts |
 | --- | --- |
-| outside the window | 130 |
+| before the window | 128 |
+| unreadable `started_at` timestamp | 0 |
 | `final_phase != DONE` | 9 |
 | empty `fix_success_criterion` | 0 |
 | `landing.location: null` (nothing landed) | 0 |
 | `<dry-run:` landing marker | 0 |
 | path-shaped landing, dry/live indistinguishable | 0 |
 
-Issues excluded entirely by the window: 114. That is the dominant exclusion — the corpus reaches back well before this window.
+Issues excluded entirely before the window: 112. That is the dominant exclusion — the corpus reaches back well before this window.
 
 In-window attempt phases: CAUSE_FOUND_PARTIAL: 2, DONE: 22, FAILED: 7.
 
@@ -247,4 +248,3 @@ review are doing the work, which is itself the finding.
 **CLOSE** — M = 0 — the failure mode was not realised in this window.
 
 The question is closed as not occurring at a rate worth acting on. The operator-facing doctrine against symptom-shaped criteria was written from hand-authored issues; on this evidence it does not transfer to diagnose output, and a session should not hand-edit a diagnosed body on intuition.
-

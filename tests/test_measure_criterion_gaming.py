@@ -7,7 +7,8 @@ renders `N / D` and `M / N` as distinct rates. Collapsing them overstates the
 problem, so the counting is tested directly.
 
 Covered here:
-  - the window bounds, the explicit include-list, and the excluded-by-window count
+  - the window bounds, the explicit include-list, the historical exclusion count,
+    and the post-window-audit stability guard
   - every cohort clause dropping its own case into its own counter, including
     the `<dry-run:` marker and a null landing location — and never a `dry_run`
     key, which `write_diagnose_audit` does not record
@@ -30,6 +31,7 @@ Covered here:
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -121,8 +123,9 @@ def test_the_window_excludes_earlier_attempts_and_counts_them(tmp_path):
     cohort = _cohort(tmp_path)
 
     assert sorted(cohort["by_issue"]) == [1]
-    assert cohort["exclusions"]["excluded_by_window"] == 1
-    assert cohort["excluded_by_window_issues"] == [2]
+    assert cohort["exclusions"]["before_window"] == 1
+    assert cohort["exclusions"]["after_window"] == 0
+    assert cohort["excluded_before_window_issues"] == [2]
 
 
 def test_the_upper_bound_excludes_attempts_after_it(tmp_path):
@@ -131,7 +134,17 @@ def test_the_upper_bound_excludes_attempts_after_it(tmp_path):
     cohort = _cohort(tmp_path)
 
     assert cohort["by_issue"] == {}
-    assert cohort["exclusions"]["excluded_by_window"] == 1
+    assert cohort["exclusions"]["before_window"] == 0
+    assert cohort["exclusions"]["after_window"] == 1
+
+
+def test_an_unreadable_timestamp_is_excluded_without_aborting_the_measurement(tmp_path):
+    _write_attempt(tmp_path, issue=1, run_id="a", started_at="not-a-timestamp")
+
+    cohort = _cohort(tmp_path)
+
+    assert cohort["by_issue"] == {}
+    assert cohort["exclusions"]["unreadable_started_at"] == 1
 
 
 def test_an_issue_named_in_the_include_list_enters_despite_the_window(tmp_path):
@@ -140,7 +153,8 @@ def test_an_issue_named_in_the_include_list_enters_despite_the_window(tmp_path):
     cohort = _cohort(tmp_path, include_issues=(2595,))
 
     assert sorted(cohort["by_issue"]) == [2595]
-    assert cohort["exclusions"]["excluded_by_window"] == 0
+    assert cohort["exclusions"]["before_window"] == 0
+    assert cohort["exclusions"]["after_window"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -301,9 +315,14 @@ def test_more_than_one_matching_commit_is_unresolved():
     assert "sha1" in result["landed_reason"] and "sha2" in result["landed_reason"]
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=True
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **(env or {})},
     ).stdout
 
 
@@ -344,6 +363,43 @@ def test_matching_no_integration_ref_at_all_is_a_named_failure(tmp_path):
         mcg.git_subject_index(repo, ("refs/heads/nothing-matches-this",))
 
     assert "nothing-matches-this" in str(excinfo.value)
+
+
+def test_the_landed_change_index_excludes_commits_after_the_record_window(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.txt").write_text("a")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "recorded work (#10)",
+        env={
+            "GIT_AUTHOR_DATE": "2026-09-06T00:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-09-06T00:00:00+00:00",
+        },
+    )
+    (repo / "a.txt").write_text("b")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "later work (#11)",
+        env={
+            "GIT_AUTHOR_DATE": "2026-09-08T00:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-09-08T00:00:00+00:00",
+        },
+    )
+
+    index = mcg.git_subject_index(repo, ("refs/heads/main",), until=WINDOW_UNTIL)
+
+    assert index["recorded work"]
+    assert "later work" not in index
 
 
 # --------------------------------------------------------------------------
@@ -730,14 +786,16 @@ def test_an_override_replaces_the_derived_verdict():
 # --------------------------------------------------------------------------
 
 
-def _render(specs, criteria=None):
+def _render(specs, criteria=None, exclusions=None):
     facts, rows = _rollup_rows(specs)
     for i, text in enumerate(criteria or [], start=1):
         facts[i] = {**facts[i], "criterion": text}
     cohort = {
         "exclusions": dict.fromkeys(
             (
-                "excluded_by_window",
+                "before_window",
+                "after_window",
+                "unreadable_started_at",
                 "not_done",
                 "empty_criterion",
                 "no_landing",
@@ -747,8 +805,10 @@ def _render(specs, criteria=None):
             0,
         ),
         "phase_counts": {"DONE": len(specs)},
-        "excluded_by_window_issues": [],
+        "excluded_before_window_issues": [],
     }
+    if exclusions is not None:
+        cohort["exclusions"].update(exclusions)
     rollup = mcg.roll_up(facts, rows)
     return mcg.render_markdown(
         window={
@@ -766,6 +826,22 @@ def _render(specs, criteria=None):
         rollup=rollup,
         decision=mcg.decide(rollup, None),
     )
+
+
+def test_post_window_audits_do_not_change_the_rendered_record(tmp_path):
+    """A dated report must not drift as diagnose appends newer audit records."""
+    _write_attempt(tmp_path, issue=1, run_id="before", started_at="2026-08-20T00:00:00+00:00")
+    before = _cohort(tmp_path)
+    _write_attempt(tmp_path, issue=2, run_id="after", started_at="2026-09-09T00:00:00+00:00")
+    after = _cohort(tmp_path)
+
+    assert before["exclusions"]["before_window"] == after["exclusions"]["before_window"] == 1
+    assert after["exclusions"]["after_window"] == 1
+    before_rendered = _render(
+        [(False, "no_landed_change", False)], exclusions=before["exclusions"]
+    )
+    after_rendered = _render([(False, "no_landed_change", False)], exclusions=after["exclusions"])
+    assert before_rendered == after_rendered
 
 
 def test_the_rendered_report_states_both_rates_and_the_decision():
