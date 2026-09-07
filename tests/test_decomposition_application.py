@@ -395,6 +395,32 @@ def test_an_original_with_no_appliable_type_anywhere_refuses(tmp_path):
     assert gh.creates() == []
 
 
+def test_an_original_relabelled_to_a_non_appliable_type_refuses(tmp_path):
+    """Relabelled ``bug`` after intake read it as an enhancement.
+
+    The relabelling is a decision someone made after the proposal was produced:
+    creating enhancement slices from the stale type and closing the live bug
+    would act on a story that no longer exists as described.
+    """
+    gh = FakeGh(labels=("bug",))
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert "is now typed bug" in outcome.error
+    assert gh.creates() == []
+    assert gh.closes() == []
+
+
+def test_an_original_relabelled_to_an_epic_refuses(tmp_path):
+    """``epic`` declares a type too — it is simply not one a slice can be."""
+    gh = FakeGh(labels=("epic",))
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert "is now typed epic" in outcome.error
+    assert gh.creates() == []
+
+
 def test_two_appliable_type_labels_are_an_ambiguity_and_refuse(tmp_path):
     """Which type the slices inherit is not forge's to guess."""
     gh = FakeGh(labels=("enhancement", "task"))

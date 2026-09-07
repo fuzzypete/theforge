@@ -556,11 +556,29 @@ def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) ->
             f"one of {', '.join(sorted(appliable))} to be runnable at creation"
         )
     if not type_labels:
-        # The live issue carries no appliable type label — its labels were
-        # edited after intake read it. Fall back to the type intake derived,
-        # which is the type the pause offered ``accept`` for; refusing here
-        # would fail an application the operator was told was available, for a
-        # label edit that does not change what the slices should be.
+        from theforge.shape_check.issue_spec import RECOGNIZED_TYPE_LABELS  # noqa: PLC0415
+
+        declared = sorted({name for name in labels if name.lower() in RECOGNIZED_TYPE_LABELS})
+        if declared:
+            # The live issue declares a type — it is just not one this can
+            # apply a split to. An issue relabelled ``bug`` after intake read it
+            # as an enhancement is now a bug: filing enhancement slices from the
+            # stale type and closing the live issue would act on a story that no
+            # longer exists as described. The relabelling is a decision someone
+            # made after the proposal was produced, and it outranks it.
+            raise ApplicationRefused(
+                f"#{number} is now typed {', '.join(declared)}, which a rendered slice "
+                f"cannot be a well-shaped instance of (needs one of "
+                f"{', '.join(sorted(appliable))}); it was typed "
+                f"{str(getattr(task, 'type', '') or 'none')!r} when the proposal was "
+                "produced, so the split was proposed for a different story than the "
+                "one on the tracker now"
+            )
+        # No recognized type at all: the label was removed rather than changed.
+        # Fall back to the type intake derived — the type the pause offered
+        # ``accept`` for — because a removal does not say what the slices should
+        # be instead, and refusing would fail an application over a label edit
+        # that changed nothing about the split.
         fallback = str(getattr(task, "type", "") or "").strip().lower()
         if fallback not in appliable:
             raise ApplicationRefused(
@@ -598,6 +616,17 @@ def _validate_body(*, title: str, body: str, labels: list[str]) -> None:
             f"the rendered slice {title!r} would not be runnable at creation: "
             f"{validation.report()}"
         )
+
+
+def created_slices_from_records(prior_created: object) -> tuple[CreatedSlice, ...]:
+    """The persisted created-slice records, as the typed values they describe.
+
+    The inverse of :meth:`CreatedSlice.to_dict`, for a caller holding the state
+    field rather than an outcome — the refusal path needs it to carry forward
+    issues an earlier attempt created rather than replacing them with an empty
+    list.
+    """
+    return tuple(_prior_map(prior_created).values())
 
 
 def _prior_map(prior_created: object) -> dict[int, CreatedSlice]:

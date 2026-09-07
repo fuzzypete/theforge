@@ -419,14 +419,15 @@ APPLIED   → created #2900  extract the portable diagnosis record
   rather than as a clean split, and the message names the issues that were
   created. Re-running the story re-enters the application from the persisted
   slice map and creates only what is missing — it never files a second copy.
-- **An interrupted application is recoverable.** Each slice is written to the
-  resume record *as it is created*, not once the application finishes, so a run
-  killed between two creates leaves every issue it filed on the record with
-  `status: in_progress`. Re-entry additionally asks the tracker which issues
-  already carry this proposal's marker
-  (`<!-- forge-decomposition-v1 source=#N slice=M -->`), which recovers an issue
-  created in the instant before the record was written. So `forge run` on the
-  same story after a kill finishes the split; it does not restart it.
+- **An interrupted application is recoverable.** Three things are durable, in
+  this order: the *intent* (`status: in_progress`, written before the first
+  `gh` call, so a resumed run knows an application started even if nothing was
+  created yet); each slice, written to the resume record *as it is created*
+  rather than once the application finishes; and the marker in each created
+  body (`<!-- forge-decomposition-v1 source=#N slice=M -->`), which a re-entry
+  searches the tracker for to recover an issue created in the instant before
+  the record was written. So `forge run` on the same story after a kill —
+  wherever it landed — finishes the split rather than restarting it.
 - **Nothing else can apply a split.** `decline`, `decompose`, `approve`, a
   timeout, and `retry.preflight_complexity_gate_no_decision` all create nothing;
   that key still accepts only `approve` or `decompose`. `accept` is offered only
@@ -434,11 +435,14 @@ APPLIED   → created #2900  extract the portable diagnosis record
   (`enhancement`, `task`, `spike` — not `bug`, whose shape needs an
   observed/expected/diagnosis body forge has no evidence to write), so an
   action that could not succeed is never on the menu.
-- **An expired pause cannot be answered late.** Once the wait window closes the
-  story resolves by the no-decision route, and an answer written *after*
-  `timeout_at` is not honoured — including `accept`. An answer written before
-  the deadline that the poller simply did not see in time still counts, which is
-  the race the post-expiry record read exists for.
+- **An expired pause cannot be answered late, by any route.** The deadline is
+  checked against the answer's own `decided_at` whenever the answer came off the
+  pending record — whether the poller handed it back as a live decision or the
+  gate re-read the record after an expiry. An answer written after `timeout_at`
+  is not honoured (the story resolves by the no-decision route), and that holds
+  for every action, not only `accept`. An answer written *before* the deadline
+  that the poller simply did not see in time still counts, which is the race the
+  post-expiry record read exists for.
 - **A recorded acceptance is re-checked before it mutates anything.** Both routes
   into the mutation — a live answer and one restored from a resume record —
   require the recorded decision source to be `operator` and an assessment to
@@ -446,10 +450,13 @@ APPLIED   → created #2900  extract the portable diagnosis record
   hand-edited resume file, a state assembled without the pause) creates nothing
   and is reported as a refusal with the reason, not as a clean split.
 
-If the tracker's labels were edited after intake read the issue, the created
+If the original's *type label was removed* after intake read it, the created
 slices inherit the type intake derived — the type the pause offered `accept`
-for. Two type labels on the original is the one label case that refuses: which
-type the slices inherit is not forge's to guess.
+for, since a removal does not say what they should be instead. Two label cases
+refuse instead: two appliable type labels (which type the slices inherit is not
+forge's to guess), and a **relabelling** — an issue read as an `enhancement` and
+since relabelled `bug` or `epic` is now a different story from the one the
+proposal was produced for, and the relabelling outranks it.
 
 An applied `accept` is reported the same way `decompose` is — `outcome:
 decomposed`, `⤺` on the sprint row, not a failure. Where to look afterwards:

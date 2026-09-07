@@ -865,3 +865,186 @@ class TestInterruptedApplication:
             2910,
             2911,
         ]
+
+
+class TestAnExpiredPauseCannotBeAnsweredEitherWay:
+    """The deadline is checked on the answer, not on how the gate came by it.
+
+    The poller hands back whatever the record says the moment it looks, so a
+    decision written after the window closed can arrive as a live answer rather
+    than through the expiry path — the same late acceptance by another route.
+    """
+
+    def test_a_late_accept_returned_by_the_poller_itself_is_not_honoured(self, tmp_path: Path):
+        config = _config(tmp_path)
+        state = _gated_state()
+        gh = FakeGh()
+
+        def _poll_returns_a_late_answer(run_id, timeout_seconds, **kwargs):
+            project_root = kwargs.get("project_root")
+            pending.resolve_pending(run_id, "accept", project_root)
+            _stamp_decided_at(run_id, project_root, seconds_past_deadline=90)
+            record = pending.read_pending(run_id, project_root=project_root) or {}
+            # The poller reports the answer it found, exactly as it does when it
+            # sees a decision land — it has no opinion about the deadline.
+            return "accept", record.get("decided_at")
+
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_poll_returns_a_late_answer),
+            patch("theforge.coordinator.decomposition_application._run_gh", gh),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert gh.calls == []
+        assert state.preflight_complexity_gate_decision == "decompose"
+        assert state.preflight_complexity_gate_decision_source == "no_decision"
+        assert state.preflight_decomposition_application_status is None
+        assert result is not None and result.success is False
+
+    def test_a_late_approve_returned_by_the_poller_is_not_honoured_either(self, tmp_path: Path):
+        """Not an accept-only rule: an expired pause resolves by its no-decision
+        route whatever the late answer says."""
+        config = _config(tmp_path)
+        state = _gated_state()
+
+        def _poll_returns_a_late_answer(run_id, timeout_seconds, **kwargs):
+            project_root = kwargs.get("project_root")
+            pending.resolve_pending(run_id, "approve", project_root)
+            _stamp_decided_at(run_id, project_root, seconds_past_deadline=90)
+            record = pending.read_pending(run_id, project_root=project_root) or {}
+            return "approve", record.get("decided_at")
+
+        with patch("theforge.pending.poll_pending", side_effect=_poll_returns_a_late_answer):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert state.preflight_complexity_gate_decision == "decompose"
+        assert state.preflight_complexity_gate_decision_source == "no_decision"
+        assert result is not None and result.success is False
+
+    def test_an_in_window_answer_returned_by_the_poller_is_honoured(self, tmp_path: Path):
+        """The ordinary path stays ordinary: answered in time, applied."""
+        config = _config(tmp_path)
+        state = _gated_state()
+        gh = FakeGh()
+
+        result = _run_gate(state, config, _issue_task(), gh, answer="accept")
+
+        assert state.preflight_complexity_gate_decision == "accept"
+        assert state.preflight_complexity_gate_decision_source == "operator"
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+        assert result is not None
+
+
+class TestInterruptionBeforeTheFirstRecord:
+    """The window the per-create recorder itself cannot cover.
+
+    ``gh issue create`` returns, and the process dies before that slice reaches
+    the record. What makes this recoverable is that the *intent* to apply was
+    durable before the first create: without it the resumed run reads "accept,
+    nothing attempted", skips reconciliation, and files the slice again.
+    """
+
+    def test_the_intent_to_apply_is_durable_before_the_first_create(self, tmp_path: Path):
+        config = _config(tmp_path)
+        task = _issue_task()
+        state = _gated_state()
+        observed: list[str | None] = []
+
+        class _WatchingGh(FakeGh):
+            def __call__(self, args, project_root):
+                if args[:3] == ["gh", "issue", "create"] and not observed:
+                    record = load_resume_record(tmp_path, task.slug) or {}
+                    preflight = record.get("preflight") or {}
+                    observed.append(preflight.get("decomposition_application_status"))
+                return super().__call__(args, project_root)
+
+        _run_gate(state, config, task, _WatchingGh(), answer="accept")
+
+        # Read off the resume record, not the in-memory state: what a killed
+        # process leaves behind is the file.
+        assert observed == ["in_progress"]
+
+    def test_a_kill_before_the_first_slice_is_recorded_does_not_duplicate_it(self, tmp_path: Path):
+        config = _config(tmp_path)
+        task = _issue_task()
+        state = _gated_state()
+
+        class _Killed(BaseException):
+            """Not an Exception: a kill is not something the apply path catches."""
+
+        def _die_before_recording(on_created, record):
+            raise _Killed("the process died between the create and its record")
+
+        with pytest.raises(_Killed):
+            with patch(
+                "theforge.coordinator.decomposition_application._notify_created",
+                _die_before_recording,
+            ):
+                _run_gate(state, config, task, FakeGh(), answer="accept")
+
+        # #2900 exists on GitHub and appears on no record — the state a re-entry
+        # has to be able to recover from.
+        resumed = CoordinatorState()
+        record = load_resume_record(tmp_path, task.slug)
+        assert record is not None
+        apply_resume_record_to_state(resumed, record)
+        assert resumed.preflight_complexity_gate_decision == "accept"
+        assert resumed.preflight_complexity_gate_decision_source == "operator"
+        assert resumed.preflight_decomposition_created == []
+        # The intent survived, which is what turns the retry into a re-entry.
+        assert resumed.preflight_decomposition_application_status == "in_progress"
+
+        class _ReconcilingGh(FakeGh):
+            def __call__(self, args, project_root):
+                if args[:3] == ["gh", "issue", "list"]:
+                    self.calls.append(list(args))
+                    body = "<!-- forge-decomposition-v1 source=2541 slice=1 -->"
+                    return _ok(f'[{{"number": 2900, "body": "{body}"}}]')
+                return super().__call__(args, project_root)
+
+        resumed.run_id = state.run_id
+        second = _ReconcilingGh()
+        second.next_number = 2910
+        with (
+            patch("theforge.pending.write_pending") as mock_write,
+            patch("theforge.coordinator.decomposition_application._run_gh", second),
+        ):
+            evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        mock_write.assert_not_called()
+        created_titles = [
+            call[call.index("--title") + 1]
+            for call in second.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]
+        assert "extract the portable diagnosis record" not in created_titles
+        assert resumed.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+        assert [entry["issue"] for entry in resumed.preflight_decomposition_created] == [
+            2900,
+            2910,
+            2911,
+        ]
+
+
+class TestARefusalKeepsWhatExists:
+    def test_a_provenance_refusal_does_not_erase_already_created_slices(self, tmp_path: Path):
+        """Refusing to continue an application does not un-create its issues."""
+        config = _config(tmp_path)
+        state = _gated_state()
+        state.preflight_complexity_gate_opened = True
+        state.preflight_complexity_gate_decision = "accept"
+        state.preflight_complexity_gate_decision_source = "no_decision"
+        state.preflight_decomposition_application_status = "in_progress"
+        state.preflight_decomposition_created = [
+            {"slice_id": 1, "title": "extract", "issue": 2900, "depends_on_issues": []},
+        ]
+        gh = FakeGh()
+
+        with patch("theforge.coordinator.decomposition_application._run_gh", gh):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert gh.calls == []
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_FAILED
+        # The refusal reports what exists rather than replacing it with nothing.
+        assert [entry["issue"] for entry in state.preflight_decomposition_created] == [2900]
+        assert result is not None and "#2900" in result.message

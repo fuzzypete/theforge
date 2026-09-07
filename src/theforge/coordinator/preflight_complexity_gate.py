@@ -147,20 +147,18 @@ def _parse_iso(value: object) -> datetime.datetime | None:
 
 
 def _answered_within_the_window(record: dict, answer_at: object) -> bool:
-    """Whether an answer found after an expiry was given before the deadline.
+    """Whether a recorded answer was given before the deadline it was shown.
 
-    The gate re-reads the pending record after the poller reports an expiry,
-    because an operator who answered in the last moments of the window may have
-    written it between the poller's final check and its return — losing that is
-    losing a decision they made in time.
+    Applies to every answer read off the pending record, whichever way the gate
+    came by it — the poller returning it, or the record being re-read after the
+    poller reported an expiry. Both read the same file, so both can see a
+    decision written after the window closed, and a pause that has already
+    resolved by the configured no-decision route must not be answerable
+    afterwards — least of all with ``accept``, which mutates the tracker.
 
-    An answer written *after* ``timeout_at`` is a different thing. The pause has
-    already resolved by the configured no-decision route, and the run has been
-    told what it is doing; honouring the late answer would let an expired pause
-    be answered — with ``accept``, by mutating the tracker. Unreadable or absent
-    timestamps count as outside the window: this runs only on the expiry path,
-    where the record is not supposed to carry an answer at all, so the case that
-    cannot be verified is the case that fails closed.
+    Unreadable or absent timestamps count as outside the window. A record whose
+    own deadline or decision time cannot be read cannot establish that it was
+    answered in time, and the action this guards is the irreversible one.
     """
     deadline = _parse_iso(record.get("timeout_at"))
     decided = _parse_iso(answer_at)
@@ -596,11 +594,19 @@ def _refuse_application(
     run's provenance, and the operator has to be able to see that their split
     did not happen and why.
     """
-    from .decomposition_application import APPLY_STATUS_FAILED, ApplicationOutcome  # noqa: PLC0415
+    from .decomposition_application import (  # noqa: PLC0415
+        APPLY_STATUS_FAILED,
+        ApplicationOutcome,
+        created_slices_from_records,
+    )
 
     outcome = ApplicationOutcome(
         status=APPLY_STATUS_FAILED,
-        created=(),
+        # Whatever an earlier attempt created is carried forward rather than
+        # replaced by an empty list: refusing to continue an application does
+        # not un-create its issues, and the record of them is the operator's
+        # handle on the partial split.
+        created=created_slices_from_records(state.preflight_decomposition_created),
         source_issue=getattr(task, "github_issue", None),
         source_issue_closed=bool(state.preflight_decomposition_source_issue_closed),
         error=reason,
@@ -613,7 +619,7 @@ def _refuse_application(
             "preflight_decomposition_application",
             phase=PREFLIGHT_GATE_PHASE,
             status=outcome.status,
-            created=[],
+            created=[item.issue_number for item in outcome.created],
             source_issue=outcome.source_issue,
             source_issue_closed=outcome.source_issue_closed,
             error=reason,
@@ -655,21 +661,38 @@ def _apply_accepted_proposal(
 ) -> CoordinatorResult:
     """Apply the recorded proposal, record what happened, and end the run.
 
-    Idempotent by construction, in two layers. Each created slice is written to
-    the state and saved *as it is created*, not once the application returns, so
-    a process killed between two creates leaves every issue it filed on the
-    resume record — the version that recorded only at the end lost the first
-    issue and filed it again on re-entry. And a re-entry (any state that already
-    carries an application status) additionally asks the tracker which slices
-    already carry this proposal's marker, which covers a kill in the gap between
-    ``gh`` returning and the recorder running.
+    Idempotent by construction, in three layers, because the process can die
+    between any two of these steps:
+
+    1. The *intent* is durable before the first ``gh`` call. A state carrying
+       ``accept`` with no application status used to mean "nothing was tried",
+       so a kill after the first create returned but before its record was
+       written re-entered as a first attempt and filed that slice again.
+    2. Each created slice is written to the state and saved as it is created,
+       not once the application returns, so a kill between two creates leaves
+       every issue already filed on the resume record.
+    3. A re-entry — any state that arrived here already carrying an application
+       status — asks the tracker which slices already carry this proposal's
+       marker, which covers a kill in the gap between ``gh`` returning and the
+       recorder running.
     """
     from .decomposition_application import (  # noqa: PLC0415
         APPLY_STATUS_IN_PROGRESS,
         apply_decomposition,
     )
 
+    # Read before the intent is written, or every application would look like a
+    # re-entry and pay for a reconciliation search it does not need.
     reentry = bool(state.preflight_decomposition_application_status)
+
+    if not reentry:
+        # Nothing has been created yet, and this says so — what it establishes
+        # is that an application *started*, which is what a later re-entry needs
+        # in order to know it must reconcile before creating anything.
+        state.preflight_decomposition_application_status = APPLY_STATUS_IN_PROGRESS
+        state.preflight_decomposition_source_issue = task.github_issue
+        state.preflight_decomposition_application_error = None
+        _persist_gate_state(state, config, task, logger=logger)
 
     def _record_one_created(record: "_da.CreatedSlice") -> None:
         """Persist one created slice the moment it exists."""
@@ -973,26 +996,30 @@ def _open_gate(
     # neither is treated as no decision rather than guessed at.
     record = _pending.read_pending(eff_run_id, project_root=project_root) or {}
     answer = _pending.decision_of(record)
+    from_record = answer is not None
     if answer is None and not record and decision in actions:
         # The record was swept between the poll and here; the poller's report is
-        # all there is, and it names one of the offered actions.
+        # all there is, and it names one of the offered actions. Nothing to
+        # check it against — but the poller only reports an action it saw while
+        # it was still inside its own wait, so it was answered in time.
         answer = decision
         answer_at = decided_at
     else:
         answer_at = record.get("decided_at") or decided_at
 
-    # An answer the poller never saw is only an answer if it was given before
-    # the deadline the operator was shown. Checked before cleanup, because the
-    # deadline lives on the record this is about to remove.
-    if (
-        answer is not None
-        and decision == "timeout"
-        and not _answered_within_the_window(record, answer_at)
-    ):
+    # Every answer that came off the record is checked against the deadline that
+    # record advertised — *not* only the ones the poller missed. The poller
+    # reports whatever the file says the moment it looks, so a decision written
+    # after the window closed can be handed back as a live answer; validating
+    # only the expiry path left the tracker mutable by an answer to a pause that
+    # had already resolved. Checked before cleanup, because the deadline lives
+    # on the record this is about to remove.
+    if from_record and not _answered_within_the_window(record, answer_at):
         _cu._log(
-            f"  ⚠ PREFLIGHT gate  the pause expired before {str(answer).strip().lower()!r} "
-            f"was recorded (at {answer_at or 'an unknown time'}) — applying the "
-            f"no-decision action {no_decision_action}"
+            f"  ⚠ PREFLIGHT gate  {str(answer).strip().lower()!r} was recorded after the "
+            f"pause deadline (at {answer_at or 'an unknown time'}, deadline "
+            f"{record.get('timeout_at') or 'unknown'}) — applying the no-decision "
+            f"action {no_decision_action}"
         )
         answer = None
 
