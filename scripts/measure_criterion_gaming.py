@@ -179,19 +179,26 @@ def load_attempts(corpus_root: Path) -> list[dict]:
 def _in_window(started_at: str, since: str, until: str) -> bool:
     # ISO-8601 UTC timestamps compare correctly as strings once the offsets
     # match, but the corpus mixes "+00:00" and "Z", so parse rather than assume.
-    try:
-        stamp = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-    except ValueError:
+    stamp = _parse_timestamp(started_at)
+    if stamp is None:
         return False
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
     return _parse_bound(since) <= stamp <= _parse_bound(until)
 
 
-def _parse_bound(value: str) -> datetime:
-    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def _parse_bound(value: str) -> datetime:
+    stamp = _parse_timestamp(value)
+    if stamp is None:
+        raise MeasurementError(f"window bound is not an ISO-8601 timestamp: {value!r}")
     return stamp
 
 
@@ -223,6 +230,7 @@ def select_cohort(
         # the record's snapshot and must not make a checked-in report drift.
         "before_window": 0,
         "after_window": 0,
+        "unreadable_started_at": 0,
         "not_done": 0,
         "empty_criterion": 0,
         "no_landing": 0,
@@ -233,16 +241,21 @@ def select_cohort(
     windowed_issues: set[int] = set()
     excluded_before_window_issues: set[int] = set()
     phase_counts: dict[str, int] = {}
+    lower_bound = _parse_bound(since)
+    upper_bound = _parse_bound(until)
 
     for attempt in attempts:
         included_by_name = attempt["issue_number"] in include_issues
         if not included_by_name:
-            stamp = _parse_bound(attempt["started_at"])
-            if stamp < _parse_bound(since):
+            stamp = _parse_timestamp(attempt["started_at"])
+            if stamp is None:
+                exclusions["unreadable_started_at"] += 1
+                continue
+            if stamp < lower_bound:
                 exclusions["before_window"] += 1
                 excluded_before_window_issues.add(attempt["issue_number"])
                 continue
-            if stamp > _parse_bound(until):
+            if stamp > upper_bound:
                 exclusions["after_window"] += 1
                 continue
         windowed_issues.add(attempt["issue_number"])
@@ -338,28 +351,43 @@ def select_attempt(attempts: list[dict], issue_body: str | None) -> dict:
 # --------------------------------------------------------------------------
 
 
-def build_subject_index(log_output: str) -> dict[str, set[str]]:
+def build_subject_index(log_output: str, *, until: str | None = None) -> dict[str, set[str]]:
     """Map commit subject (trailing ``(#N)`` stripped) -> set of shas."""
     index: dict[str, set[str]] = {}
+    upper_bound = _parse_bound(until) if until is not None else None
     for line in log_output.splitlines():
         if "\x00" not in line:
             continue
-        sha, subject = line.split("\x00", 1)
+        fields = line.split("\x00", 2)
+        if len(fields) == 3:
+            sha, committed_at, subject = fields
+            if upper_bound is not None and _parse_bound(committed_at) > upper_bound:
+                continue
+        else:
+            sha, subject = fields
         key = _TRAILING_PR_RE.sub("", subject).strip()
         if key:
             index.setdefault(key, set()).add(sha.strip())
     return index
 
 
-def git_subject_index(corpus_root: Path, integration_refs: tuple[str, ...]) -> dict[str, set[str]]:
+def git_subject_index(
+    corpus_root: Path, integration_refs: tuple[str, ...], *, until: str | None = None
+) -> dict[str, set[str]]:
+    """Index integration commits, optionally through a record's upper bound.
+
+    The commit's committer timestamp is used because it records when that
+    integration-ref commit was made. A later commit must not rewrite a dated
+    report's landed-change result when its subject happens to match an issue.
+    """
     refs = _resolve_refs(corpus_root, integration_refs)
     if not refs:
         raise MeasurementError(
             f"no integration refs matched {list(integration_refs)} in {corpus_root} — "
             "a landed-change join over unmerged refs would count rejected attempts as landed"
         )
-    result = _run(["git", "log", "--format=%H%x00%s", *refs], corpus_root)
-    return build_subject_index(result)
+    result = _run(["git", "log", "--format=%H%x00%cI%x00%s", *refs], corpus_root)
+    return build_subject_index(result, until=until)
 
 
 def _resolve_refs(corpus_root: Path, patterns: tuple[str, ...]) -> list[str]:
@@ -770,6 +798,7 @@ def render_markdown(
     add("| Exclusion | Attempts |")
     add("| --- | --- |")
     add(f"| before the window | {exclusions['before_window']} |")
+    add(f"| unreadable `started_at` timestamp | {exclusions['unreadable_started_at']} |")
     add(f"| `final_phase != DONE` | {exclusions['not_done']} |")
     add(f"| empty `fix_success_criterion` | {exclusions['empty_criterion']} |")
     add(f"| `landing.location: null` (nothing landed) | {exclusions['no_landing']} |")
@@ -1204,7 +1233,7 @@ def _run_measurement(args) -> int:
         until=window["until"],
         include_issues=window["include_issues"],
     )
-    index = git_subject_index(corpus_root, window["integration_refs"])
+    index = git_subject_index(corpus_root, window["integration_refs"], until=window["until"])
 
     if args.refresh_facts:
         lookup = lambda number: fetch_issue(number, corpus_root, args.repo)  # noqa: E731

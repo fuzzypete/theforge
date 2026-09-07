@@ -31,6 +31,7 @@ Covered here:
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -135,6 +136,15 @@ def test_the_upper_bound_excludes_attempts_after_it(tmp_path):
     assert cohort["by_issue"] == {}
     assert cohort["exclusions"]["before_window"] == 0
     assert cohort["exclusions"]["after_window"] == 1
+
+
+def test_an_unreadable_timestamp_is_excluded_without_aborting_the_measurement(tmp_path):
+    _write_attempt(tmp_path, issue=1, run_id="a", started_at="not-a-timestamp")
+
+    cohort = _cohort(tmp_path)
+
+    assert cohort["by_issue"] == {}
+    assert cohort["exclusions"]["unreadable_started_at"] == 1
 
 
 def test_an_issue_named_in_the_include_list_enters_despite_the_window(tmp_path):
@@ -305,9 +315,14 @@ def test_more_than_one_matching_commit_is_unresolved():
     assert "sha1" in result["landed_reason"] and "sha2" in result["landed_reason"]
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=True
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **(env or {})},
     ).stdout
 
 
@@ -348,6 +363,43 @@ def test_matching_no_integration_ref_at_all_is_a_named_failure(tmp_path):
         mcg.git_subject_index(repo, ("refs/heads/nothing-matches-this",))
 
     assert "nothing-matches-this" in str(excinfo.value)
+
+
+def test_the_landed_change_index_excludes_commits_after_the_record_window(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.txt").write_text("a")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "recorded work (#10)",
+        env={
+            "GIT_AUTHOR_DATE": "2026-09-06T00:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-09-06T00:00:00+00:00",
+        },
+    )
+    (repo / "a.txt").write_text("b")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "later work (#11)",
+        env={
+            "GIT_AUTHOR_DATE": "2026-09-08T00:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-09-08T00:00:00+00:00",
+        },
+    )
+
+    index = mcg.git_subject_index(repo, ("refs/heads/main",), until=WINDOW_UNTIL)
+
+    assert index["recorded work"]
+    assert "later work" not in index
 
 
 # --------------------------------------------------------------------------
@@ -743,6 +795,7 @@ def _render(specs, criteria=None, exclusions=None):
             (
                 "before_window",
                 "after_window",
+                "unreadable_started_at",
                 "not_done",
                 "empty_criterion",
                 "no_landing",

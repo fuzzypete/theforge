@@ -25,6 +25,7 @@ Historical attempts excluded, counted per clause. Attempts after `until` are not
 | Exclusion | Attempts |
 | --- | --- |
 | before the window | 128 |
+| unreadable `started_at` timestamp | 0 |
 | `final_phase != DONE` | 9 |
 | empty `fix_success_criterion` | 0 |
 | `landing.location: null` (nothing landed) | 0 |
