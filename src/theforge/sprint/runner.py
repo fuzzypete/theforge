@@ -3682,7 +3682,7 @@ class SprintRunContext:
         through untouched.
         """
         if isinstance(sprint, (str, Path)):
-            resolved = resolve_from_manifest(Path(sprint), config.project_root)
+            resolved = resolve_from_manifest(Path(sprint), config.project_root, config=config)
         else:
             resolved = sprint
         live = options.pop("live_story_slugs", None) or ()
