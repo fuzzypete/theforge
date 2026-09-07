@@ -128,6 +128,7 @@ def _agents_from_models(
                 cached_input_cost_per_mtok=info.cached_input_cost_per_mtok,
                 pricing_provenance=info.pricing_provenance,
                 reasoning_mode=info.reasoning_mode,
+                dev_capable=info.dev_capable,
             )
         )
     return agents
