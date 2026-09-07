@@ -759,6 +759,51 @@ class TestListOrphanAgents:
         ]
         assert sidecar.exists(), "a read-only listing must not consume stale records"
 
+    def test_lists_test_origin_record_as_sweep_discarded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Status must not promise that an operator sweep will reap suite residue."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / f"999999-{pgid}.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                    "origin": "test",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(process_group, "_running_under_pytest", lambda: False)
+        try:
+            assert process_group.list_orphan_agents(tmp_path) == [
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                    "origin": "test",
+                    "orphan_kind": "unverifiable_sidecar",
+                    "orphan_reason": (
+                        "test-origin sidecar will be discarded unsignalled by a sweep"
+                    ),
+                }
+            ]
+            assert proc.poll() is None, "a read-only listing killed a process group"
+            assert sidecar.exists(), "a read-only listing must not consume records"
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
     def test_lists_live_observed_escapees_when_the_group_is_unverifiable(
         self, tmp_path: Path
     ) -> None:

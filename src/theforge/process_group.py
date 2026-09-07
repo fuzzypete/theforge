@@ -1436,8 +1436,18 @@ def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
             continue
         if _is_pid_alive(data["owner_pid"]):
             continue
-        may_signal, reason = _identity_verdict(data["pgid"], data)
         record = dict(data)
+        # Match the mutating sweep's treatment of suite residue. An operator's
+        # sweep discards it before checking either the group identity or escaped
+        # descendants, so status must not imply it will be reaped.
+        if data.get("origin") == "test" and not _running_under_pytest():
+            record["orphan_kind"] = "unverifiable_sidecar"
+            record["orphan_reason"] = (
+                "test-origin sidecar will be discarded unsignalled by a sweep"
+            )
+            orphans.append(record)
+            continue
+        may_signal, reason = _identity_verdict(data["pgid"], data)
         record["orphan_reason"] = reason
         if may_signal:
             record["orphan_kind"] = "process_group"
