@@ -142,3 +142,9 @@ class RoutingEvidence:
     # *current demonstrated absence* appears here; never-established and stale
     # records leave a candidate eligible and therefore unlisted.
     capability_exclusions: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # Candidates the account cannot invoke (#2950), keyed agent name →
+    # {state, auth_mode, checked_at, freshness, reason}. Role-independent: an
+    # account that cannot invoke a model cannot invoke it for any phase. Only
+    # a positive ``unavailable`` answer appears here; ``unverified`` leaves the
+    # candidate eligible and therefore unlisted.
+    availability_exclusions: dict[str, dict] = field(default_factory=dict)

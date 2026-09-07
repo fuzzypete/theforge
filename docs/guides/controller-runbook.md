@@ -89,6 +89,42 @@ story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
 attributed to the credential, not FAILED — the sprint killed them, no model
 judged them, and they contribute nothing to adaptive memory.
 
+### Model availability gate (issue #2950)
+
+Beside the auth gate, and at the same moment, a sprint asks the account catalog
+whether the credential it holds can actually invoke a model for each required
+phase. A model the catalog says the account cannot invoke is excluded from every
+candidate pool, with the reason recorded on the routing decision:
+
+```
+  ⚠ ROUTING  openai/gpt-5.4/cli excluded — not available to this account under
+             ChatGPT-account auth (not in account catalog, checked 2026-09-05)
+```
+
+If that leaves a phase with nothing, the run stops **before** dispatching
+anything:
+
+```
+  ✗ ROUTING  no model available for phase dev: openai/gpt-5.4/cli excluded
+             (not available to this account), openai/gpt-5.5/cli excluded
+             (not available to this account). Nothing dispatched, $0.00 spent.
+```
+
+Read this as a routing outcome, not an agent failure. No story is marked FAILED,
+nothing was judged, and nothing is recorded against any model's capability
+history or profile — so the stop contributes nothing to adaptive memory.
+
+Two properties are worth knowing when diagnosing one:
+
+- **Only positive evidence stops anything.** A provider that publishes no
+  account catalog, or a catalog lookup that fails, yields *unverified* — the
+  model stays fully eligible and routes exactly as before. The run warns once
+  per model that its availability is unconfirmed, not once per story.
+- **The answer is read per story, not once at launch.** An account catalog that
+  changes mid-sprint changes routing for the stories that follow, with no
+  restart. The sprint-launch gate is the coarse, tier-independent pass; the
+  router enforces the same answer exactly when it narrows a phase's pool.
+
 ### Broken baseline recovery
 
 When a sprint aborts with `stopped_reason: broken_baseline` and the baseline

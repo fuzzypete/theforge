@@ -42,6 +42,7 @@ from theforge.artifacts import (
     PLAN_PATH,
     ensure_parent_dir,
 )
+from theforge.assignment import ROUTING_STOPPED_ERROR_TYPE, NoAvailableModelError
 from theforge.config import ForgeConfig
 from theforge.process_group import ProcessTeardown
 from theforge.task import (
@@ -1428,7 +1429,25 @@ def run_task(
             state.preflight_cache_validation = cache_validation
             if cache_valid:
                 apply_cached_preflight_state(state, cached_preflight_state)
-                config = _apply_preflight_config(config, state, task_slug=task.slug)
+                try:
+                    config = _apply_preflight_config(config, state, task_slug=task.slug)
+                except NoAvailableModelError as _availability_stop:
+                    # Availability is resolved fresh inside
+                    # _apply_preflight_config, so a cached preflight verdict can
+                    # still route into an emptied pool (#2950). Same contract as
+                    # the live path in preflight_flow: a routing outcome, not an
+                    # agent failure, with nothing dispatched and nothing recorded
+                    # against any model.
+                    _log(f"  ✗ ROUTING  {_availability_stop}")
+                    state.error = str(_availability_stop)
+                    state.error_type = ROUTING_STOPPED_ERROR_TYPE
+                    return CoordinatorResult(
+                        success=False,
+                        phase=Phase.PREFLIGHT,
+                        state=state,
+                        message=str(_availability_stop),
+                        infrastructure_failure=True,
+                    )
                 # Routing resolved from a cached verdict is still this run's
                 # decision — persist it so a later resume can recover it (#2154).
                 persist_routing_decision(
@@ -1858,7 +1877,23 @@ def _run_resume_coordinator(
         state.preflight_cache_validation = cache_validation
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
-            config = _apply_preflight_config(config, state, task_slug=task.slug)
+            try:
+                config = _apply_preflight_config(config, state, task_slug=task.slug)
+            except NoAvailableModelError as _availability_stop:
+                # Same routing-stop contract as the other cached-preflight path
+                # above: availability is resolved fresh inside
+                # _apply_preflight_config, so a resume can reach an emptied pool
+                # too, and it stops here rather than escaping as a failure (#2950).
+                _log(f"  ✗ ROUTING  {_availability_stop}")
+                state.error = str(_availability_stop)
+                state.error_type = ROUTING_STOPPED_ERROR_TYPE
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.PREFLIGHT,
+                    state=state,
+                    message=str(_availability_stop),
+                    infrastructure_failure=True,
+                )
             persist_routing_decision(
                 config,
                 state,

@@ -99,6 +99,7 @@ from .audit_publish import (
     write_terminal_sprint_audits,
 )
 from .auth_gate import enforce_sprint_auth_readiness
+from .availability_gate import enforce_sprint_availability
 from .budget_runtime import (
     SprintBudgetRuntime,
     SprintCostLedger,
@@ -5119,6 +5120,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # pull, and every worktree touch, so a dead credential costs seconds and
     # leaves no story with a verdict — the run simply never happened.
     enforce_sprint_auth_readiness(_ctx.config, log=_log)
+
+    # Same moment, the same question one layer out (#2950): can the account
+    # this run authenticates as actually invoke a model for each required
+    # phase? A phase whose entire candidate set the account catalog rules out
+    # cannot produce anything, and discovering that after preflight has been
+    # charged is exactly the failure this gate exists to prevent. Refuses on
+    # positive catalog evidence only — an unverified answer routes normally.
+    enforce_sprint_availability(_ctx.config, log=_log)
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(_ctx.config)

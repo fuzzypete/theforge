@@ -644,6 +644,17 @@ def _apply_post_plan_dev_checkpoint(
     from theforge.model_capabilities import capabilities_path, load_capabilities  # noqa: PLC0415
 
     _capability_records = load_capabilities(capabilities_path(config.project_root))
+    # Account availability (#2950), resolved fresh at this second selection
+    # boundary for the same reason the record above is loaded outside the
+    # adaptive guard: it is a hard eligibility fact, and the answer may have
+    # changed since preflight routed this story.
+    from theforge.model_availability import (  # noqa: PLC0415
+        AVAILABILITY_WARNINGS,
+        resolve_agent_availability,
+    )
+
+    _model_availability = resolve_agent_availability(config.agents, config)
+    AVAILABILITY_WARNINGS.emit(_model_availability, _log)
     _model_profiles = None
     _observed_costs = None
     _recency = None
@@ -684,6 +695,7 @@ def _apply_post_plan_dev_checkpoint(
         recency=_recency,
         transport_fallbacks=config.transport_fallbacks,
         capability_records=_capability_records,
+        model_availability=_model_availability,
     )
     state._adaptive_decision = _updated
     if _updated.routing_decision:

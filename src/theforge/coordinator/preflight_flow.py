@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.agent_types import AgentResult
+from theforge.assignment import ROUTING_STOPPED_ERROR_TYPE, NoAvailableModelError
 from theforge.config import (
     PREFLIGHT_FORBIDDEN_TOOLS,
     ForgeConfig,
@@ -1135,9 +1136,33 @@ def _run_preflight_phase(
             }
         )
 
-    config = _apply_preflight_config(
-        config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
-    )
+    try:
+        config = _apply_preflight_config(
+            config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
+        )
+    except NoAvailableModelError as exc:
+        # Availability emptied a phase's pool (#2950). This is a routing
+        # outcome, not an agent failure: nothing was dispatched for the phase,
+        # so no model may be credited or blamed for it, and the run must not
+        # write a capability-history or model-profile row from here. Returning
+        # an infrastructure-flagged result is how the coordinator says "this run
+        # made no statement about the story" — the same contract a substrate
+        # abort uses (#1951), which is exactly what keeps the stop out of
+        # adaptive memory.
+        _log(f"  ✗ ROUTING  {exc}")
+        state.error = str(exc)
+        state.error_type = ROUTING_STOPPED_ERROR_TYPE
+        return (
+            config,
+            CoordinatorResult(
+                success=False,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=str(exc),
+                infrastructure_failure=True,
+            ),
+            False,
+        )
     # Durable copy of the decision just installed: the in-memory preflight state
     # this run holds does not survive a mid-sprint process re-exec, and a resume
     # without it would seat the static roster instead of this panel (#2154).

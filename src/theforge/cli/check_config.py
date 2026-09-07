@@ -23,16 +23,16 @@ from theforge.config.auth import (
 from theforge.config.bridge import model_ref_to_profile
 from theforge.config.model_identity import ModelAvailability
 from theforge.config.models import (
-    RETIRED_MODEL_REGISTRY,
-    canonical_model_id,
-    model_fallback_transport,
-    normalize_model_key,
     provider_for_transport,
     transport_from_raw_fields,
 )
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
+from theforge.model_availability import (
+    availability_target,
+    config_availability_targets,
+)
 
 
 def _format_size(n: int) -> str:
@@ -428,142 +428,12 @@ def _collapse_complexity_labels(mapping: dict[str, str]) -> str:
     return ("\n" + " " * 16).join(parts)
 
 
-def _availability_target(
-    profile: ModelProfile,
-    config: ForgeConfig,
-    *,
-    key: str,
-    model: str | None = None,
-    transport: TransportSpec | None = None,
-    provider: str | None = None,
-    base_url: str | None = None,
-) -> ModelAvailabilityTarget | None:
-    """Build an account-catalog target from a profile's actual dispatch identity."""
-    effective_transport = transport or profile.transport
-    effective_provider = provider or profile.provider_family
-    effective_model = model or profile.model
-    if effective_transport is None or effective_provider is None:
-        return None
-    canonical_id = canonical_model_id(
-        effective_provider, effective_model, effective_transport.kind
-    )
-    # Retired packaged identities deliberately raise during ordinary model
-    # resolution so routing cannot select them.  Check-config still needs their
-    # maintained identity evidence to report them unavailable rather than
-    # treating the direct profile as an unknown account catalog entry.
-    retired = RETIRED_MODEL_REGISTRY.get(canonical_id)
-    if retired is not None:
-        identity = retired.identity
-    else:
-        try:
-            spec = resolve_agent_spec(canonical_id, registry=config.model_registry)
-            identity = spec.identity
-        except ValueError:
-            identity = None
-    kwargs = {} if identity is None else {"identity": identity}
-    return ModelAvailabilityTarget(
-        canonical_id=canonical_id,
-        provider=effective_provider,
-        model=effective_model,
-        transport=effective_transport,
-        base_url=profile.base_url if base_url is None else base_url,
-        key=key,
-        **kwargs,
-    )
-
-
-def _availability_targets(config: ForgeConfig) -> list[ModelAvailabilityTarget]:
-    """Enumerate every configured identity a normal dispatch can reach."""
-    targets: list[ModelAvailabilityTarget] = []
-    seen: set[tuple[str, str, str, str, str | None]] = set()
-
-    def add(target: ModelAvailabilityTarget | None) -> None:
-        if target is None:
-            return
-        identity = (
-            target.canonical_id,
-            target.transport.runner,
-            target.transport.kind,
-            target.provider,
-            target.base_url,
-        )
-        if identity not in seen:
-            seen.add(identity)
-            targets.append(target)
-
-    def add_profile(role: str, profile: ModelProfile) -> None:
-        profile = _apply_transport_fallback(profile, config.transport_fallbacks)
-        add(_availability_target(profile, config, key=f"{role}:primary"))
-        provider = profile.provider_family
-        fallback_transport = model_fallback_transport(provider)
-        if provider and fallback_transport:
-            for index, fallback_model in enumerate(profile.fallback_models):
-                add(
-                    _availability_target(
-                        profile,
-                        config,
-                        key=f"{role}:model-fallback:{index}",
-                        model=fallback_model,
-                        transport=fallback_transport,
-                        provider=provider,
-                    )
-                )
-        if profile.api_fallback is not None:
-            fallback = profile.api_fallback
-            add(
-                _availability_target(
-                    profile,
-                    config,
-                    key=f"{role}:transport-fallback",
-                    model=fallback.model,
-                    transport=fallback.transport(),
-                    provider=fallback.provider,
-                    base_url=fallback.base_url,
-                )
-            )
-
-    add_profile("preflight", config.preflight_profile)
-    add_profile("dev", config.dev_profile)
-    if config.preflight_fallback_profile is not None:
-        add_profile("preflight-fallback", config.preflight_fallback_profile)
-    for index, profile in enumerate(config.review_pool):
-        add_profile(f"review:{index}", profile)
-    if config.synthesis_profile is not None:
-        add_profile("synthesis", config.synthesis_profile)
-    if config.plan.enabled:
-        add_profile("plan", model_ref_to_profile("plan", config.plan.ref))
-    if config.plan_agent_review.enabled:
-        for index, profile in enumerate(config.plan_agent_review.profiles):
-            add_profile(f"plan-review:{index}", profile)
-    for index, agent in enumerate(config.agents):
-        add_profile(f"agent:{index}", agent.to_model_profile(allowed_tools=()))
-    if config.knowledge.run_summaries and config.knowledge.ref is not None:
-        add_profile(
-            "knowledge-summary",
-            model_ref_to_profile("knowledge_summary", config.knowledge.ref, allowed_tools=()),
-        )
-    for index, model_key in enumerate(config.models or ()):
-        try:
-            spec = resolve_agent_spec(model_key, registry=config.model_registry)
-        except ValueError:
-            # Retired identities cannot resolve to a dispatchable AgentSpec, but
-            # check-config must still report the maintained withdrawal evidence.
-            # Normalize aliases first, matching resolve_agent_spec's lookup path.
-            spec = RETIRED_MODEL_REGISTRY.get(normalize_model_key(model_key))
-            if spec is None:
-                continue
-        add(
-            ModelAvailabilityTarget(
-                canonical_id=canonical_model_id(spec.provider, spec.model, spec.transport.kind),
-                provider=spec.provider,
-                model=spec.model,
-                transport=spec.transport,
-                base_url=spec.base_url,
-                identity=spec.identity,
-                key=f"models:{index}",
-            )
-        )
-    return targets
+# Target construction is shared with the router (#2950): the diagnostic and the
+# routing pool must resolve the same dispatch identity, or check-config cannot
+# explain a routing exclusion it disagrees with. The private names are retained
+# as this module's import site.
+_availability_target = availability_target
+_availability_targets = config_availability_targets
 
 
 def _format_availability(

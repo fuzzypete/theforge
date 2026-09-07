@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
 
@@ -1270,6 +1271,85 @@ def _apply_story_allocation(
     return config
 
 
+@dataclass(frozen=True)
+class ExplicitRoleOverrides:
+    """The roles an operator pinned in config, and to which profiles.
+
+    ``profiles`` is the single-profile-per-role map ``assign_models`` consumes
+    as ``explicit_profiles``; ``review_pool`` / ``plan_review_pool`` carry the
+    full pinned pools, whose first entry is what locks the corresponding role
+    against budget downgrade.
+    """
+
+    profiles: dict[str, ModelProfile] = field(default_factory=dict)
+    roles: frozenset[str] = frozenset()
+    review_pool: tuple[ModelProfile, ...] = ()
+    plan_review_pool: tuple[ModelProfile, ...] = ()
+
+
+def explicit_role_overrides(config: ForgeConfig) -> ExplicitRoleOverrides:
+    """Derive which roles config pins, from config alone.
+
+    Extracted from :func:`_apply_preflight_config` because the pre-dispatch
+    availability gate must ask the same question the router will ask (#2950): a
+    gate that guessed at which roles are pinned could refuse a sprint the router
+    would have routed, or clear one it will refuse. One derivation, two callers.
+
+    Collects overrides from both the legacy-agents path (``models`` is None) and
+    the v0.8 ``models:`` path. The ``is_default`` flags are authoritative
+    regardless of which YAML path set them, so those guards are not limited to
+    ``models is None``.
+    """
+    from theforge.config import (  # noqa: I001, PLC0415
+        DEFAULT_DEV_PROFILE as _DEF_DEV,
+        DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
+    )
+
+    profiles: dict[str, ModelProfile] = {}
+    roles: set[str] = set()
+    review_pool: tuple[ModelProfile, ...] = ()
+    plan_review_pool: tuple[ModelProfile, ...] = ()
+
+    if config.models is None:
+        if config.dev_profile is not _DEF_DEV:
+            profiles["dev"] = config.dev_profile
+            roles.add("dev")
+        if config.preflight_profile is not _DEF_PRE:
+            profiles["preflight"] = config.preflight_profile
+            roles.add("preflight")
+    # Materialize before testing emptiness: ``profiles`` below is a computed
+    # property, so "is it non-empty" and "what is in it" must be one question
+    # asked once, not two that can disagree.
+    configured_review_pool = tuple(config.review_pool or ())
+    if configured_review_pool and not config.review_pool_is_default:
+        roles.add("review_pool")
+        review_pool = configured_review_pool
+        # Lock code_review against budget downgrade and audit it as overridden.
+        profiles["code_review"] = review_pool[0]
+    if not config.plan_model_is_default:
+        roles.add("planner")
+        profiles["planner"] = model_ref_to_profile(
+            "plan",
+            config.plan.ref,
+            # See plan_flow: the plan role names the investigation set rather
+            # than borrowing preflight's narrowed one (#2346).
+            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+            phase=PHASE_PLAN,
+        )
+    configured_plan_review_pool = tuple(config.plan_agent_review.profiles or ())
+    if config.plan_agent_review.enabled and configured_plan_review_pool:
+        roles.add("plan_agent_review")
+        plan_review_pool = configured_plan_review_pool
+        profiles["plan_review"] = plan_review_pool[0]
+
+    return ExplicitRoleOverrides(
+        profiles=profiles,
+        roles=frozenset(roles),
+        review_pool=review_pool,
+        plan_review_pool=plan_review_pool,
+    )
+
+
 def _apply_preflight_config(
     config: ForgeConfig,
     state: "CoordinatorState",
@@ -1316,10 +1396,6 @@ def _apply_preflight_config(
         _normalize_complexity as _norm_complexity,
         assign_models as _assign_models,
     )
-    from theforge.config import (  # noqa: I001, PLC0415
-        DEFAULT_DEV_PROFILE as _DEF_DEV,
-        DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
-    )
     from theforge.coordinator.escalation_history import (  # noqa: PLC0415
         load_escalation_history_with_taint_stats as _load_esc_history_substrate,
     )
@@ -1357,6 +1433,24 @@ def _apply_preflight_config(
 
     _capability_records = _load_capabilities(_capabilities_path(config.project_root))
 
+    # Current account availability (#2950). Resolved HERE — at the story's own
+    # selection boundary — rather than once at sprint startup, so an account
+    # catalog that changes between stories changes routing for the ones that
+    # follow without a restart. Every caller of this function reaches it,
+    # including the cache-valid and resume paths in engine.py, which is why the
+    # resolution lives inside rather than in the signature.
+    from theforge.model_availability import (  # noqa: PLC0415
+        AVAILABILITY_WARNINGS as _availability_warnings,
+    )
+    from theforge.model_availability import (
+        resolve_agent_availability as _resolve_availability,
+    )
+
+    _model_availability = _resolve_availability(config.agents, config)
+    # One warning per model per run: repeated stories reusing the same model
+    # stay quiet, a newly-configured one still gets its line.
+    _availability_warnings.emit(_model_availability, _log)
+
     from theforge.provider_health import (  # noqa: PLC0415
         load_provider_health as _load_provider_health,
     )
@@ -1369,41 +1463,11 @@ def _apply_preflight_config(
 
     from theforge.config import ModelProfile as _ModelProfile  # noqa: PLC0415
 
-    _explicit: dict[str, object] = {}
-    _explicit_roles: set[str] = set()
-    _explicit_review_pool: list[_ModelProfile] = []
-    _explicit_plan_review_pool: list[_ModelProfile] = []
-    # Collect explicit overrides from both the legacy-agents path (models is None)
-    # and the v0.8 models: path.  The is_default flags are authoritative regardless
-    # of which YAML path set them, so the guard must not be limited to models is None.
-    if config.models is None:
-        if config.dev_profile is not _DEF_DEV:
-            _explicit["dev"] = config.dev_profile
-            _explicit_roles.add("dev")
-        if config.preflight_profile is not _DEF_PRE:
-            _explicit["preflight"] = config.preflight_profile
-            _explicit_roles.add("preflight")
-    # review_pool, plan, and plan_agent_review overrides apply on both paths.
-    if config.review_pool and not config.review_pool_is_default:
-        _explicit_roles.add("review_pool")
-        _explicit_review_pool = list(config.review_pool)
-        # Lock code_review against budget downgrade and audit it as overridden.
-        _explicit["code_review"] = _explicit_review_pool[0]
-    if not config.plan_model_is_default:
-        _explicit_roles.add("planner")
-        _explicit_planner = model_ref_to_profile(
-            "plan",
-            config.plan.ref,
-            # See plan_flow: the plan role names the investigation set rather
-            # than borrowing preflight's narrowed one (#2346).
-            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
-            phase=PHASE_PLAN,
-        )
-        _explicit["planner"] = _explicit_planner
-    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-        _explicit_roles.add("plan_agent_review")
-        _explicit_plan_review_pool = list(config.plan_agent_review.profiles)
-        _explicit["plan_review"] = _explicit_plan_review_pool[0]
+    _overrides = explicit_role_overrides(config)
+    _explicit: dict[str, object] = dict(_overrides.profiles)
+    _explicit_roles: set[str] = set(_overrides.roles)
+    _explicit_review_pool: list[_ModelProfile] = list(_overrides.review_pool)
+    _explicit_plan_review_pool: list[_ModelProfile] = list(_overrides.plan_review_pool)
 
     # Challenger-sampling exploration budget (#325, ADR-0006 clause 8 "bounded"):
     # at most per_sprint_cap exploration runs across the whole sprint. The
@@ -1430,6 +1494,7 @@ def _apply_preflight_config(
             sprint_exploration_budget=explore_budget,
             transport_fallbacks=config.transport_fallbacks,
             capability_records=_capability_records,
+            model_availability=_model_availability,
         )
 
     _explore_remaining = _explore_budget.remaining_budget(
