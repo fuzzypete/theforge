@@ -18,6 +18,7 @@ from .story_state import (
     GATE_STATUS_STOPPED,
     SprintStoryState,
     StoryOutcome,
+    story_title,
 )
 
 # Terminal values for the state file's top-level ``sprint_phase``. Any other
@@ -417,10 +418,15 @@ def write_bootstrap_state(
         slug = issue.get("slug") or (f"issue-{number}" if number is not None else None)
         if not slug or slug in seen_slugs:
             continue
-        path = issue.get("path") or (f"Issue #{number}" if number is not None else slug)
         canonical_ref = issue.get("canonical_ref")
         if canonical_ref is None and isinstance(number, int):
             canonical_ref = f"issue:{number}"
+        # The caller fetched number and title together; the title is what the
+        # operator reads on every story row, so it is what goes into the record
+        # (#2664). ``path`` stays authoritative for a file-backed story.
+        path = issue.get("path") or story_title(
+            issue.get("title"), canonical_ref=canonical_ref, slug=slug
+        )
         stories.append(
             {
                 "slug": slug,
@@ -461,7 +467,7 @@ def write_bootstrap_state(
         stories.append(
             {
                 "slug": sk_slug,
-                "path": f"Issue #{sk_num}",
+                "path": story_title(sk_dict.get("title"), canonical_ref=f"issue:{sk_num}"),
                 "status": "skipped",
                 "outcome": "skipped",
                 "phase": None,

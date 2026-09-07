@@ -64,6 +64,15 @@ then [vision.md](vision.md) for the philosophy and reading order.
   plan-review finding, broken out by finding class, with the four escapes named
   and plan-review cost as a fraction of the story it guarded. Reproduce with
   `forge audits plan-advisory`.
+- [plans/2603-criterion-symptom-gaming.md](plans/2603-criterion-symptom-gaming.md)
+  — measurement record for issue #2603: how often a diagnosed fix-success
+  criterion admits a change that removes the symptom while leaving the confirmed
+  cause in place, how often such a change actually landed (the two counted
+  separately), and the **close** decision. Regenerate with
+  `python3 scripts/measure_criterion_gaming.py --adjudications
+  docs/plans/2603-criterion-symptom-gaming.adjudications.yaml --out
+  docs/plans/2603-criterion-symptom-gaming.md` (add `--refresh-facts`, which
+  needs `gh`, only to re-derive the mechanical fields).
 - [plans/1848-reviewer-finding-fate-spike.md](plans/1848-reviewer-finding-fate-spike.md)
   — spike record for issue #1848: finding-fate derivation from structured
   code-review records, the live Thursday, August 20, 2026 POC output, and the
