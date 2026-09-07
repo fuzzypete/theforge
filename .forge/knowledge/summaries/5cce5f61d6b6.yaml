@@ -1,0 +1,110 @@
+schema_version: 2
+run_id: 5cce5f61d6b6
+authoritative_run_record: .forge/audits/runs/5cce5f61d6b6.json
+generated_at: '2026-09-07T20:10:48.475190+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01051625
+story:
+  slug: issue-2910
+  name: Sprint-entry shape checking is skipped entirely when the issue-detail fetch
+    fails, so every story is admitted unchecked and the gate reports nothing
+  github_issue: 2910
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- docs/guides/controller-runbook.md
+- src/theforge/cli/sprint.py
+- src/theforge/shape_check/skip_taxonomy.py
+- src/theforge/sprint/shape_gate.py
+- tests/conftest.py
+- tests/shape_gate_test_helpers.py
+- tests/test_cli_commands.py
+- tests/test_cli_pid_cleanup.py
+- tests/test_cli_sprint_shape_gate.py
+- tests/test_sprint_crash_terminal_status.py
+- tests/test_sprint_shape_gate.py
+what_changed:
+  description: The sprint entry shape gate was changed so GitHub issue-detail fetch
+    failures in query-mode launches are treated as a distinct unevaluated outcome
+    instead of silently admitting the story as if it had passed. Operator-facing CLI,
+    audit-facing surfaces, and documentation were updated so refused or explicitly
+    bypassed unevaluated stories are distinguishable from successful gate evaluations.
+  approach: The run reworked query-mode shape-gate control flow around explicit evaluation
+    outcomes, threaded those outcomes through sprint launch/reporting paths, and documented
+    the resulting operator-visible behavior. Verification focused on the query-mode
+    failure path and its reporting surfaces.
+  files_modified: *id002
+what_was_learned:
+- claim: When a gate depends on external metadata fetches, fetch failure must be modeled
+    as its own gate outcome rather than falling through the same path as success or
+    ordinary skips, because downstream reporting and admission logic otherwise erase
+    the difference between 'passed' and 'never evaluated.'
+  evidence:
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states that the fix 'separates unevaluated issue-detail
+      fetch failures from passed and skipped verdicts' and 'records them in operator-facing
+      and substrate surfaces,' showing that preserving a first-class unevaluated state
+      was the key behavior needed to avoid the original ambiguity.
+  - type: file
+    path: src/theforge/sprint/shape_gate.py
+    description: This file is where query-mode issue detail is fetched and the shape
+      gate decides admission, so its substantial rework is the direct locus where
+      fetch failure had to stop being treated as implicit permission and instead become
+      a separate evaluation result.
+  - type: file
+    path: src/theforge/cli/sprint.py
+    description: This CLI entrypoint had to surface the gate outcome to operators,
+      demonstrating that once fetch failure is represented distinctly in the gate,
+      launch/reporting paths must preserve that distinction rather than collapsing
+      it back into normal execution.
+- claim: If an external tool rejects an optional capability field, compatibility fallback
+    should be remembered process-wide rather than rediscovered per item, because otherwise
+    a single incompatibility turns into repeated failing subprocess work across every
+    story in the sprint.
+  evidence:
+  - type: review_finding
+    finding_id: f9d8b13c99bd35e9
+    description: The review finding explains that unsupported-field rejection by gh
+      was being rediscovered independently for every issue, with a failing invocation
+      plus retry per issue, which directly demonstrates the reusable need to cache
+      compatibility loss instead of paying the failure cost repeatedly.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that iteration 2 resolved the cycle-1 P2 finding cleanly,
+      confirming that the repeated per-issue incompatibility detection was treated
+      as a real implementation concern rather than incidental behavior.
+learned_patterns:
+- explicit-unevaluated-gate-state
+- process-wide-cli-capability-cache
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop focused first on closing the silent fail-open path, then on avoiding
+    repeated per-issue rediscovery of the same gh compatibility failure.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 21.3082207
+  dominant_difficulty: Representing and preserving 'unevaluated' as a distinct admission/reporting
+    state across the gate, CLI, and audit surfaces without letting failure collapse
+    back into normal execution.
