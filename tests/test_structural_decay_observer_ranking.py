@@ -250,3 +250,27 @@ class TestThresholdReporting:
         status = threshold_status(_coverage(40, 45), candidates)
 
         assert status["met"] is True
+
+    def test_every_failing_check_names_what_would_resolve_it(self) -> None:
+        rows = _touch_rows("a", ["one.py"], cost=10.0)
+        candidates = rank_candidates(build_runs(rows))
+
+        status = threshold_status(_coverage(4, 10), candidates)
+
+        failed = [check for check in status["checks"] if not check["met"]]
+        assert failed
+        assert all(check["remedy"] for check in failed)
+
+    def test_coverage_remedy_distinguishes_a_capture_gap_from_accumulation(self) -> None:
+        """A shortfall on an already-bounded denominator is not a waiting problem."""
+        candidates = rank_candidates(build_runs(_touch_rows("a", ["one.py"], cost=10.0)))
+
+        gap = threshold_status(_coverage(4, 10), candidates)["checks"][0]
+        assert "capture gap: 6 run(s)" in gap["remedy"]
+        assert "waiting for more runs will not raise this" in gap["remedy"]
+
+        none_joinable = threshold_status(_coverage(0, 10), candidates)["checks"][0]
+        assert "capture defect" in none_joinable["remedy"]
+
+        sample = threshold_status(_coverage(4, 10), candidates)["checks"][1]
+        assert sample["remedy"].startswith("accumulation:")
