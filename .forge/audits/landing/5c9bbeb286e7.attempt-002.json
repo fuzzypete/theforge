@@ -1,0 +1,15 @@
+{
+  "detail": "no landing observed yet",
+  "gated_commit": "d7d75caadb44c9422b9f9a8d9ee8ce4dd116adac",
+  "kind": "landing_attempt",
+  "landing_mode": "merge-pr",
+  "observed_at": "2026-09-07T05:00:50.845981+00:00",
+  "observer": "forge.reconcile",
+  "outcome": "unknown",
+  "pr_url": "https://github.com/fuzzypete/theforge/pull/2960",
+  "run_id": "5c9bbeb286e7",
+  "schema_version": 1,
+  "slug": "issue-2664",
+  "source_commit": "d7d75caadb44c9422b9f9a8d9ee8ce4dd116adac",
+  "target_branch": "release/v0.16"
+}

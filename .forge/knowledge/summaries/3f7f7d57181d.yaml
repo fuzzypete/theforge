@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: 3f7f7d57181d
 authoritative_run_record: .forge/audits/runs/3f7f7d57181d.json
-generated_at: '2026-09-07T04:45:12.449501+00:00'
+generated_at: '2026-09-07T04:50:19.254718+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.01169125
+  cost_usd: 0.00959525
 story:
   slug: issue-2603
   name: Measure how often a diagnosed fix-success criterion admits a change that removes
@@ -36,69 +36,68 @@ changed_files: &id002
 - scripts/measure_criterion_gaming.py
 - tests/test_measure_criterion_gaming.py
 what_changed:
-  description: 'This run produced a reproducible measurement artifact for issue #2603:
-    a generated report over a stated diagnosed-issue window, its adjudication dataset,
-    and the script that derives the report from the audit corpus. It also added focused
-    tests and README regeneration instructions around that measurement workflow.'
-  approach: The work encoded per-issue adjudications in structured data, rendered
-    the final report from those records plus audit-derived facts, and used review-driven
-    fixes to tighten cohort stability and issue-to-landed-change matching so regenerated
-    output stayed reproducible.
+  description: Produced a reproducible measurement artifact for diagnosed issues that
+    classifies whether recorded fix-success criteria admit symptom-removing changes
+    and whether the landed change was such a case, along with the adjudication data
+    and documentation needed to regenerate the report.
+  approach: The run paired a scripted extraction/rendering pipeline with a checked-in
+    adjudication file and generated report, then iterated through review to harden
+    cohort selection, issue-to-landed-change joining, and artifact verification behavior.
   files_modified: *id002
 what_was_learned:
-- claim: For offline or cached report generation that joins issue records to landed
-    changes, every rendered field must be sourced from the same selected issue instance;
-    allowing title or SHA substitution from another cached issue can still satisfy
-    superficial consistency checks while silently pairing the wrong criterion and
-    commit.
+- claim: For offline measurements that join cached issue facts to landed commits,
+    identity must be derived from the selected issue record itself rather than from
+    separately substituted cached fields, or one issue's criterion can be silently
+    paired with another issue's landed change while all superficial consistency checks
+    still pass.
   evidence:
   - type: review_finding
     finding_id: a40b8f6fc1dbdd94
-    description: 'Review demonstrated a concrete false-positive path: replacing issue
-      #2595''s cached title and landed SHA with #2689''s values still passed drift
-      and classification checks, showing that per-field validation was insufficient
-      unless all rendered facts are bound to the same chosen issue record.'
+    description: 'Review demonstrated a concrete false-positive path: swapping in
+      issue #2689''s cached title and landed SHA for issue #2595 still passed drift
+      and classification checks, which shows that validating substituted fields is
+      insufficient unless the join is anchored to the chosen diagnose record.'
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 explicitly verified the fix by noting that the landed-change
-      join now derives its title from the selected diagnose audit, confirming that
-      consistent record provenance was the mechanism needed to prevent cross-issue
-      pairing.
-- claim: In reproducible cohort measurements, a 'refresh mechanical fields' mode must
-    preserve the original time window unless the operator explicitly changes it; otherwise
-    regeneration mutates the denominator and turns a rewrite into a different measurement.
+    description: Cycle 2 approval explicitly notes that the landed-change join was
+      corrected to derive title data from the selected diagnose audit, confirming
+      that the defect's cause was the join strategy rather than the surrounding renderer.
+- claim: A refresh mode described as rewriting mechanical fields must preserve the
+    original cohort boundary unless the operator explicitly changes it, because recomputing
+    an implicit upper bound mutates the measured population and invalidates reproducibility.
   evidence:
   - type: review_finding
     finding_id: b74c86fe152845a0
-    description: Review found that running --refresh-facts without --until silently
-      replaced the stored upper bound with current UTC time, directly changing which
-      issues were in the cohort even though the option was described as only rewriting
-      mechanical fields.
+    description: Review found that running --refresh-facts without --until replaced
+      the stored upper bound with current UTC time, directly showing how a nominally
+      mechanical refresh can silently change which issues are included in the measurement.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 approval states the prior reproducibility defect was fixed
-      and the measurement artifacts regenerate cleanly, showing that preserving the
-      original bound was necessary to keep reruns on the same cohort.
-- claim: Checked-in artifact tests for generated reports need field-specific assertions
-    against the semantically important cells; loose token searches or row-count checks
-    can let altered classifications and rates pass while the test suite stays green.
+    description: Cycle 2 approval records that this P1 reproducibility defect was
+      fixed and verified, reinforcing that cohort-bound preservation was necessary
+      to keep regenerated artifacts measuring the same window.
+- claim: Checked-in artifact tests for generated reports need cell-level assertions
+    on the substantive outputs, because loose string-presence checks can stay green
+    after edits to rates, per-issue classifications, or named criteria and therefore
+    do not protect the measurement result.
   evidence:
   - type: review_finding
     finding_id: f92a2e38944674e9
-    description: Review showed the artifact tests still passed after editing generated
-      rates, per-issue content, or named criteria, as long as the denominator matched
-      row count and some decision token remained, demonstrating that broad shape checks
-      do not protect report meaning.
+    description: Review showed that artifact tests still passed when generated rates,
+      per-issue content, or named criteria were edited so long as only row count and
+      a generic decision token remained consistent, demonstrating that high-level
+      shape checks do not verify report substance.
   - type: review_finding
     finding_id: eaea988e3037f0ea
-    description: 'A later finding exposed the same weakness at cell level: when the
-      corpus was unavailable, a changed landed-answer cell was never asserted and
-      a false admits result could pass because the test only searched for the generic
-      word ''no'' somewhere in the row.'
+    description: 'A later review finding exposed the same weakness more specifically:
+      with the diagnose corpus unavailable, a landed-answer cell could be altered
+      without failure and a false admits result was ''verified'' only by finding the
+      generic word no somewhere in the row, showing the need for exact assertions
+      on each output field.'
 learned_patterns:
-- stable-cohort-bounds
-- single-record-join-provenance
-- artifact-tests-need-cell-level-assertions
+- record-anchored-joins
+- frozen-cohort-boundaries
+- cell-level-artifact-assertions
 review_insights:
   recurring_findings: []
   resolved_findings:
@@ -119,14 +118,13 @@ review_insights:
     cycles_seen: 1
     disposition: fixed
   observations:
-  - 'Review repeatedly focused on reproducibility hazards in generated artifacts:
-    cross-issue joins, drifting cohort bounds, and tests that validated report shape
-    more than report semantics.'
+  - 'Review repeatedly focused on reproducibility hazards in generated measurement
+    artifacts: wrong-record joins, silently drifting cohort bounds, and artifact tests
+    too weak to catch changed classifications.'
 complexity_signal:
   actual_iterations: 3
   review_cycles: 3
   plan_regenerations: true
   cost_usd: 42.6322294
-  dominant_difficulty: Keeping a generated measurement report reproducible required
-    controlling both data provenance and verification strictness, not just producing
-    the initial analysis.
+  dominant_difficulty: Keeping an audit-derived measurement reproducible under offline
+    regeneration while joining multiple cached facts and validating a generated report.
