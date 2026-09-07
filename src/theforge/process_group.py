@@ -1401,7 +1401,7 @@ def _load_sidecar(sidecar: Path) -> dict[str, Any] | None:
 
 
 def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
-    """Sidecars whose owner sprint is dead, without touching anything.
+    """Verified live groups whose owner sprint is dead, without touching anything.
 
     Read-only by contract: no signals, no unlinks. This is what an inspection
     command such as ``forge status`` may call; killing is reserved for the
@@ -1418,6 +1418,9 @@ def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
         if data is None:
             continue
         if _is_pid_alive(data["owner_pid"]):
+            continue
+        may_signal, _ = _identity_verdict(data["pgid"], data)
+        if not may_signal:
             continue
         orphans.append(data)
     return orphans

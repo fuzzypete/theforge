@@ -668,7 +668,7 @@ class TestGroupMembers:
 
 
 class TestListOrphanAgents:
-    """``forge status`` must be able to see orphans without touching them."""
+    """``forge status`` must list verified orphans without touching them."""
 
     def test_lists_dead_owner_records_without_signalling_or_unlinking(
         self, tmp_path: Path
@@ -682,7 +682,14 @@ class TestListOrphanAgents:
         agents_dir.mkdir(parents=True, exist_ok=True)
         sidecar = agents_dir / f"999999-{pgid}.json"
         sidecar.write_text(
-            json.dumps({"owner_pid": 999_999, "pgid": pgid, "sandbox_dir": str(tmp_path)}),
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                }
+            ),
             encoding="utf-8",
         )
         live = agents_dir / f"{os.getpid()}-4242.json"
@@ -696,6 +703,18 @@ class TestListOrphanAgents:
         finally:
             process_group.kill_agent_group(pgid)
             proc.wait(timeout=5)
+
+    def test_omits_unverifiable_dead_owner_record_without_unlinking(self, tmp_path: Path) -> None:
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps({"owner_pid": 999_999, "pgid": 4242, "sandbox_dir": str(tmp_path)}),
+            encoding="utf-8",
+        )
+
+        assert process_group.list_orphan_agents(tmp_path) == []
+        assert sidecar.exists(), "a read-only listing must not consume stale records"
 
     def test_missing_agents_dir_lists_nothing(self, tmp_path: Path) -> None:
         assert process_group.list_orphan_agents(tmp_path) == []

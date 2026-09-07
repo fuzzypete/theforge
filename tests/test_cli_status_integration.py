@@ -620,3 +620,27 @@ def test_status_reports_orphan_agent_groups_without_signalling_them(
     finally:
         process_group.kill_agent_group(pgid)
         proc.wait(timeout=5)
+
+
+def test_status_omits_unverifiable_orphan_agent_sidecars(tmp_path: Path, capsys: object) -> None:
+    """Stale bookkeeping is not reported as a surviving agent process group."""
+    agents_dir = tmp_path / ".forge" / "runs" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = agents_dir / "999999-4242.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "owner_pid": 999_999,
+                "pgid": 4242,
+                "run_id": "run-old",
+                "sandbox_dir": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc, out = _run_cmd_status(tmp_path, capsys)
+
+    assert rc == 0
+    assert "orphaned agent process group record(s)" not in out
+    assert sidecar.exists(), "forge status must not consume stale sidecars"
