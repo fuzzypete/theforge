@@ -57,6 +57,73 @@ all. Giving unratified findings their own refusal would make admission react to
 raw model output, rebuilding the probabilistic second gate ADR-0009 exists to
 prevent.
 
+## Who runs the evaluation
+
+Nobody has to. When admission reaches a document policy marks `required` and no
+evaluation is recorded for its current revision, the evaluation is performed
+there and then — no `forge review-semantic` keystroke, one issue at a time,
+stands between grooming and a recorded review.
+
+The rules that bound it:
+
+- **Only where policy requires it.** A `not_required` document has no
+  evaluation performed for it, and neither the presence nor the absence of a
+  record changes its admission.
+- **Only once per revision, per prompt contract version.** A recurring
+  transition against unchanged text reuses the record it already has. A
+  recorded *failure* counts as that revision's attempt, so a broken evaluator
+  is not retried on every sprint entry; the document reports the failure and
+  stays withheld. Changing the configured model does not buy a second
+  evaluation of the same text.
+- **Against the revision that occasioned it.** The text evaluated is the text
+  the gate just read, so an edit landing mid-run cannot produce a record of a
+  revision no admission decision was made against. The same identity is checked
+  once more at the end: a sprint re-reads every issue to build the story it
+  dispatches, and a story whose revision moved between admission and that read
+  is withheld rather than dispatched on a decision made about text that no
+  longer exists.
+- **Once, or not at all.** Scheduling is serialized per revision. When a peer
+  holds that serialization it is already doing the work, so this side defers.
+  When the serialization cannot be established at all, nobody is doing the
+  work: that is an evaluation that could not be attempted, and it is recorded
+  as `evaluation_failed` rather than run unserialized.
+- **However the document became runnable.** An issue that entry remediation
+  repairs mid-run is admitted on the same terms as one that was well-shaped to
+  begin with — the repair makes it policy-required, and the evaluation is
+  scheduled then rather than deferred to the operator's next invocation.
+- **Never a ratification.** Automatic invocation changes *whether an evaluation
+  happens*, never what a result means. A raised finding still withholds
+  admission until an operator ratifies it, exactly as when the evaluator is
+  invoked by hand.
+- **Fail-closed.** An evaluation that fails, times out, is refused, produces
+  unrecognised output, or cannot be attempted at all is recorded as
+  `evaluation_failed`. No failure mode leaves a document reading as
+  evaluated-clean — including a failure of the audit store itself, which is
+  reported as `evaluation_failed` rather than read as an absence of concerns.
+
+`forge review-semantic` is unchanged and still works for any document,
+including one policy does not require a review of, recording its result on the
+same terms.
+
+Automatic evaluation runs where budget is already being committed — sprint
+query-mode admission and manifest issue admission. `forge status --ready` is a
+status command and spends nothing: it reports the records those paths produce,
+so an unevaluated issue is listed as withheld rather than evaluated on the spot.
+`forge sprint --dry-run` is a preview on the same terms: it bypasses admission
+entirely, evaluates nothing, and previews the issues an executing run would
+consider rather than the subset a review has cleared.
+
+The evaluator runs before a sprint's cost ledger exists, so what admission
+spends is *not* counted against `--budget`. It is disclosed on stderr as it
+happens — the number of evaluations and their recorded cost — rather than being
+silently absent from the sprint total.
+
+The evaluator refuses to reveal output for a revision with no frozen baseline.
+Where an operator has frozen one it is used untouched; where none exists the
+automatic path freezes an empty baseline marked `automatic`, which asserts
+nothing about the document and which a later human `--baseline-defect-id`
+freeze supersedes.
+
 ## Ratification
 
 A clean evaluation does not produce `REVIEWED_READY` by itself. Readiness

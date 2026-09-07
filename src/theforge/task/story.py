@@ -70,6 +70,14 @@ class TaskStory:
     # implement, leader first. Empty for every ordinary story.
     batch_members: tuple[BatchMember, ...] = ()
     batch_group: str | None = None  # id of the batch group, when batched
+    # Identity of the exact issue revision this story was built from (#2907):
+    # the semantic input digest over the fetched title/body and the canonical
+    # type those labels declare. Set by ``GitHubIssueSource.fetch``; ``None``
+    # for file stories, which carry no issue revision. Admission uses it to
+    # verify that the revision about to be dispatched is the revision it
+    # evaluated, rather than one the document moved to in between.
+    source_revision_digest: str | None = None
+    source_revision_type: str | None = None
 
 
 # Backward-compat alias
