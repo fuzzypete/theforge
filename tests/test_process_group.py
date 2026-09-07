@@ -219,6 +219,38 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
         assert process_group.reap_orphan_agents(tmp_path) == 0
         assert not sidecar.exists()
 
+    def test_unverifiable_group_reaps_a_start_time_verified_observed_escapee(
+        self, tmp_path: Path
+    ) -> None:
+        """A vanished group does not prevent the reaper reaching a real escapee."""
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        info = process_group.process_tree.process_info(proc.pid)
+        assert info is not None
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": 4242,
+                    "sandbox_dir": str(tmp_path),
+                    "observed": {str(proc.pid): info.fingerprint},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 1
+            assert proc.wait(timeout=5) == -signal.SIGKILL
+            assert not sidecar.exists()
+        finally:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except OSError:
+                pass
+
     def _leaderless_group(self, tmp_path: Path) -> tuple[int, int]:
         """Spawn a group, let its leader exit with a grandchild still in it.
 
@@ -704,7 +736,7 @@ class TestListOrphanAgents:
             process_group.kill_agent_group(pgid)
             proc.wait(timeout=5)
 
-    def test_omits_unverifiable_dead_owner_record_without_unlinking(self, tmp_path: Path) -> None:
+    def test_lists_unverifiable_dead_owner_record_with_its_reason(self, tmp_path: Path) -> None:
         agents_dir = tmp_path / ".forge" / "runs" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
         sidecar = agents_dir / "999999-4242.json"
@@ -713,8 +745,49 @@ class TestListOrphanAgents:
             encoding="utf-8",
         )
 
-        assert process_group.list_orphan_agents(tmp_path) == []
+        assert process_group.list_orphan_agents(tmp_path) == [
+            {
+                "owner_pid": 999_999,
+                "pgid": 4242,
+                "sandbox_dir": str(tmp_path),
+                "orphan_kind": "unverifiable_sidecar",
+                "orphan_reason": (
+                    "the leader is gone and the record names no surviving member to identify "
+                    "the group by"
+                ),
+            }
+        ]
         assert sidecar.exists(), "a read-only listing must not consume stale records"
+
+    def test_lists_live_observed_escapees_when_the_group_is_unverifiable(
+        self, tmp_path: Path
+    ) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        info = process_group.process_tree.process_info(proc.pid)
+        assert info is not None
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": 4242,
+                    "sandbox_dir": str(tmp_path),
+                    "observed": {str(proc.pid): info.fingerprint},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            orphans = process_group.list_orphan_agents(tmp_path)
+            assert len(orphans) == 1
+            assert orphans[0]["orphan_kind"] == "escaped_descendants"
+            assert orphans[0]["escaped_pids"] == [proc.pid]
+            assert proc.poll() is None, "a read-only listing killed an escapee"
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
 
     def test_missing_agents_dir_lists_nothing(self, tmp_path: Path) -> None:
         assert process_group.list_orphan_agents(tmp_path) == []

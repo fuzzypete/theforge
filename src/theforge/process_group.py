@@ -358,6 +358,35 @@ def kill_escapees(
       needs in order to tell "it exited" from "the id was reused while we
       waited".
     """
+    targets = _live_escapees(tracker=tracker, lease=lease, recorded=recorded)
+    if not targets:
+        return (), True
+    pids = tuple(sorted(targets))
+    _log(
+        f"  ⚠ {len(pids)} process(es) started by this invocation outlived it in their "
+        f"own process group(s) (pids={list(pids)}); killing them directly"
+    )
+    for pid in pids:
+        _kill_pid(pid)
+    remaining = process_tree.wait_until_gone(targets, timeout=KILL_GRACE_SECONDS)
+    if remaining:
+        _log(f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, not a delay")
+    return pids, not remaining
+
+
+def _live_escapees(
+    *,
+    tracker: DescendantTracker | None = None,
+    lease: ProcessLease | None = None,
+    recorded: dict[int, str] | None = None,
+) -> dict[int, str]:
+    """Return live, identity-verified escapees without signalling them.
+
+    This is deliberately the identity half of `kill_escapees`, shared with the
+    read-only orphan listing.  Keeping one predicate prevents status from
+    describing a dead record while the reaper would still kill descendants the
+    record positively identifies.
+    """
     targets: dict[int, str] = {}
     if tracker is not None:
         targets.update(tracker.survivors())
@@ -374,19 +403,7 @@ def kill_escapees(
             info = process_tree.process_info(pid)
             if info is not None:
                 targets[pid] = info.fingerprint
-    if not targets:
-        return (), True
-    pids = tuple(sorted(targets))
-    _log(
-        f"  ⚠ {len(pids)} process(es) started by this invocation outlived it in their "
-        f"own process group(s) (pids={list(pids)}); killing them directly"
-    )
-    for pid in pids:
-        _kill_pid(pid)
-    remaining = process_tree.wait_until_gone(targets, timeout=KILL_GRACE_SECONDS)
-    if remaining:
-        _log(f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, not a delay")
-    return pids, not remaining
+    return targets
 
 
 def _log(msg: str) -> None:
@@ -1401,7 +1418,7 @@ def _load_sidecar(sidecar: Path) -> dict[str, Any] | None:
 
 
 def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
-    """Verified live groups whose owner sprint is dead, without touching anything.
+    """Dead-owner sidecars and their verified survivors, without touching anything.
 
     Read-only by contract: no signals, no unlinks. This is what an inspection
     command such as ``forge status`` may call; killing is reserved for the
@@ -1419,10 +1436,24 @@ def list_orphan_agents(project_root: Path) -> list[dict[str, Any]]:
             continue
         if _is_pid_alive(data["owner_pid"]):
             continue
-        may_signal, _ = _identity_verdict(data["pgid"], data)
-        if not may_signal:
-            continue
-        orphans.append(data)
+        may_signal, reason = _identity_verdict(data["pgid"], data)
+        record = dict(data)
+        record["orphan_reason"] = reason
+        if may_signal:
+            record["orphan_kind"] = "process_group"
+        else:
+            escaped = _live_escapees(
+                lease=_recorded_lease(data), recorded=_recorded_observed(data)
+            )
+            if escaped:
+                record["orphan_kind"] = "escaped_descendants"
+                record["escaped_pids"] = sorted(escaped)
+            else:
+                # Keep the retained record visible, but never call it a live
+                # group: this lets an operator see exactly why a future sweep
+                # will discard it unsignalled.
+                record["orphan_kind"] = "unverifiable_sidecar"
+        orphans.append(record)
     return orphans
 
 
