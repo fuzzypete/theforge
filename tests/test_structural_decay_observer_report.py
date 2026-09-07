@@ -126,6 +126,54 @@ class TestRendering:
         assert "-> capture gap: 6 run(s) inside the analysed window" in text
         assert "-> accumulation:" in text
 
+    def _render_coverage(self, coverage: dict) -> str:
+        rows = _touch_rows("a", ["one.py"], cost=10.0)
+        candidates = rank_candidates(build_runs(rows), line_counts={"one.py": 500})
+        return render(
+            {
+                "coverage": coverage,
+                "controls": resolve_controls(build_runs(rows)),
+                "runs": 1,
+                "candidates": candidates,
+                "threshold": threshold_status(coverage, candidates),
+                "line_count_comparison": compare_to_line_counts(candidates, {"one.py": 500}),
+                "top": 5,
+            }
+        )
+
+    def test_since_tighter_than_the_capture_era_is_named_as_the_bound(self) -> None:
+        text = self._render_coverage(
+            {
+                **_coverage(4, 10, excluded=600),
+                "capture_start_at": "2026-07-01T00:00:00Z",
+                "coverage_floor": "2026-08-15T00:00:00Z",
+            }
+        )
+
+        assert "denominator bounded by --since (runs from 2026-08-15T00:00:00Z)" in text
+        assert "changed-file-capture era beginning 2026-07-01T00:00:00Z" in text
+        # Nothing was dropped by the capture bound here, so nothing claims it was.
+        assert "excluded" not in text
+
+    def test_since_with_no_capture_era_is_not_reported_as_a_capture_era_bound(self) -> None:
+        """``--since`` is a bound; it does not conjure an era no run belongs to."""
+        text = self._render_coverage(
+            {
+                **_coverage(0, 10, excluded=0),
+                "capture_start_at": None,
+                "coverage_floor": "2026-08-15T00:00:00Z",
+                "first_joinable_at": None,
+                "last_joinable_at": None,
+            }
+        )
+
+        assert "no run records a changed-file set, so there is no capture era" in text
+        assert "bounded only by --since (runs from 2026-08-15T00:00:00Z)" in text
+        assert "changed-file-capture era (runs from" not in text
+        # The remedy on the same report already calls this a capture defect; the
+        # bound line must not contradict it.
+        assert "-> " in text and "capture defect" in text
+
 
 class TestSubstrateIntegration:
     """The POC must read a real substrate read-only and report on it."""
@@ -343,6 +391,28 @@ class TestReadModelHelpers:
         assert coverage["capture_start_at"] is None
         assert coverage["coverage_floor"] is None
         assert coverage["measured_runs"] == 2
+        assert coverage["joinable_runs"] == 0
+        assert coverage["run_coverage_ratio"] == 0.0
+
+    def test_since_is_the_only_bound_when_no_run_joins(self, tmp_path: Path) -> None:
+        """With no capture era, ``since`` still bounds the denominator on its own."""
+        conn = audit_storage.create_or_open(tmp_path)
+        try:
+            for i in range(2):
+                record = seed_record(
+                    f"{i:012d}", [], cost=10.0, started_at=f"2026-06-0{i + 1}T00:00:00Z"
+                )
+                record["changed_files"] = None
+                _upsert(conn, record)
+            conn.commit()
+            coverage = changed_file_coverage(conn, since="2026-06-02T00:00:00Z")
+        finally:
+            conn.close()
+
+        assert coverage["capture_start_at"] is None
+        assert coverage["coverage_floor"] == "2026-06-02T00:00:00Z"
+        assert coverage["measured_runs"] == 1
+        assert coverage["archive_runs"] == 1
         assert coverage["joinable_runs"] == 0
         assert coverage["run_coverage_ratio"] == 0.0
 

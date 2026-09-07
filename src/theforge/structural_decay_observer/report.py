@@ -121,6 +121,43 @@ def load_report(project_root: Path, *, since: str | None = None, top: int = 15) 
 # ── Rendering ────────────────────────────────────────────────────────────
 
 
+def _bound_line(coverage: dict) -> str | None:
+    """Say which bound the denominator carries, or ``None`` when it carries none.
+
+    Three distinguishable states, because naming the wrong one tells the operator
+    to act on evidence that is not there: a capture era exists and bounds the
+    denominator; a capture era exists but ``--since`` is the tighter bound; or no
+    run joins a changed-file set at all, in which case there is no capture era to
+    bound to and ``--since``, if given, is the only bound there is.
+    """
+    capture_start = coverage.get("capture_start_at")
+    floor = coverage.get("coverage_floor")
+    excluded = coverage.get("excluded_pre_capture_runs", 0)
+    if capture_start is None:
+        if floor is not None:
+            return (
+                "no run records a changed-file set, so there is no capture era to bound to; "
+                f"the denominator is bounded only by --since (runs from {floor})"
+            )
+        if coverage.get("archive_runs"):
+            return (
+                "no run records a changed-file set, so there is no capture era to bound to; "
+                f"the denominator is the whole archive ({coverage['archive_runs']} run(s))"
+            )
+        return None
+    if floor != capture_start:
+        # ``excluded`` counts what the capture bound removed beyond ``since``, which
+        # is nothing when ``since`` is the tighter of the two — so do not report it.
+        return (
+            f"denominator bounded by --since (runs from {floor}), which is tighter than the "
+            f"changed-file-capture era beginning {capture_start}"
+        )
+    return (
+        f"denominator bounded to the changed-file-capture era (runs from {floor}); "
+        f"{excluded} earlier cost-bearing run(s) excluded as unanalysable"
+    )
+
+
 def render(report: dict) -> str:
     """Render the report as the operator-facing text the spike record quotes."""
     coverage = report["coverage"]
@@ -140,18 +177,9 @@ def render(report: dict) -> str:
     out.append(f"  window: {coverage['first_joinable_at']} .. {coverage['last_joinable_at']}")
     # State the bound rather than leaving the denominator's scope to be inferred
     # from a ratio (#2623).
-    excluded = coverage.get("excluded_pre_capture_runs", 0)
-    floor = coverage.get("coverage_floor")
-    if floor is not None:
-        out.append(
-            f"  denominator bounded to the changed-file-capture era (runs from {floor}); "
-            f"{excluded} earlier cost-bearing run(s) excluded as unanalysable"
-        )
-    elif coverage.get("archive_runs"):
-        out.append(
-            "  no run records a changed-file set, so there is no capture era to bound to; "
-            f"the denominator is the whole archive ({coverage['archive_runs']} run(s))"
-        )
+    bound = _bound_line(coverage)
+    if bound is not None:
+        out.append(f"  {bound}")
     out.append("")
     out.append("CONTROLS")
     for control in report["controls"]:
