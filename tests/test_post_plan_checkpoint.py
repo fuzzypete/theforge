@@ -8,6 +8,8 @@ clean plan-review on a medium story steps that tier down by exactly one level.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from theforge.assignment import (
@@ -135,6 +137,19 @@ def test_mid_to_cheap_on_clean_medium():
     assert block["fired"] is True
     assert block["final_tier"] == "cheap"
     assert out.dev.model == "haiku"
+
+
+def test_reduced_tier_dev_incapable_candidate_is_not_used_for_demotion():
+    """The checkpoint rebuilds no raw pool that can reseat a forbidden dev."""
+    agents = _agents()
+    agents[0] = replace(agents[0], dev_capable=False)
+    decision = _decision(agents, "sonnet", "mid")
+
+    out = apply_post_plan_checkpoint(decision, agents, _cfg(), **_clean())
+
+    assert _block(out)["fired"] is False
+    assert _block(out)["rationale"] == "no_reduced_tier_candidate"
+    assert out.dev.model == "sonnet"
 
 
 def test_never_two_steps():

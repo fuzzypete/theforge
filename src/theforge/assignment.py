@@ -69,6 +69,9 @@ REASON_TIER_MISMATCH = "tier_mismatch"
 REASON_ANTI_SELF_REVIEW = "anti_self_review"
 REASON_PHASE_ELIGIBILITY = "phase_eligibility"
 REASON_EXPLICIT_OVERRIDE_LOCKED = "explicit_override_locked"
+# Declared routing policy says this identity must not own the dev role. Unlike
+# demonstrated capability absence, this is an operator-set hard constraint.
+REASON_DEV_INCAPABLE = "dev_incapable"
 # The capability the role requires is recorded as demonstrated ABSENT for this
 # candidate's identity (#2466). Never-established and stale records do not
 # produce this reason — only a current, demonstrated absence does.
@@ -83,6 +86,7 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
         REASON_ANTI_SELF_REVIEW,
         REASON_PHASE_ELIGIBILITY,
         REASON_EXPLICIT_OVERRIDE_LOCKED,
+        REASON_DEV_INCAPABLE,
         REASON_CAPABILITY_ABSENT,
         REASON_NONE,
     }
@@ -438,15 +442,14 @@ def _capability_exclusions(
 
 
 class NoCapableCandidateError(ValueError):
-    """No candidate can serve a role whose capability requirement is recorded (#2466).
+    """No candidate can serve a role because a hard eligibility rule excludes it.
 
-    Raised when the durable record says *every* candidate for a role has
-    demonstrated it cannot produce what that role requires. There is no correct
-    model to seat: dispatching anyway is exactly the failure this record exists
-    to prevent — the phase returns something unusable and the gate reports an
-    absence it cannot explain. Routing refuses instead, naming the role, the
-    capability, and when each absence was established, so the operator reads the
-    reason here rather than reconstructing it from the wreckage.
+    The usual case is a durable capability record saying every candidate cannot
+    produce what the role requires. The dev role may also be exhausted by the
+    operator's ``dev_capable: false`` declaration. In either case, there is no
+    correct model to seat: dispatching anyway would contradict the evidence or
+    declared policy. Routing refuses with the role and exclusions rather than
+    forcing callers to handle a different empty-pool failure shape.
 
     A ``ValueError`` subclass so it joins the module's existing unroutable-pool
     contract (``assign_models`` already raises ``ValueError`` on an empty pool)
@@ -458,10 +461,27 @@ class NoCapableCandidateError(ValueError):
         role: str,
         capability: str,
         excluded: dict[str, dict[str, object]],
+        *,
+        exclusion_reason: str = REASON_CAPABILITY_ABSENT,
+        explicit_profile: ModelProfile | None = None,
     ) -> None:
         self.role = role
         self.capability = capability
         self.excluded = excluded
+        self.exclusion_reason = exclusion_reason
+        if exclusion_reason == REASON_DEV_INCAPABLE:
+            names = ", ".join(sorted(excluded))
+            if explicit_profile is not None:
+                detail = (
+                    f"explicit dev pin {explicit_profile.model!r} is declared "
+                    f"dev_capable=false — {names}."
+                )
+            else:
+                detail = f"every remaining agent is declared dev_capable=false — {names}."
+            super().__init__(
+                f"no candidate can serve role {role!r}: {detail} Configure a dev-capable model."
+            )
+            return
         detail = ", ".join(
             f"{name} (established {record.get('established_at') or '?'})"
             for name, record in sorted(excluded.items())
@@ -471,6 +491,22 @@ class NoCapableCandidateError(ValueError):
             f"{capability} demonstrated absent — {detail}. "
             f"Re-run 'forge check-providers' if this record is out of date, or "
             f"configure a model that can produce {capability}."
+        )
+
+    @classmethod
+    def declared_dev_incapability(
+        cls,
+        excluded: dict[str, dict[str, object]],
+        *,
+        explicit_profile: ModelProfile | None = None,
+    ) -> NoCapableCandidateError:
+        """Build the uniform routing refusal for a declared dev policy conflict."""
+        return cls(
+            "dev",
+            "dev_capable",
+            excluded,
+            exclusion_reason=REASON_DEV_INCAPABLE,
+            explicit_profile=explicit_profile,
         )
 
 
@@ -489,6 +525,38 @@ def _capability_pool(
     if not excluded:
         return agents
     return [a for a in agents if a.name not in excluded]
+
+
+def _dev_capability_pool(agents: list[AgentDef], role: str) -> list[AgentDef]:
+    """Apply the declared dev-role eligibility constraint to a role pool.
+
+    ``dev_capable`` is an operator declaration, not a ranking signal. Keep the
+    pool unchanged for every other role, but fail closed at every dev selection
+    boundary by removing identities the configuration prohibits from owning dev.
+    """
+    if role != "dev":
+        return agents
+    return [agent for agent in agents if agent.dev_capable]
+
+
+def _dev_incapability_exclusions(
+    agents: list[AgentDef],
+    profile: ModelProfile | None = None,
+) -> dict[str, dict[str, object]]:
+    """Return declared dev exclusions, optionally limited to an explicit pin.
+
+    The declaration binds a model identity, not just the adaptive selection
+    branch.  An explicit dev profile without a configured matching identity has
+    no declaration to enforce; a matching ``dev_capable: false`` identity must
+    be refused before the profile can become the dev owner.
+    """
+    profile_identity = identity_for_profile(profile) if profile is not None else None
+    return {
+        agent.name: {"model": agent.model}
+        for agent in agents
+        if not agent.dev_capable
+        and (profile is None or identity_for_agent(agent) == profile_identity)
+    }
 
 
 def _capability_exclusion_note(excluded: dict[str, dict[str, object]]) -> str:
@@ -946,7 +1014,11 @@ def _pick_agent(
     of the budget/tier ordering as a pure sort-after; a cold-start role falls
     through unchanged.
     """
-    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
+    candidates = [
+        a
+        for a in _agents_by_tier(_dev_capability_pool(agents, role), tier)
+        if _has_auth(a, secrets)
+    ]
     candidates = _rerank_by_profiles(
         candidates,
         model_profiles,
@@ -1661,9 +1733,10 @@ def _enforce_budget(
 
     ``role_pools`` maps a role class (``planner`` / ``dev`` / ``plan_review`` /
     ``code_review``) to the candidates that role may draw from, already filtered
-    by the demonstrated-capability gate (#2466). A cost downgrade is a routing
-    decision like any other, so it must not reach past that filter and seat a
-    model the record rules out. Roles absent from the map use the full pool.
+    by hard eligibility constraints. A cost downgrade is a routing decision like
+    any other, so it must not reach past those filters and seat a model the
+    records or declared routing policy rule out. Roles absent from the map use
+    the full pool, with the dev declaration reapplied locally.
     """
     from dataclasses import replace as _dc_replace
 
@@ -1698,7 +1771,7 @@ def _enforce_budget(
     agent_by_name = {a.name: a for a in agents}
 
     def _next_cheaper_profile(profile: ModelProfile, role_class: str) -> ModelProfile | None:
-        pool = role_pools.get(role_class, agents)
+        pool = _dev_capability_pool(role_pools.get(role_class, agents), role_class)
         agent = agent_by_name.get(profile.name)
         if agent is not None:
             current_tier = agent.tier
@@ -1999,20 +2072,24 @@ def _single_model_pool(
     locked: bool,
     secrets: dict[str, str] | None,
     capability_excluded: dict[str, dict[str, object]] | None = None,
+    role: str = "",
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a single-model role (preflight/planner/dev).
 
     Every agent is listed with ``included`` and, when excluded, a canonical
-    ``reason``. Priority of exclusion reasons is deterministic: the selected
-    model is always included; an explicit override locks out the rest; then
-    tier mismatch; then a demonstrated-absent capability; then auth/transport
-    unavailability.
+    ``reason``. Priority of exclusion reasons is deterministic: declared dev
+    incapability; then the selected model; an explicit override locks out the
+    rest; then tier mismatch; then a demonstrated-absent capability; then
+    auth/transport unavailability.
     """
     capability_excluded = capability_excluded or {}
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
-        if a.name == selected_name:
+        if role == "dev" and not a.dev_capable:
+            entry["included"] = False
+            entry["reason"] = REASON_DEV_INCAPABLE
+        elif a.name == selected_name:
             entry["included"] = True
             entry["reason"] = REASON_NONE
         elif locked:
@@ -2677,6 +2754,7 @@ def _build_routing_decision(
         "dev" in explicit_roles,
         secrets,
         capability_excluded=capability_exclusions.get("dev"),
+        role="dev",
     )
     dev_domain_signals = evidence.dev_domain_signals
     dev_cost_signals = evidence.dev_cost_signals
@@ -3227,7 +3305,10 @@ def apply_post_plan_checkpoint(
     # needs no refusal here: this checkpoint is an optional *demotion*, so no
     # capable cheaper candidate simply preserves the already-seated dev
     # ("no_reduced_tier_candidate") rather than failing the run.
-    dev_pool = _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records))
+    dev_pool = _dev_capability_pool(
+        _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records)),
+        "dev",
+    )
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
     target_agent = (
         _pick_agent(
@@ -3683,6 +3764,15 @@ def assign_models(
         if excluded and not role_pools[role] and role not in explicit_profiles:
             raise NoCapableCandidateError(role, ROLE_REQUIRED_CAPABILITY[role], excluded)
 
+    # A declared dev incapability is an independent hard eligibility boundary,
+    # applied after demonstrated-capability exclusions so every downstream dev
+    # mechanism consumes the same pool. Do not restore the raw pool when it is
+    # empty: there is no permitted adaptive dev candidate.
+    dev_incapability_exclusions = _dev_incapability_exclusions(role_pools["dev"])
+    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
+    if not role_pools["dev"] and "dev" not in explicit_profiles:
+        raise NoCapableCandidateError.declared_dev_incapability(dev_incapability_exclusions)
+
     # ── Dev tier with promotion ────────────────────────────────────────
     dev_base_tier = (
         _dev_tier_for_score(norm_complexity, score)
@@ -3693,6 +3783,11 @@ def assign_models(
     # Check if dev profile is explicitly overridden
     if "dev" in explicit_profiles:
         dev_profile = explicit_profiles["dev"]
+        if pinned_incapable := _dev_incapability_exclusions(agents, dev_profile):
+            raise NoCapableCandidateError.declared_dev_incapability(
+                pinned_incapable,
+                explicit_profile=dev_profile,
+            )
         dev_selected_tier: str | None = None
         rationale["dev"] = f"explicit override: {dev_profile.model}"
         rationale["dev"] += _explicit_capability_warning(dev_profile, "dev", capability_records)
