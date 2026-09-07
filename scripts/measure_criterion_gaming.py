@@ -218,7 +218,11 @@ def select_cohort(
     current corpus.
     """
     exclusions: dict[str, int] = {
-        "excluded_by_window": 0,
+        # This report is a dated record. Only attempts before its lower bound
+        # belong in its historical exclusion figure; later audits are outside
+        # the record's snapshot and must not make a checked-in report drift.
+        "before_window": 0,
+        "after_window": 0,
         "not_done": 0,
         "empty_criterion": 0,
         "no_landing": 0,
@@ -227,15 +231,20 @@ def select_cohort(
     }
     by_issue: dict[int, list[dict]] = {}
     windowed_issues: set[int] = set()
-    excluded_window_issues: set[int] = set()
+    excluded_before_window_issues: set[int] = set()
     phase_counts: dict[str, int] = {}
 
     for attempt in attempts:
         included_by_name = attempt["issue_number"] in include_issues
-        if not included_by_name and not _in_window(attempt["started_at"], since, until):
-            exclusions["excluded_by_window"] += 1
-            excluded_window_issues.add(attempt["issue_number"])
-            continue
+        if not included_by_name:
+            stamp = _parse_bound(attempt["started_at"])
+            if stamp < _parse_bound(since):
+                exclusions["before_window"] += 1
+                excluded_before_window_issues.add(attempt["issue_number"])
+                continue
+            if stamp > _parse_bound(until):
+                exclusions["after_window"] += 1
+                continue
         windowed_issues.add(attempt["issue_number"])
         phase = attempt["final_phase"] or "UNKNOWN"
         phase_counts[phase] = phase_counts.get(phase, 0) + 1
@@ -267,7 +276,7 @@ def select_cohort(
         "exclusions": exclusions,
         "phase_counts": phase_counts,
         "windowed_issues": sorted(windowed_issues),
-        "excluded_by_window_issues": sorted(excluded_window_issues - windowed_issues),
+        "excluded_before_window_issues": sorted(excluded_before_window_issues - windowed_issues),
     }
 
 
@@ -753,11 +762,14 @@ def render_markdown(
     add("2. `artifact.fix_success_criterion` is non-empty;")
     add("3. `landing.location` is non-null and is not a `<dry-run:` marker.")
     add("")
-    add("Attempts excluded, counted per clause:")
+    add(
+        "Historical attempts excluded, counted per clause. Attempts after `until` are not "
+        "part of this dated record and do not change these figures:"
+    )
     add("")
     add("| Exclusion | Attempts |")
     add("| --- | --- |")
-    add(f"| outside the window | {exclusions['excluded_by_window']} |")
+    add(f"| before the window | {exclusions['before_window']} |")
     add(f"| `final_phase != DONE` | {exclusions['not_done']} |")
     add(f"| empty `fix_success_criterion` | {exclusions['empty_criterion']} |")
     add(f"| `landing.location: null` (nothing landed) | {exclusions['no_landing']} |")
@@ -768,8 +780,8 @@ def render_markdown(
     )
     add("")
     add(
-        f"Issues excluded entirely by the window: "
-        f"{len(cohort['excluded_by_window_issues'])}. "
+        f"Issues excluded entirely before the window: "
+        f"{len(cohort['excluded_before_window_issues'])}. "
         "That is the dominant exclusion — the corpus reaches back well before this window."
     )
     add("")
@@ -934,7 +946,7 @@ def render_markdown(
             "resolved against it."
         )
     add("")
-    return "\n".join(out) + "\n"
+    return "\n".join(out)
 
 
 def _cell(text: str) -> str:
