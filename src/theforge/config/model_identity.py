@@ -19,7 +19,7 @@ library, so it stays importable from anywhere in the config package.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from .pricing import RATE_BASIS_TOKEN_RATES, AttributablePricing
 
@@ -52,6 +52,70 @@ IDENTITY_STATUSES: frozenset[str] = frozenset({IDENTITY_STATUS_SERVED, IDENTITY_
 # whose supporting evidence has aged out, and the operator is the one who can
 # refresh it.
 IDENTITY_VERIFICATION_MAX_AGE_DAYS = 180
+
+
+# ── Account model availability ──────────────────────────────────────────
+#
+# Account availability is deliberately separate from ``IdentityVerification``.
+# The latter records a maintained claim about an upstream identifier; this
+# vocabulary records what a particular credential may invoke *now*.  The same
+# name can therefore have different answers for a Codex ChatGPT account and an
+# API key, and no answer belongs on AgentSpec as a fixed property.
+MODEL_AVAILABILITY_AVAILABLE = "available"
+MODEL_AVAILABILITY_UNAVAILABLE = "unavailable"
+MODEL_AVAILABILITY_UNVERIFIED = "unverified"
+MODEL_AVAILABILITY_STATES: frozenset[str] = frozenset(
+    {
+        MODEL_AVAILABILITY_AVAILABLE,
+        MODEL_AVAILABILITY_UNAVAILABLE,
+        MODEL_AVAILABILITY_UNVERIFIED,
+    }
+)
+
+AVAILABILITY_FRESHNESS_CURRENT = "current"
+AVAILABILITY_FRESHNESS_STALE = "stale"
+AVAILABILITY_FRESHNESS_UNKNOWN = "unknown"
+AVAILABILITY_FRESHNESS: frozenset[str] = frozenset(
+    {
+        AVAILABILITY_FRESHNESS_CURRENT,
+        AVAILABILITY_FRESHNESS_STALE,
+        AVAILABILITY_FRESHNESS_UNKNOWN,
+    }
+)
+
+
+def availability_freshness(
+    checked_at: datetime | None,
+    *,
+    today: date | None = None,
+) -> str:
+    """Classify catalog evidence against the identity-verification window."""
+    if checked_at is None:
+        return AVAILABILITY_FRESHNESS_UNKNOWN
+    checked_date = (
+        checked_at.astimezone(timezone.utc).date() if checked_at.tzinfo else checked_at.date()
+    )
+    reference_day = today or datetime.now(timezone.utc).date()
+    if reference_day - checked_date > timedelta(days=IDENTITY_VERIFICATION_MAX_AGE_DAYS):
+        return AVAILABILITY_FRESHNESS_STALE
+    return AVAILABILITY_FRESHNESS_CURRENT
+
+
+@dataclass(frozen=True)
+class ModelAvailability:
+    """A timestamped account-specific answer about one invocable model name."""
+
+    state: str
+    auth_mode: str
+    checked_at: datetime | None
+    reason: str | None = None
+    freshness: str = AVAILABILITY_FRESHNESS_UNKNOWN
+
+    def __post_init__(self) -> None:
+        if self.state not in MODEL_AVAILABILITY_STATES:
+            raise ValueError(f"unknown model availability state {self.state!r}")
+        if self.freshness not in AVAILABILITY_FRESHNESS:
+            raise ValueError(f"unknown availability freshness {self.freshness!r}")
 
 
 @dataclass(frozen=True)
