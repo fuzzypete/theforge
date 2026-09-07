@@ -1,0 +1,115 @@
+schema_version: 2
+run_id: d632d4a80627
+authoritative_run_record: .forge/audits/runs/d632d4a80627.json
+generated_at: '2026-09-07T03:47:31.455459+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0113
+story:
+  slug: issue-2623
+  name: The structural-decay observer measures its readiness over every run ever recorded
+    while analysing only a bounded window, so it refuses on a ratio its own analysis
+    never used
+  github_issue: 2623
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/plans/2348-structural-decay-observer-spike.md
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/structural_decay_observer/ranking.py
+- src/theforge/structural_decay_observer/report.py
+- tests/structural_decay_test_helpers.py
+- tests/test_structural_decay_observer_ranking.py
+- tests/test_structural_decay_observer_report.py
+what_changed:
+  description: The run changed the structural-decay observer so its coverage readiness
+    calculation and refusal text are derived from the same bounded population as the
+    analysis window, rather than from the whole recorded archive. It also adjusted
+    reporting around the bound so the output explains when the denominator is limited
+    by changed-file capture or by a supplied since date.
+  approach: The change was made by pushing the admissible-run bound through the ranking
+    and report path, using audit-read-model data to determine the changed-file capture
+    era, and then rendering the resulting denominator bound and excluded population
+    in the CLI report. The work was completed iteratively, with a follow-up pass to
+    correct an edge case where a supplied since date existed but no runs joined a
+    changed-file set.
+  files_modified: *id002
+what_was_learned:
+- claim: When readiness is computed over an admissible subset rather than the full
+    archive, report generation needs to model the denominator bound as first-class
+    data and carry it end-to-end; otherwise later rendering will recreate archive-wide
+    assumptions and misstate what population the gate actually measured.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval explicitly notes that the bounded coverage denominator
+      is implemented and consumed by the report path, showing that fixing the bug
+      required the bound to travel from calculation into presentation rather than
+      being inferred separately at render time.
+  - type: file
+    path: src/theforge/structural_decay_observer/ranking.py
+    description: This file was part of the core change, demonstrating that the admissible-population
+      logic was established where coverage is computed, which is the source of truth
+      future runs must expose instead of reconstructing from unrelated totals.
+  - type: file
+    path: src/theforge/structural_decay_observer/report.py
+    description: This file was changed alongside ranking, showing that reporting depends
+      on explicit bound metadata from the computation layer; the need to touch both
+      files is evidence that archive-wide assumptions in output are a separate failure
+      mode unless the bound is propagated.
+- claim: Edge cases at the boundary between 'analysis is bounded' and 'no admissible
+    runs exist' need dedicated verification, because the same metadata field can mean
+    different things when capture-era evidence is absent and naive rendering will
+    label the bound incorrectly.
+  evidence:
+  - type: review_finding
+    finding_id: 5754ab6fc8419ec4
+    description: The finding isolates a concrete branch where a supplied since value
+      caused the report to claim the denominator was bounded to the changed-file-capture
+      era even though no capture era existed, demonstrating that boundary states can
+      invalidate otherwise-correct bound messaging.
+  - type: review_finding
+    finding_id: b404387fcce23cb2
+    description: "The finding identifies the missing test shape\u2014supplied since\
+      \ plus zero joinable runs\u2014as the specific path that allowed the mislabel\
+      \ to survive, showing that future runs should treat this combination as a distinct\
+      \ verification case rather than assuming generic coverage tests are enough."
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states that the prior P2s were fixed by distinguishing
+      capture-era bounds from since-tighter cases, confirming that the important lesson
+      is not just to compute a bound but to preserve which mechanism created it.
+learned_patterns:
+- bounded-denominator-propagation
+- zero-joinable-window-edge-case
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review first accepted the denominator-bounding fix, then surfaced that bound provenance
+    still needed to be rendered correctly when a since filter exists but no run is
+    joinable.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 9.0775884
+  dominant_difficulty: Keeping readiness math, bound provenance, and refusal messaging
+    aligned across normal and empty-window cases.
