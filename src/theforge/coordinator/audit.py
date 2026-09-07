@@ -8,7 +8,7 @@ from pathlib import Path
 
 from theforge import __version__ as FORGE_VERSION
 from theforge import knowledge_receipts, knowledge_uptake
-from theforge.config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig
+from theforge.config import ForgeConfig
 from theforge.config import provenance as config_provenance
 from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
@@ -23,6 +23,7 @@ from .changed_files import resolve_changed_files
 from .iteration_usage import dev_usage
 from .landing_record import build_landing_record
 from .preflight import complexity_source
+from .preflight_complexity_gate import returned_for_decomposition
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
 from .util import _round_cost as _util_round_cost
@@ -305,6 +306,28 @@ def _assessment_disposition(state: CoordinatorState) -> str | None:
     if state.preflight_complexity_gate_decision_source == "operator":
         return f"operator_{decision}"
     return f"no_decision_{decision}"
+
+
+def _assessment_application(state: CoordinatorState) -> dict | None:
+    """What applying an accepted proposal did, or None if none was applied.
+
+    Recorded next to the disposition rather than derived from it: "the operator
+    accepted" and "the split landed" are different facts, and a measurement
+    asking whether accepted splits actually land needs both. The created issue
+    numbers are here too, so a partial application is diagnosable from the audit
+    without going back to the tracker to guess what exists (#2824).
+    """
+    status = state.preflight_decomposition_application_status
+    if not status:
+        return None
+    return {
+        "status": status,
+        "created": list(state.preflight_decomposition_created or []),
+        "source_issue": state.preflight_decomposition_source_issue,
+        "source_issue_closed": bool(state.preflight_decomposition_source_issue_closed),
+        "error": state.preflight_decomposition_application_error,
+        "applied_at": state.preflight_decomposition_applied_at,
+    }
 
 
 def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
@@ -873,6 +896,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "assessment_model": state.preflight_complexity_gate_assessment_model,
             "assessment_profile": state.preflight_complexity_gate_assessment_profile,
             "assessment_disposition": _assessment_disposition(state),
+            # What an accepted proposal actually did (#2824). Null for every
+            # other disposition, which is what makes the four outcomes a
+            # proposal can reach distinguishable at measurement time:
+            # generated-and-declined, accepted-and-applied, accepted-but-failed,
+            # and never-offered.
+            "assessment_application": _assessment_application(state),
         },
         "outcome": {
             "success": result.success,
@@ -881,9 +910,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # preflight gate. Recorded next to ``success`` so a reader of the
             # outcome block alone cannot mistake it for a story that could not
             # be made to work (#2681).
-            "returned_for_decomposition": (
-                state.preflight_complexity_gate_decision == PREFLIGHT_GATE_DECOMPOSE
-            ),
+            # True for an applied ``accept`` too: the story was split, its
+            # slices exist, and the original is closed as decomposed. An accept
+            # whose application did NOT complete is deliberately excluded — that
+            # is a failure with tracker state to act on (#2824).
+            "returned_for_decomposition": returned_for_decomposition(state),
             "final_phase": result.phase.name,
             "message": result.message,
             "error_type": state.error_type,

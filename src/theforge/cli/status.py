@@ -731,11 +731,16 @@ def _preflight_gate_lines(entry: dict, run_id: str) -> list[str]:
         f"  threshold {payload.get('threshold')}",
         "    nothing has been spent beyond preflight for this story",
     ]
-    for action, gloss in (
-        ("approve", "plan and implement it as scoped"),
-        ("decompose", "return it to be split"),
-    ):
-        if action in [str(o) for o in entry.get("options") or []]:
+    # Glossed from the gate's own table so the two surfaces cannot describe the
+    # same action differently, and driven by the record's own options so that
+    # ``accept`` — the one action that mutates the tracker — is shown only on a
+    # pause that actually offers it (#2824).
+    from theforge.coordinator.preflight_complexity_gate import ACTION_GLOSSES  # noqa: PLC0415
+
+    offered = [str(o) for o in entry.get("options") or []]
+    for action in offered:
+        gloss = ACTION_GLOSSES.get(action)
+        if gloss:
             lines.append(f"      forge decide {run_id} {action:<10} {gloss}")
     no_decision = payload.get("no_decision_action")
     if no_decision:

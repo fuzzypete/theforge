@@ -86,6 +86,9 @@ PRODUCERS: dict[str, str] = {
     ),
     "forge-todo-create": "forge todo draft capture",
     "forge-todo-triage": "forge todo triage interactive body edit",
+    "forge-decomposition-apply": (
+        "slice issue filed when an operator accepts the preflight gate's decomposition proposal"
+    ),
     "forge-advisory-finding": "advisory convention debt issue filed from a run",
     "forge-intake-autofix": "sprint intake auto-fix body rewrite (edit mode)",
     "forge-intake-reopen-context": "sprint intake shape-gate-skip reopen-context fold-in",

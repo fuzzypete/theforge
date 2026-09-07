@@ -902,6 +902,25 @@ class CoordinatorState:
     # describe what this process spent, and charging a restored figure again
     # would double-count it at the sprint roll-up.
     preflight_complexity_gate_assessment_prior_cost_usd: float | None = None
+    # ── Applying an accepted proposal (#2824) ─────────────────────────────
+    # What the operator's ``accept`` actually did to the tracker. Persisted and
+    # audited so a later measurement can separate the four dispositions a
+    # proposal can reach — generated, declined, accepted-but-failed, and
+    # accepted-and-applied — and so a run interrupted mid-apply resumes into the
+    # slices it already created rather than filing them again.
+    # "applied" | "failed" | "not_applicable" | None (never accepted).
+    preflight_decomposition_application_status: str | None = None
+    # One entry per created slice: {slice_id, title, issue, depends_on_issues,
+    # reused}. Written after each successful create, so a failure partway
+    # through still names what exists.
+    preflight_decomposition_created: list[dict] = field(default_factory=list)
+    preflight_decomposition_source_issue: int | None = None
+    # The original closes only after every slice exists and every declared edge
+    # was written; False with a non-empty ``created`` list is the actionable
+    # partial state.
+    preflight_decomposition_source_issue_closed: bool = False
+    preflight_decomposition_application_error: str | None = None
+    preflight_decomposition_applied_at: str | None = None
     # Cited evidence: list of {rule_id, signal, dimension} dicts naming the rules
     # that fired on each axis. Empty until preflight sizing runs.
     preflight_complexity_evidence: list[dict] = field(default_factory=list)

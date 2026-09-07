@@ -135,7 +135,9 @@ def test_send_terminal_linux_calls_notify_send():
 
 
 def test_send_ntfy_calls_ntfy_publish():
-    with patch("theforge.coordinator.notify._ntfy_publish") as mock_pub:
+    # Patched where the publisher is *defined*: reaching it through
+    # ``coordinator.notify``'s re-export made that module and this one a cycle.
+    with patch("theforge.coordinator.ntfy_client._ntfy_publish") as mock_pub:
         _send_ntfy("https://ntfy.sh/topic", "high", "Title", "Body")
         mock_pub.assert_called_once_with("https://ntfy.sh/topic", "Title", "Body", priority="high")
 

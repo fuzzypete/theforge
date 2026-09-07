@@ -809,9 +809,14 @@ retry:
                              # phase is charged. Active by default. There is no
                              # enable switch: a threshold above 10, the highest
                              # score preflight can assign, disables the gate.
+                             # Where the pause carries a decomposition proposal
+                             # forge can apply, it also offers `accept` (create
+                             # the slices, close this issue as decomposed) and
+                             # `decline` (apply nothing).
   preflight_complexity_gate_no_decision: decompose  # what an EXPIRED gate does.
-                             # Only the two actions an operator may pick are
-                             # accepted. Anything else — absent, empty,
+                             # Only `approve` and `decompose` are accepted — an
+                             # expiry can never apply a split. Anything else —
+                             # absent, empty,
                              # misspelled — returns the story rather than
                              # proceeding, and the run records that a fallback
                              # was applied, so no misconfiguration can spend on a
