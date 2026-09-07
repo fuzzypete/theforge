@@ -827,17 +827,7 @@ def render_markdown(
     for number in rollup["denominator_issues"]:
         row = recorded[number]
         derived = facts[number]
-        admits = row.get("admits_symptom_removing_change")
-        admits_cell = "yes — " + _cell(row.get("admitted_change", "")) if admits else "no"
-        classification = row.get("landed_classification")
-        landed_cell = {
-            "symptom_only": "**yes**",
-            "cause_addressing": "no",
-            "no_landed_change": "no change landed",
-            "unresolved": "unresolved",
-        }[classification]
-        notes = _cell(row.get("notes") or row.get("admits_rationale") or "")
-        add(f"| #{number} | {admits_cell} | {landed_cell} | {notes} |")
+        add(f"| #{number} | {admits_cell(row)} | {landed_cell(row)} | {notes_cell(row)} |")
     add("")
     add("## Criteria named")
     add("")
@@ -950,6 +940,43 @@ def render_markdown(
 def _cell(text: str) -> str:
     """Collapse a judgment string into one markdown table cell."""
     return " ".join(str(text).split()).replace("|", "\\|")
+
+
+# The three judgment cells of a per-issue row. Named rather than inlined in the
+# renderer so a test can assert each cell against the adjudication file without
+# restating the mapping — a restated copy drifts from the renderer silently,
+# which is the failure the assertions exist to catch.
+
+
+def admits_cell(row: dict) -> str:
+    """First question: does the criterion admit a symptom-removing change?"""
+    if row.get("admits_symptom_removing_change"):
+        return "yes — " + _cell(row.get("admitted_change", ""))
+    return "no"
+
+
+def landed_cell(row: dict) -> str:
+    """Second question: was the change that landed such a change?"""
+    return {
+        "symptom_only": "**yes**",
+        "cause_addressing": "no",
+        "no_landed_change": "no change landed",
+        "unresolved": "unresolved",
+    }[row.get("landed_classification")]
+
+
+def notes_cell(row: dict) -> str:
+    return _cell(row.get("notes") or row.get("admits_rationale") or "")
+
+
+def split_row(line: str) -> list[str]:
+    """Split a rendered table row into its cells.
+
+    Splits on unescaped pipes only: ``_cell`` escapes a pipe inside a judgment,
+    and a naive split would tear such a cell in two.
+    """
+    parts = re.split(r"(?<!\\)\|", line)
+    return [part.strip() for part in parts[1:-1]]
 
 
 def render_json(

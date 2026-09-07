@@ -21,7 +21,8 @@ Covered here:
   - --refresh-facts preserving the stored upper bound unless --until is given,
     and preserving prior judgments while stubbing new rows
   - the checked-in report's D equalling both the adjudication row count and the
-    rendered per-issue row count, its rates and per-issue cells being derivable
+    rendered per-issue row count, its rates and every per-issue cell — compared
+    cell by cell, so neither answer can be edited unnoticed — being derivable
     from the adjudication file, and (where the corpus is present) regenerating
     byte for byte
 """
@@ -791,6 +792,34 @@ def test_an_unresolved_row_prints_the_bound_as_coverage_context_not_a_third_rate
     assert "**CLOSE**" in rendered
 
 
+def test_each_landed_classification_renders_a_distinct_cell():
+    """The four outcomes must not collapse into each other in the table."""
+    cells = {
+        classification: mcg.landed_cell({"landed_classification": classification})
+        for classification in mcg.CLASSIFICATIONS
+    }
+
+    assert cells["symptom_only"] == "**yes**"
+    assert len(set(cells.values())) == len(mcg.CLASSIFICATIONS)
+
+
+def test_a_judgment_containing_a_pipe_stays_one_cell():
+    row = {
+        "admits_symptom_removing_change": True,
+        "admitted_change": "pass `a | b` to the check",
+        "landed_classification": "cause_addressing",
+        "notes": "unchanged",
+    }
+    line = f"| #1 | {mcg.admits_cell(row)} | {mcg.landed_cell(row)} | {mcg.notes_cell(row)} |"
+
+    issue, admits, landed, notes = mcg.split_row(line)
+
+    assert issue == "#1"
+    assert admits == mcg.admits_cell(row)
+    assert landed == "no"
+    assert notes == "unchanged"
+
+
 def test_a_row_that_admits_nothing_and_landed_nothing_is_not_named():
     rendered = _render([(False, "no_landed_change", False)], criteria=["a quiet criterion"])
 
@@ -818,8 +847,12 @@ def test_the_checked_in_report_denominator_matches_its_rows():
 
     assert f"**D = {expected}**" in report
 
+    # Counted by cell structure rather than raw pipe count, which an escaped
+    # pipe inside a judgment would throw off.
     table_rows = [
-        line for line in report.splitlines() if line.startswith("| #") and line.count("|") == 5
+        line
+        for line in report.splitlines()
+        if line.startswith("| #") and len(mcg.split_row(line)) == 4
     ]
     assert len(table_rows) == expected
 
@@ -854,17 +887,22 @@ def test_the_checked_in_report_content_is_derivable_from_its_adjudication_file()
     assert f"**{verdict.upper()}**" in report
 
     for number, row in sorted(rows.items()):
-        admits = row["admits_symptom_removing_change"]
-        expected = "yes — " + mcg._cell(row["admitted_change"]) if admits else "no"
-        notes = mcg._cell(row.get("notes") or row.get("admits_rationale") or "")
         line = next(
             (li for li in report.splitlines() if li.startswith(f"| #{number} |")),
             None,
         )
         assert line is not None, f"#{number} has no rendered row"
-        assert expected in line
-        assert notes in line
-        if admits:
+
+        # Cell by cell, not substring-in-row: a bare "no" occurs in almost every
+        # notes cell, and an unasserted landed cell could be edited to flip a
+        # row's answer to the second question without failing anything.
+        issue, admits, landed, notes = mcg.split_row(line)
+        assert issue == f"#{number}"
+        assert admits == mcg.admits_cell(row)
+        assert landed == mcg.landed_cell(row)
+        assert notes == mcg.notes_cell(row)
+
+        if row["admits_symptom_removing_change"]:
             assert f"### #{number} —" in report, f"#{number} admits but is not named"
 
 
