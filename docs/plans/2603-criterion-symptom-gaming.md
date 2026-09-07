@@ -45,12 +45,15 @@ last-landed criterion in its body, so containment identifies the governing attem
 - `body_contains_criterion`: 17 — #2595, #2689, #2775, #2848, #2886, #2887, #2889, #2906, #2908, #2910, #2913, #2919, #2920, #2921, #2922, #2923, #2926
 - `latest_done`: 1 — #2909
 
-Landed-change join (issue title matched against integration-ref commit subjects,
-trailing `(#N)` story number stripped):
+Landed-change join. The title is read from the selected diagnose audit, not from
+the adjudication file, and matched against integration-ref commit subjects with the
+trailing `(#N)` story number stripped:
 
 - unique commit found: 16 — #2595, #2689, #2775, #2848, #2886, #2887, #2889, #2906, #2908, #2909, #2913, #2919, #2920, #2921, #2922, #2923
 - no commit and issue still OPEN — nothing landed: 2 — #2910, #2926
 - join failed: 0
+
+Issues GitHub has since retitled, where the corpus title the join used differs from the title GitHub carried at the last fact refresh: none.
 
 ## Per-issue rows
 

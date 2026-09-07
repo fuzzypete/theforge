@@ -15,9 +15,15 @@ Covered here:
     falls back to `latest_done` with the skipped run ids recorded
   - the landed-change join over real git: trailing `(#N)` stripped, and a commit
     reachable only from an unmerged feature ref NOT counted as landed
+  - the join reading its title from the corpus, so editing a row's cached title
+    and sha together cannot pair one issue's criterion with another's commit
   - drift between a recorded fact and the re-derived one refusing to render
+  - --refresh-facts preserving the stored upper bound unless --until is given,
+    and preserving prior judgments while stubbing new rows
   - the checked-in report's D equalling both the adjudication row count and the
-    rendered per-issue row count, so a truncated pass fails here
+    rendered per-issue row count, its rates and per-issue cells being derivable
+    from the adjudication file, and (where the corpus is present) regenerating
+    byte for byte
 """
 
 from __future__ import annotations
@@ -353,6 +359,8 @@ def _facts(**overrides) -> dict[int, dict]:
         "criterion": "the property must hold",
         "confirmed_cause": "the mechanism is missing",
         "issue_title": "a symptom",
+        "github_title": "a symptom",
+        "title_matches_github": True,
         "issue_state": "CLOSED",
         "issue_state_reason": "COMPLETED",
         "landed_commit": "sha1",
@@ -431,6 +439,70 @@ def test_the_mechanical_join_constrains_the_classification():
     assert any("proved no landed change" in p for p in problems)
 
 
+def test_the_join_reads_the_title_from_the_corpus_not_the_adjudication_file(tmp_path):
+    """Pairing one issue's criterion with another issue's commit must not validate.
+
+    The offline path used to feed the row's cached title straight into the join,
+    so editing that field and ``landed_commit`` together was self-consistent and
+    passed every check.
+    """
+    _write_attempt(tmp_path, issue=1, run_id="a", title="the real symptom")
+    cohort = _cohort(tmp_path)
+    index = {"the real symptom": {"sha-real"}, "someone else's symptom": {"sha-other"}}
+    tampered = {
+        1: {
+            "run_id": "a",
+            "selection": "body_contains_criterion",
+            "issue_title": "someone else's symptom",
+            "issue_state": "CLOSED",
+            "landed_commit": "sha-other",
+        }
+    }
+
+    facts = mcg.derive_facts(cohort, tampered, index)
+
+    assert facts[1]["issue_title"] == "the real symptom"
+    assert facts[1]["landed_commit"] == "sha-real"
+    problems = mcg.check_drift(facts, tampered)
+    assert any("issue_title drifted" in p for p in problems)
+    assert any("landed_commit drifted" in p for p in problems)
+
+
+def test_a_corpus_title_change_alone_is_caught_against_a_stale_row(tmp_path):
+    _write_attempt(tmp_path, issue=1, run_id="a", title="the retitled symptom")
+    cohort = _cohort(tmp_path)
+    stale = {
+        1: {
+            "run_id": "a",
+            "selection": "body_contains_criterion",
+            "issue_title": "the old symptom",
+            "issue_state": "CLOSED",
+            "landed_commit": None,
+        }
+    }
+
+    problems = mcg.check_drift(mcg.derive_facts(cohort, stale, {}), stale)
+
+    assert any("issue_title drifted" in p for p in problems)
+
+
+def test_a_github_retitle_is_recorded_as_provenance_and_never_joined_on(tmp_path):
+    _write_attempt(tmp_path, issue=1, run_id="a", title="the title the commit carries")
+    cohort = _cohort(tmp_path)
+    index = {"the title the commit carries": {"sha-real"}, "the new github title": {"sha-wrong"}}
+
+    facts = mcg.derive_facts(
+        cohort,
+        {},
+        index,
+        issue_lookup=lambda n: {"title": "the new github title", "state": "CLOSED", "body": ""},
+    )
+
+    assert facts[1]["landed_commit"] == "sha-real"
+    assert facts[1]["github_title"] == "the new github title"
+    assert facts[1]["title_matches_github"] is False
+
+
 def test_a_selected_run_that_is_no_longer_a_qualifying_attempt_stops_the_render(tmp_path):
     _write_attempt(tmp_path, issue=1, run_id="present")
     cohort = _cohort(tmp_path)
@@ -439,6 +511,121 @@ def test_a_selected_run_that_is_no_longer_a_qualifying_attempt_stops_the_render(
         mcg.derive_facts(cohort, {1: {"run_id": "vanished", "selection": "latest_done"}}, {})
 
     assert "vanished" in str(excinfo.value)
+
+
+def _seed_adjudications(path: Path, **window) -> None:
+    base = {
+        "since": WINDOW_SINCE,
+        "until": WINDOW_UNTIL,
+        "include_issues": [],
+        "integration_refs": ["refs/heads/main"],
+        "record_date": "2026-09-06",
+    }
+    base.update(window)
+    path.write_text(yaml.safe_dump({"window": base, "issues": {}}), encoding="utf-8")
+
+
+def _refresh_repo(tmp_path: Path) -> Path:
+    """A corpus with one in-window attempt and one just past the upper bound."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    (repo / "a.txt").write_text("a")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-m", "in window (#10)")
+    _write_attempt(repo, issue=1, run_id="a", title="in window")
+    _write_attempt(
+        repo,
+        issue=2,
+        run_id="b",
+        title="after the bound",
+        started_at="2026-09-08T00:00:00+00:00",
+    )
+    return repo
+
+
+def test_refresh_facts_without_until_preserves_the_stored_upper_bound(tmp_path, monkeypatch):
+    """Re-stamping the bound would silently re-cut the cohort.
+
+    A refresh run to pick up a corrected judgment must not also admit every
+    diagnose run made since the last one.
+    """
+    repo = _refresh_repo(tmp_path)
+    adjudications = tmp_path / "adj.yaml"
+    _seed_adjudications(adjudications, corpus_root=str(repo))
+    monkeypatch.setattr(
+        mcg, "fetch_issue", lambda n, root, repo_name: {"title": "in window", "state": "CLOSED"}
+    )
+
+    assert mcg.main(["--adjudications", str(adjudications), "--refresh-facts"]) == 0
+
+    written = yaml.safe_load(adjudications.read_text(encoding="utf-8"))
+    assert written["window"]["until"] == WINDOW_UNTIL
+    assert sorted(written["issues"]) == [1]
+
+
+def test_refresh_facts_with_an_explicit_until_moves_the_bound(tmp_path, monkeypatch):
+    repo = _refresh_repo(tmp_path)
+    adjudications = tmp_path / "adj.yaml"
+    _seed_adjudications(adjudications, corpus_root=str(repo))
+    monkeypatch.setattr(
+        mcg, "fetch_issue", lambda n, root, repo_name: {"title": "in window", "state": "OPEN"}
+    )
+
+    assert (
+        mcg.main(
+            [
+                "--adjudications",
+                str(adjudications),
+                "--refresh-facts",
+                "--until",
+                "2026-09-09T00:00:00+00:00",
+            ]
+        )
+        == 0
+    )
+
+    written = yaml.safe_load(adjudications.read_text(encoding="utf-8"))
+    assert written["window"]["until"] == "2026-09-09T00:00:00+00:00"
+    assert sorted(written["issues"]) == [1, 2]
+
+
+def test_refresh_facts_preserves_prior_judgments_and_stubs_new_rows(tmp_path, monkeypatch):
+    repo = _refresh_repo(tmp_path)
+    adjudications = tmp_path / "adj.yaml"
+    _seed_adjudications(adjudications, corpus_root=str(repo))
+    monkeypatch.setattr(
+        mcg, "fetch_issue", lambda n, root, repo_name: {"title": "in window", "state": "CLOSED"}
+    )
+    mcg.main(["--adjudications", str(adjudications), "--refresh-facts"])
+
+    written = yaml.safe_load(adjudications.read_text(encoding="utf-8"))
+    assert written["issues"][1]["admits_symptom_removing_change"] is None  # stub
+    written["issues"][1]["admits_symptom_removing_change"] = False
+    written["issues"][1]["admits_rationale"] = "the criterion names the property"
+    written["issues"][1]["landed_classification"] = "cause_addressing"
+    written["issues"][1]["inspected_source"] = written["issues"][1]["landed_commit"]
+    adjudications.write_text(yaml.safe_dump(written), encoding="utf-8")
+
+    mcg.main(["--adjudications", str(adjudications), "--refresh-facts"])
+
+    again = yaml.safe_load(adjudications.read_text(encoding="utf-8"))
+    assert again["issues"][1]["admits_rationale"] == "the criterion names the property"
+    assert again["window"]["until"] == WINDOW_UNTIL
+
+
+def test_an_unadjudicated_stub_blocks_a_normal_render(tmp_path, monkeypatch):
+    repo = _refresh_repo(tmp_path)
+    adjudications = tmp_path / "adj.yaml"
+    _seed_adjudications(adjudications, corpus_root=str(repo))
+    monkeypatch.setattr(
+        mcg, "fetch_issue", lambda n, root, repo_name: {"title": "in window", "state": "CLOSED"}
+    )
+    mcg.main(["--adjudications", str(adjudications), "--refresh-facts"])
+
+    assert mcg.main(["--adjudications", str(adjudications)]) == 1
 
 
 def test_an_unknown_decision_override_is_rejected(tmp_path):
@@ -643,3 +830,56 @@ def test_the_checked_in_report_states_the_window_and_the_decision():
     assert WINDOW_SINCE in report
     assert "#2595" in report  # the spec's worked example is in the denominator
     assert "**CLOSE**" in report or "**ACT**" in report
+
+
+def test_the_checked_in_report_content_is_derivable_from_its_adjudication_file():
+    """Rates, per-issue cells and named criteria must all trace to the inputs.
+
+    Asserting only D against the row count leaves the generated body free to be
+    edited: a rate, a row's judgment text, or a quoted criterion could drift from
+    what the adjudication file says and nothing would notice.
+    """
+    adjudications = mcg.load_adjudications(ADJUDICATIONS)
+    rows = adjudications["issues"]
+    report = REPORT.read_text(encoding="utf-8")
+
+    # Rates recomputed from the judgments, not read back out of the prose.
+    facts = {number: {} for number in rows}
+    rollup = mcg.roll_up(facts, rows)
+    verdict, _ = mcg.decide(rollup, adjudications["decision_override"])
+    admits_line = f"criteria admitting a symptom-removing change:  {rollup['N']} / {rollup['D']}"
+    landed_line = f"of those, where such a change actually landed: {rollup['M']} / {rollup['N']}"
+    assert admits_line in report
+    assert landed_line in report
+    assert f"**{verdict.upper()}**" in report
+
+    for number, row in sorted(rows.items()):
+        admits = row["admits_symptom_removing_change"]
+        expected = "yes — " + mcg._cell(row["admitted_change"]) if admits else "no"
+        notes = mcg._cell(row.get("notes") or row.get("admits_rationale") or "")
+        line = next(
+            (li for li in report.splitlines() if li.startswith(f"| #{number} |")),
+            None,
+        )
+        assert line is not None, f"#{number} has no rendered row"
+        assert expected in line
+        assert notes in line
+        if admits:
+            assert f"### #{number} —" in report, f"#{number} admits but is not named"
+
+
+def _corpus_available() -> bool:
+    window = mcg.load_adjudications(ADJUDICATIONS)["window"]
+    root = window.get("corpus_root")
+    return bool(root) and any((Path(root) / ".forge" / "audits").glob("diagnose-issue-*.yaml"))
+
+
+@pytest.mark.skipif(
+    not _corpus_available(),
+    reason="the diagnose audit corpus lives in the operator checkout, not in CI",
+)
+def test_regenerating_the_checked_in_report_reproduces_it_byte_for_byte(tmp_path):
+    out = tmp_path / "regenerated.md"
+
+    assert mcg.main(["--adjudications", str(ADJUDICATIONS), "--out", str(out)]) == 0
+    assert out.read_text(encoding="utf-8") == REPORT.read_text(encoding="utf-8")

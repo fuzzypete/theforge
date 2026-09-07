@@ -33,8 +33,11 @@ Usage:
 
 Normal runs are read-only and offline: they read the corpus and ``git log``
 only. ``--refresh-facts`` is the only mode that writes the adjudication file,
-and the only mode that calls ``gh`` — it caches each issue's title and state so
-a later re-render validates and prints without network or GitHub auth.
+and the only mode that calls ``gh``. The title the join looks up always comes
+from the corpus, never from the adjudication file, so the landed-commit
+evidence stays reproducible from the source; only the issue's open/closed
+state — which the corpus cannot supply, and which only labels a *no*-commit
+outcome — is cached there for offline use.
 
 Operates on the repository rather than shipping with it, so it lives in
 `scripts/` and is unit-tested from `tests/test_measure_criterion_gaming.py`.
@@ -457,6 +460,9 @@ def window_from(adjudications: dict) -> dict:
     window = adjudications["window"]
     return {
         "since": str(window.get("since") or DEFAULT_SINCE),
+        # `_now_iso()` here is the bootstrap default for a window block that has
+        # never been written. Once --refresh-facts has stamped an upper bound it
+        # is present on every load, and only an explicit --until replaces it.
         "until": str(window.get("until") or _now_iso()),
         "include_issues": tuple(int(n) for n in (window.get("include_issues") or ())),
         "corpus_root": window.get("corpus_root"),
@@ -489,24 +495,35 @@ def derive_facts(
 ) -> dict[int, dict]:
     """Re-derive the mechanical facts for every cohort issue.
 
-    ``issue_lookup`` is supplied only under --refresh-facts; without it the
-    cached title/state on each recorded row is used, so a normal run needs no
-    network. Body containment likewise cannot re-run offline, so the recorded
-    selection basis is validated (the selected run must still be a qualifying
-    attempt with an unchanged criterion) rather than recomputed.
+    The title the landed-change join looks up is read from the *corpus* — the
+    selected attempt's own ``issue_title``, which the audit records beside the
+    issue number — and never from the adjudication file. That is what keeps the
+    landed-commit evidence reproducible from the source: editing a row's cached
+    title and sha together cannot pair one issue's criterion with another
+    issue's commit, because the join never consults the edited field. The cached
+    title is instead re-derived and drift-checked like any other fact.
+
+    ``issue_lookup`` is supplied only under --refresh-facts. Issue *state* is the
+    one join input the corpus cannot supply, so it is cached there and used
+    offline; it only ever labels a no-commit outcome (OPEN means nothing landed,
+    CLOSED means the join failed) and cannot attach a commit to an issue.
+
+    Body containment likewise cannot re-run offline, so the recorded selection
+    basis is validated — the selected run must still be a qualifying attempt,
+    and its criterion hash must still match — rather than recomputed.
     """
     facts: dict[int, dict] = {}
     for number, attempts in sorted(cohort["by_issue"].items()):
         row = recorded.get(number, {})
         if issue_lookup is not None:
             fetched = issue_lookup(number)
-            title = str(fetched.get("title") or "")
+            github_title = str(fetched.get("title") or "")
             state = str(fetched.get("state") or "")
             state_reason = fetched.get("stateReason")
             body = fetched.get("body") or ""
             chosen = select_attempt(attempts, body)
         else:
-            title = str(row.get("issue_title") or "")
+            github_title = str(row.get("github_title") or "")
             state = str(row.get("issue_state") or "")
             state_reason = row.get("issue_state_reason")
             recorded_run = row.get("run_id")
@@ -528,6 +545,11 @@ def derive_facts(
             }
 
         attempt = chosen["attempt"]
+        # The corpus is the join's authority. A commit subject is written from
+        # the story title at merge time, so an issue retitled after diagnosis
+        # leaves the commit carrying the title the audit recorded — which makes
+        # the corpus title the more accurate key as well as the safer one.
+        title = normalize_criterion(attempt["issue_title"])
         joined = join_landed_change(title, state, index)
         facts[number] = {
             "run_id": attempt["run_id"],
@@ -537,6 +559,11 @@ def derive_facts(
             "criterion": normalize_criterion(attempt["fix_success_criterion"]),
             "confirmed_cause": normalize_criterion(attempt["confirmed_cause"]),
             "issue_title": title,
+            # Provenance only, never a join input: what GitHub called the issue
+            # when the facts were last refreshed. A divergence from the corpus
+            # title is surfaced rather than reconciled.
+            "github_title": github_title,
+            "title_matches_github": normalize_criterion(github_title) == title,
             "issue_state": state,
             "issue_state_reason": state_reason,
             "landed_commit": joined["landed_commit"],
@@ -770,8 +797,9 @@ def render_markdown(
     join_counts: dict[str, list[int]] = {}
     for number, derived in sorted(facts.items()):
         join_counts.setdefault(derived["join_outcome"], []).append(number)
-    add("Landed-change join (issue title matched against integration-ref commit subjects,")
-    add("trailing `(#N)` story number stripped):")
+    add("Landed-change join. The title is read from the selected diagnose audit, not from")
+    add("the adjudication file, and matched against integration-ref commit subjects with the")
+    add("trailing `(#N)` story number stripped:")
     add("")
     for outcome, label in (
         ("commit_found", "unique commit found"),
@@ -783,6 +811,14 @@ def render_markdown(
             f"- {label}: {len(numbers)}"
             + (" — " + ", ".join(f"#{n}" for n in numbers) if numbers else "")
         )
+    add("")
+    retitled = [n for n, d in sorted(facts.items()) if not d["title_matches_github"]]
+    add(
+        "Issues GitHub has since retitled, where the corpus title the join used differs "
+        "from the title GitHub carried at the last fact refresh: "
+        + (", ".join(f"#{n}" for n in retitled) if retitled else "none")
+        + "."
+    )
     add("")
     add("## Per-issue rows")
     add("")
@@ -992,6 +1028,8 @@ def refresh_facts_document(
             "selection": derived["selection"],
             "criterion_sha256": derived["criterion_sha256"],
             "issue_title": derived["issue_title"],
+            "github_title": derived["github_title"],
+            "title_matches_github": derived["title_matches_github"],
             "issue_state": derived["issue_state"],
             "issue_state_reason": derived["issue_state_reason"],
             "landed_commit": derived["landed_commit"],
@@ -1041,6 +1079,21 @@ def default_corpus_root() -> Path:
     return Path(common).resolve().parent
 
 
+def _repo_relative(path: Path) -> str:
+    """Path as written into the report: repo-relative when it is inside the repo.
+
+    The rendered text names its own input, so an absolute path would make the
+    checked-in report depend on which directory the script was invoked from and
+    a byte-for-byte regeneration check impossible.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(repo_root))
+    except ValueError:
+        return str(resolved)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--corpus-root", type=Path, default=None)
@@ -1077,7 +1130,12 @@ def _run_measurement(args) -> int:
     if args.refresh_facts:
         if args.since:
             window["since"] = args.since
-        window["until"] = args.until or _now_iso()
+        # Only an explicit --until moves the upper bound. Re-stamping it with
+        # the current time would silently re-cut the cohort — a refresh meant to
+        # pick up a corrected judgment would admit every diagnose run made since
+        # the last one, changing D without saying so.
+        if args.until:
+            window["until"] = args.until
         if args.include_issue is not None:
             window["include_issues"] = tuple(args.include_issue)
         elif not window["include_issues"]:
@@ -1098,7 +1156,7 @@ def _run_measurement(args) -> int:
     )
     corpus_root = Path(corpus_root)
     window["corpus_root"] = str(corpus_root)
-    window["adjudications_path"] = str(args.adjudications)
+    window["adjudications_path"] = _repo_relative(args.adjudications)
 
     attempts = load_attempts(corpus_root)
     cohort = select_cohort(
