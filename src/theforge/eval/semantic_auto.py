@@ -93,9 +93,19 @@ def _issue_view_for_revision(
     return _view
 
 
+#: This process holds the revision's lock and may schedule its evaluation.
+LOCK_ACQUIRED = "acquired"
+#: A peer holds it and is scheduling the same revision right now. A deferral,
+#: not a result: the peer's attempt is the one the bound allows.
+LOCK_CONTENDED = "contended"
+#: The lock could not be created or opened at all. Not a deferral — nothing is
+#: coming to do the work, so the evaluation cannot be attempted.
+LOCK_UNAVAILABLE = "unavailable"
+
+
 @contextmanager
 def _revision_scheduling_lock(project_root: Path, key: str):
-    """Yield ``True`` when this process may schedule the evaluation of *key*.
+    """Yield this process's standing to schedule the evaluation of *key*.
 
     The check-then-invoke sequence over an unlocked JSONL store is otherwise
     racy: a query-mode gate and a manifest resolution can both observe "no
@@ -103,6 +113,12 @@ def _revision_scheduling_lock(project_root: Path, key: str):
     already evaluating this exact revision *is* the at-most-once guarantee being
     honoured, so the loser skips invocation and re-derives readiness rather than
     waiting out an agent call inside a gate.
+
+    The two ways of not holding the lock are different facts and are reported
+    separately. Contention means someone else is doing the work. An unusable
+    lock directory or lock file means nobody is: the evaluation could not be
+    attempted, which AC4 says must be reported as a failure rather than as an
+    ordinary absence of a record.
     """
     handle = None
     try:
@@ -113,27 +129,27 @@ def _revision_scheduling_lock(project_root: Path, key: str):
     except BlockingIOError:
         if handle is not None:
             handle.close()
-        yield False
+        yield LOCK_CONTENDED
         return
     except OSError as exc:
-        # No lock, no scheduling. Proceeding unserialized would let two
-        # concurrent admissions evaluate the same revision under the same
-        # prompt contract, which is the bound AC5 states; deferring costs a
-        # withheld document that the next transition evaluates once the lock
-        # directory is usable again, and spends nothing meanwhile.
+        # Proceeding unserialized would let two concurrent admissions evaluate
+        # the same revision under the same prompt contract, which is the bound
+        # AC5 states. So the evaluation does not happen — and because nothing
+        # else is going to perform it either, that is a cannot-be-attempted
+        # failure, not a deferral.
         _log.warning(
-            "semantic scheduling lock unavailable for %s (%s); deferring the evaluation "
-            "rather than running it unserialized",
+            "semantic scheduling lock unavailable for %s (%s); the evaluation cannot be "
+            "attempted rather than running it unserialized",
             key,
             exc,
         )
         if handle is not None:
             handle.close()
-        yield False
+        yield LOCK_UNAVAILABLE
         return
 
     try:
-        yield True
+        yield LOCK_ACQUIRED
     finally:
         try:
             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -351,19 +367,25 @@ def ensure_semantic_evaluation(
         return _cannot_attempt("", f"semantic evaluation could not be attempted: {exc}")
 
     key = _lock_key(issue_ref, readiness.input_digest, prompt_contract_version)
-    with _revision_scheduling_lock(project_root, key) as may_schedule:
-        if not may_schedule:
-            # Either a peer holds this revision's lock or the lock itself is
-            # unavailable. Both are deferrals, not results: nothing is spent,
-            # nothing is recorded, and the document keeps whatever state it
-            # already has — which for an unevaluated required revision is
-            # withheld.
+    with _revision_scheduling_lock(project_root, key) as standing:
+        if standing == LOCK_CONTENDED:
+            # A peer holds this revision's lock and is doing the work. Nothing
+            # is spent and nothing is recorded here; the document keeps
+            # whatever state it has, which for an unevaluated required revision
+            # is withheld.
             _log.info(
-                "semantic evaluation of %s (%s) deferred; not scheduling it here",
+                "semantic evaluation of %s (%s) deferred to a peer already scheduling it",
                 issue_ref,
                 readiness.input_digest,
             )
             return _derive()
+        if standing != LOCK_ACQUIRED:
+            # No lock and no peer: the evaluation could not be attempted.
+            return _cannot_attempt(
+                model_id,
+                "semantic evaluation could not be attempted: its scheduling lock "
+                f"under {SEMANTIC_LOCK_DIR} could not be created or opened",
+            )
 
         # Re-check under the lock: a peer may have completed between the read
         # above and the lock acquisition.
@@ -408,6 +430,63 @@ def ensure_semantic_evaluation(
             return _cannot_attempt(model_id, f"semantic evaluation could not be attempted: {exc}")
 
     return _derive()
+
+
+def semantic_issue_entry_admission(
+    *,
+    issue_number: int,
+    project_root: Path,
+    secrets: dict[str, str] | None,
+    profile: ModelProfile,
+    prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
+    lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    store: SemanticReviewStore | None = None,
+    agent_runner: Callable[..., AgentResult] | None = None,
+) -> SemanticReadiness | None:
+    """Admit one GitHub issue entry semantically, scheduling what it is missing.
+
+    The entry point for callers that hold an issue *number* rather than a
+    fetched revision: manifest ``{issue: N}`` entries, and query-mode issues
+    that entry remediation put back after the shape gate had already run its
+    readiness pass over the runnable set. Both need the same three steps in the
+    same order — read the current revision, check that the structural verdict
+    admits it, then schedule and decide the semantic requirement.
+
+    The structural verdict is the authority it always was and is not re-decided
+    here: a document ``classify_admissibility`` does not admit is refused
+    structurally, and nothing is evaluated for it. Best-effort on the read: an
+    unreachable ``gh`` leaves the entry admitted rather than becoming a new
+    silent drop, which is the same fail-open the shape gate applies to an issue
+    whose detail it cannot fetch.
+
+    Returns the withholding readiness, or ``None`` when the entry may proceed.
+    """
+    from theforge.admissibility import classify_admissibility  # noqa: PLC0415
+    from theforge.eval.semantic_runner import load_semantic_issue  # noqa: PLC0415
+
+    try:
+        issue = load_semantic_issue(issue_number=issue_number, project_root=project_root)
+        structural = classify_admissibility(issue.title, issue.body, list(issue.labels))
+        if not structural.admissible:
+            return None
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("semantic admission could not read issue #%s: %s", issue_number, exc)
+        return None
+
+    readiness = ensure_semantic_evaluation(
+        issue_number=issue_number,
+        title=issue.title,
+        body=issue.body,
+        labels=issue.labels,
+        project_root=project_root,
+        secrets=secrets,
+        profile=profile,
+        prompt_contract_version=prompt_contract_version,
+        lifecycle_state=lifecycle_state,
+        store=store,
+        agent_runner=agent_runner,
+    )
+    return readiness if readiness.withholds_admission else None
 
 
 def semantic_dispatch_withholding(

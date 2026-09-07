@@ -378,6 +378,9 @@ def _neutral_semantic_readiness_overlay(monkeypatch):
     # leaving it live would withhold every well-shaped issue for a reason those
     # tests are not about.
     monkeypatch.setattr(_semantic_auto, "semantic_dispatch_withholding", lambda **kwargs: None)
+    # Same for the issue-entry admission query mode runs over issues that entry
+    # remediation put back after the gate's own pass.
+    monkeypatch.setattr(_semantic_auto, "semantic_issue_entry_admission", lambda **kwargs: None)
 
 
 @pytest.fixture(autouse=True)

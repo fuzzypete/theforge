@@ -591,6 +591,111 @@ def _semantic_readiness_scheduler(config: object):
     return _readiness
 
 
+def _semantic_record_count(project_root) -> int:
+    """Number of semantic evaluation records on file, or 0 when unreadable."""
+    from theforge.eval.semantic_storage import SemanticReviewStore  # noqa: PLC0415
+
+    try:
+        return len(SemanticReviewStore(project_root).iter_records())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _disclose_semantic_admission_spend(project_root, before_count: int) -> None:
+    """Report what semantic admission spent, and that the cap does not see it.
+
+    Admission runs the evaluator before the sprint exists, so its cost cannot be
+    advanced through ``SprintExecutionState.cost`` — that ledger has one owner
+    and is created by the run this spend precedes. Metering it properly is a
+    change to the cap's carried-spend mechanism and belongs to that owner; what
+    must not happen meanwhile is the spend being invisible, so it is disclosed
+    here with the same numbers the records carry (CONVENTIONS rule 6).
+    """
+    from theforge.eval.semantic_storage import SemanticReviewStore  # noqa: PLC0415
+
+    try:
+        records = SemanticReviewStore(project_root).iter_records()[before_count:]
+    except Exception:  # noqa: BLE001
+        return
+    live = [record for record in records if not record.cache_hit]
+    if not live:
+        return
+    known = [record.cost_usd for record in live if record.cost_usd is not None]
+    total = sum(known)
+    unknown = len(live) - len(known)
+    unknown_note = f" ({unknown} of unknown cost)" if unknown else ""
+    noun = "evaluation" if len(live) == 1 else "evaluations"
+    print(
+        f"[forge] Semantic admission ran {len(live)} {noun}{unknown_note} costing "
+        f"${total:.2f}. This is spent before the sprint's ledger exists and is not "
+        "counted against --budget.",
+        file=sys.stderr,
+    )
+
+
+def _admit_readmitted_issues_semantically(*, issues, config):
+    """Decide semantic admission for issues that never reached the gate's seam.
+
+    The shape gate runs the semantic scheduler over the issues it *admits*.
+    Entry remediation then repairs some of the ones it refused and puts them
+    back in the runnable list — structurally runnable now, and therefore
+    policy-required, but never having passed the seam that would evaluate them.
+    Left alone they reach the dispatch check with no record and are withheld for
+    want of a step that, once again, nothing was asked to perform.
+
+    Re-added entries are the ones carrying no ``semantic_requirement`` key: the
+    gate annotates every issue its readiness pass touched, so the absence of the
+    annotation is exactly the set that needs deciding.
+
+    Returns ``(issues, withheld)`` — the entries that may proceed, and a
+    ``SkippedIssue`` for each one the semantic requirement withholds.
+    """
+    from theforge.eval.semantic_auto import semantic_issue_entry_admission  # noqa: PLC0415
+    from theforge.sprint.shape_gate import SkippedIssue  # noqa: PLC0415
+
+    undecided = [issue for issue in issues if "semantic_requirement" not in issue]
+    if not undecided:
+        return issues, []
+
+    withheld_numbers: set[int] = set()
+    skipped: list = []
+    for issue in undecided:
+        number = int(issue["number"])
+        readiness = semantic_issue_entry_admission(
+            issue_number=number,
+            project_root=config.project_root,
+            secrets=getattr(config, "secrets", None),
+            profile=config.preflight_profile,
+        )
+        if readiness is None:
+            # Admitted (or policy requires nothing of it). Annotate it the way
+            # the gate annotates its own, so a later pass can tell it was
+            # decided rather than missed.
+            issue["semantic_requirement"] = "decided"
+            continue
+        withheld_numbers.add(number)
+        print(
+            f"[forge] WARNING: withholding issue #{number} — {readiness.reason_code}: "
+            f"{readiness.detail}",
+            file=sys.stderr,
+        )
+        skipped.append(
+            SkippedIssue(
+                issue_number=number,
+                reason_codes=readiness.reason_codes,
+                source="local_check",
+                title=issue.get("title", "") or "",
+                detail=readiness.detail,
+                verdict="",
+                verdict_description="",
+            )
+        )
+
+    if not withheld_numbers:
+        return issues, []
+    return [issue for issue in issues if int(issue["number"]) not in withheld_numbers], skipped
+
+
 def _withhold_stale_semantic_revisions(resolved, config):
     """Drop stories whose fetched revision is not the one admission cleared.
 
@@ -607,9 +712,10 @@ def _withhold_stale_semantic_revisions(resolved, config):
     from dataclasses import replace as _replace  # noqa: PLC0415
 
     from theforge.eval.semantic_auto import semantic_dispatch_withholding  # noqa: PLC0415
+    from theforge.sprint.shape_gate import SkippedIssue  # noqa: PLC0415
 
     kept: list = []
-    withheld: list[tuple[int, object]] = []
+    withheld: list[tuple[int, str, object]] = []
     for entry in resolved.stories:
         task = entry[0]
         digest = getattr(task, "source_revision_digest", None)
@@ -625,19 +731,34 @@ def _withhold_stale_semantic_revisions(resolved, config):
         if readiness is None:
             kept.append(entry)
             continue
-        withheld.append((int(task.github_issue), readiness))
+        withheld.append((int(task.github_issue), task.name or "", readiness))
 
     if not withheld:
-        return resolved
+        return resolved, []
 
-    for number, readiness in withheld:
+    skipped: list = []
+    for number, title, readiness in withheld:
         print(
             f"[forge] WARNING: withholding issue #{number} — the revision fetched for "
             f"this sprint is not the one admission cleared ({readiness.reason_code}: "
             f"{readiness.detail})",
             file=sys.stderr,
         )
-    return _replace(resolved, stories=kept)
+        # Recorded as a skip on the same terms as a gate withholding, so a
+        # dispatch-time drop reaches canonical sprint state and the run summary
+        # rather than being a warning on stderr and an issue silently absent.
+        skipped.append(
+            SkippedIssue(
+                issue_number=number,
+                reason_codes=readiness.reason_codes,
+                source="local_check",
+                title=title,
+                detail=readiness.detail,
+                verdict="",
+                verdict_description="",
+            )
+        )
+    return _replace(resolved, stories=kept), skipped
 
 
 _INTAKE_REMEDIATED_ENV = "FORGE_INTAKE_REMEDIATED"
@@ -1126,6 +1247,10 @@ def _run_query_mode(
             event.setdefault("base_branch_sha", base_branch_sha)
             record_shape_verdict_event(config.project_root, event)
 
+        # Marker for what semantic admission spends below: the evaluator runs
+        # inside the gate, before the sprint's cost ledger exists.
+        semantic_records_before = _semantic_record_count(config.project_root)
+
         gate_result = apply_shape_gate(
             issues,
             config.project_root,
@@ -1244,6 +1369,22 @@ def _run_query_mode(
                 config=config,
             )
 
+        # Both remediation passes above put issues back into the runnable list
+        # after the gate ran its semantic pass over it. A remediated issue is
+        # structurally runnable and therefore policy-required, so it gets the
+        # same admission the gate would have given it — evaluation scheduled
+        # included — rather than arriving unevaluated at the dispatch check
+        # (#2907). Runs before the skip-observability emission below so a
+        # semantic withholding here reaches the audit with the rest.
+        issues, semantic_readmission_skips = _admit_readmitted_issues_semantically(
+            issues=issues,
+            config=config,
+        )
+        if semantic_readmission_skips:
+            skipped_issues = list(skipped_issues) + semantic_readmission_skips
+
+        _disclose_semantic_admission_spend(config.project_root, semantic_records_before)
+
         # Shape-gate skip observability (issue #1453): record every gate skip
         # (and advisory) with its taxonomy category into the audit substrate,
         # tagging remediation outcomes so the postmortem can separate
@@ -1319,9 +1460,29 @@ def _run_query_mode(
     # each story was actually built from is checked against the record one last
     # time (#2907). Read-only: a changed revision is withheld here and evaluated
     # on the next entry.
-    resolved = _withhold_stale_semantic_revisions(resolved, config)
+    #
+    # Executing runs only. ``--dry-run`` is a pure dependency preview that
+    # bypasses the gate entirely — no admission decision was made, so there is
+    # no admitted revision to check the fetched one against, and applying the
+    # guard would report real issues as no stories to run.
+    dispatch_skips: list = []
+    if not dry_run:
+        resolved, dispatch_skips = _withhold_stale_semantic_revisions(resolved, config)
+        if dispatch_skips:
+            skipped_issues = list(skipped_issues) + dispatch_skips
 
     if not resolved.stories:
+        if not dry_run and dispatch_skips:
+            # Say which of the two it was: every story was fetched, and every
+            # one was withheld at dispatch. "Nothing could be fetched" would
+            # send the operator looking at GitHub instead of at the record.
+            print(
+                f"[forge] All {len(dispatch_skips)} fetched issue(s) for {query_desc} were "
+                "withheld: the revision fetched is not the one admission cleared "
+                "— nothing to run.",
+                file=sys.stderr,
+            )
+            return 0
         print(
             f"[forge] No stories could be fetched for {query_desc} — nothing to run.",
             file=sys.stderr,

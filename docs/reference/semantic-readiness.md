@@ -82,10 +82,15 @@ The rules that bound it:
   dispatches, and a story whose revision moved between admission and that read
   is withheld rather than dispatched on a decision made about text that no
   longer exists.
-- **Once, or not at all.** Scheduling is serialized per revision. Where the
-  serialization cannot be established, the evaluation is deferred — the
-  document stays withheld and the next transition evaluates it — rather than
-  run unserialized.
+- **Once, or not at all.** Scheduling is serialized per revision. When a peer
+  holds that serialization it is already doing the work, so this side defers.
+  When the serialization cannot be established at all, nobody is doing the
+  work: that is an evaluation that could not be attempted, and it is recorded
+  as `evaluation_failed` rather than run unserialized.
+- **However the document became runnable.** An issue that entry remediation
+  repairs mid-run is admitted on the same terms as one that was well-shaped to
+  begin with — the repair makes it policy-required, and the evaluation is
+  scheduled then rather than deferred to the operator's next invocation.
 - **Never a ratification.** Automatic invocation changes *whether an evaluation
   happens*, never what a result means. A raised finding still withholds
   admission until an operator ratifies it, exactly as when the evaluator is
@@ -104,6 +109,14 @@ Automatic evaluation runs where budget is already being committed — sprint
 query-mode admission and manifest issue admission. `forge status --ready` is a
 status command and spends nothing: it reports the records those paths produce,
 so an unevaluated issue is listed as withheld rather than evaluated on the spot.
+`forge sprint --dry-run` is a preview on the same terms: it bypasses admission
+entirely, evaluates nothing, and previews the issues an executing run would
+consider rather than the subset a review has cleared.
+
+The evaluator runs before a sprint's cost ledger exists, so what admission
+spends is *not* counted against `--budget`. It is disclosed on stderr as it
+happens — the number of evaluations and their recorded cost — rather than being
+silently absent from the sprint total.
 
 The evaluator refuses to reveal output for a revision with no frozen baseline.
 Where an operator has frozen one it is used untouched; where none exists the

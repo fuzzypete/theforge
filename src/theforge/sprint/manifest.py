@@ -364,11 +364,24 @@ def semantic_manifest_admission(issue_number: int, project_root: Path, config=No
     (#2907). Without one the function stays read-only, which is what callers
     resolving a manifest outside a run get.
     """
-    from ..admissibility import classify_admissibility  # noqa: PLC0415
     from ..eval.semantic_readiness import (  # noqa: PLC0415
         SEMANTIC_REVIEW_REQUIRED_STATE,
         semantic_readiness_for_issue,
     )
+
+    if config is not None:
+        # Same three steps, same order, as query-mode issue-entry admission.
+        from ..eval.semantic_auto import semantic_issue_entry_admission  # noqa: PLC0415
+
+        return semantic_issue_entry_admission(
+            issue_number=issue_number,
+            project_root=project_root,
+            secrets=getattr(config, "secrets", None),
+            profile=config.preflight_profile,
+            lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+        )
+
+    from ..admissibility import classify_admissibility  # noqa: PLC0415
     from ..eval.semantic_runner import load_semantic_issue  # noqa: PLC0415
 
     try:
@@ -376,28 +389,14 @@ def semantic_manifest_admission(issue_number: int, project_root: Path, config=No
         structural = classify_admissibility(issue.title, issue.body, list(issue.labels))
         if not structural.admissible:
             return None
-        if config is not None:
-            from ..eval.semantic_auto import ensure_semantic_evaluation  # noqa: PLC0415
-
-            readiness = ensure_semantic_evaluation(
-                issue_number=issue_number,
-                title=issue.title,
-                body=issue.body,
-                labels=issue.labels,
-                project_root=project_root,
-                secrets=getattr(config, "secrets", None),
-                profile=config.preflight_profile,
-                lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
-            )
-        else:
-            readiness = semantic_readiness_for_issue(
-                issue_number=issue_number,
-                title=issue.title,
-                body=issue.body,
-                labels=issue.labels,
-                project_root=project_root,
-                lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
-            )
+        readiness = semantic_readiness_for_issue(
+            issue_number=issue_number,
+            title=issue.title,
+            body=issue.body,
+            labels=issue.labels,
+            project_root=project_root,
+            lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+        )
     except Exception:  # noqa: BLE001
         return None
     return readiness if readiness.withholds_admission else None

@@ -48,6 +48,7 @@ from theforge.eval.semantic_types import (
 # of tests that are not about it, and these tests *are* about it.
 from theforge.eval.semantic_auto import (  # isort: skip
     semantic_dispatch_withholding as _live_dispatch_withholding,
+    semantic_issue_entry_admission as _live_issue_entry_admission,
 )
 from theforge.ready_queue import _semantic_readiness as _live_ready_queue_readiness
 
@@ -627,7 +628,7 @@ def test_shape_gate_admits_after_the_bound_scheduler_records_a_clean_ratified_re
         with pytest.MonkeyPatch.context() as patcher:
             patcher.setattr(
                 "theforge.eval.semantic_auto.ensure_semantic_evaluation",
-                lambda **kw: _ensure(**kw, agent_runner=runner),
+                lambda **kw: _ensure(**{**kw, "agent_runner": runner}),
             )
             return scheduler(**kwargs)
 
@@ -722,11 +723,15 @@ def test_manifest_issue_admission_with_config_schedules_the_evaluation(
                 issue_ref="issue-2907", title=TITLE, body=BODY, labels=("enhancement",)
             ),
         )
+        from theforge.eval import semantic_auto
         from theforge.eval.semantic_auto import ensure_semantic_evaluation as _ensure
 
         patcher.setattr(
             "theforge.eval.semantic_auto.ensure_semantic_evaluation",
-            lambda **kw: _ensure(**kw, agent_runner=runner),
+            lambda **kw: _ensure(**{**kw, "agent_runner": runner}),
+        )
+        patcher.setattr(
+            semantic_auto, "semantic_issue_entry_admission", _live_issue_entry_admission
         )
         withheld = _live_manifest_admission(2907, tmp_path, config)
 
@@ -751,9 +756,14 @@ def test_a_structurally_refused_issue_entry_is_not_evaluated(tmp_path: Path) -> 
                 labels=("enhancement", "needs-grooming"),
             ),
         )
+        from theforge.eval import semantic_auto
+
         patcher.setattr(
             "theforge.eval.semantic_auto.ensure_semantic_evaluation",
             lambda **_kw: called.append("scheduled"),
+        )
+        patcher.setattr(
+            semantic_auto, "semantic_issue_entry_admission", _live_issue_entry_admission
         )
         withheld = _live_manifest_admission(2907, tmp_path, config)
 
@@ -973,26 +983,39 @@ def test_a_baseline_frozen_between_the_check_and_the_freeze_is_reported_as_faile
     assert readiness.withholds_admission
 
 
-def test_an_unusable_lock_defers_rather_than_scheduling_unserialized(
+def test_an_unusable_lock_dir_is_reported_as_an_evaluation_that_could_not_be_attempted(
     tmp_path: Path,
 ) -> None:
-    """No lock, no scheduling — an unserialized invocation would break the bound."""
+    """No lock, no scheduling — and nothing else is coming to do the work.
+
+    Contention means a peer is evaluating this revision, so deferring is honest.
+    A lock directory that cannot be created means the evaluation cannot be
+    attempted at all, which AC4 puts in the same class as a failure rather than
+    leaving the document reading as ordinarily unevaluated.
+    """
     runner = _Runner()
 
+    real_mkdir = Path.mkdir
+
+    def _refuse_lock_dir(self, *args, **kwargs):
+        if "locks" in str(self):
+            raise PermissionError("no lock dir")
+        return real_mkdir(self, *args, **kwargs)
+
     with pytest.MonkeyPatch.context() as patcher:
-        patcher.setattr(
-            "theforge.eval.semantic_auto.Path.mkdir",
-            lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("no lock dir")),
-        )
+        patcher.setattr("theforge.eval.semantic_auto.Path.mkdir", _refuse_lock_dir)
         readiness = _schedule(tmp_path, runner)
 
     assert runner.calls == 0
-    assert SemanticReviewStore(tmp_path).iter_records() == []
-    assert readiness.state == STATE_UNEVALUATED
+    assert readiness.state == STATE_EVALUATION_FAILED
     assert readiness.withholds_admission
+    assert readiness.reason_code == SEMANTIC_EVALUATION_FAILED_CODE
+    records = SemanticReviewStore(tmp_path).records_for_digest(_digest())
+    assert [record.status for record in records] == [STATUS_EVALUATION_FAILED]
+    assert "scheduling lock" in (records[0].failure_detail or "")
 
 
-def test_a_lock_file_that_cannot_be_opened_defers_too(tmp_path: Path) -> None:
+def test_a_lock_file_that_cannot_be_opened_is_reported_the_same_way(tmp_path: Path) -> None:
     from theforge.eval import semantic_auto
 
     def _refuse_open(*_args, **_kwargs):
@@ -1004,6 +1027,30 @@ def test_a_lock_file_that_cannot_be_opened_defers_too(tmp_path: Path) -> None:
         readiness = _schedule(tmp_path, runner)
 
     assert runner.calls == 0
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+
+
+def test_a_lock_held_by_a_peer_defers_without_recording_a_failure(tmp_path: Path) -> None:
+    """Contention is a deferral: someone else is performing the evaluation."""
+    import fcntl
+
+    from theforge.eval import semantic_auto
+
+    lock_dir = tmp_path / semantic_auto.SEMANTIC_LOCK_DIR
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    key = semantic_auto._lock_key("issue-2907", _digest(), PROMPT_CONTRACT_VERSION)
+    held = (lock_dir / f"{key}.lock").open("a+")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        runner = _Runner()
+        readiness = _schedule(tmp_path, runner)
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        held.close()
+
+    assert runner.calls == 0
+    assert SemanticReviewStore(tmp_path).iter_records() == []
     assert readiness.state == STATE_UNEVALUATED
     assert readiness.withholds_admission
 
@@ -1180,11 +1227,16 @@ def test_query_mode_withholds_a_story_whose_revision_moved_before_resolution(
 
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
-        kept = _withhold_stale_semantic_revisions(_resolved(admitted), config)
-        dropped = _withhold_stale_semantic_revisions(_resolved(stale), config)
+        kept, kept_skips = _withhold_stale_semantic_revisions(_resolved(admitted), config)
+        dropped, dropped_skips = _withhold_stale_semantic_revisions(_resolved(stale), config)
 
     assert len(kept.stories) == 1
+    assert kept_skips == []
     assert dropped.stories == []
+    # The drop is recorded as a skip, so it reaches canonical sprint state and
+    # the run summary rather than being a warning and a silent absence.
+    assert [entry.issue_number for entry in dropped_skips] == [2907]
+    assert dropped_skips[0].reason_codes == (SEMANTIC_NOT_RATIFIED_CODE,)
 
 
 def test_a_file_story_is_never_withheld_by_the_dispatch_check(tmp_path: Path) -> None:
@@ -1197,9 +1249,346 @@ def test_a_file_story_is_never_withheld_by_the_dispatch_check(tmp_path: Path) ->
         name="s", budget_usd=1.0, stories=[(story, object(), "story.md")], max_parallel=1
     )
 
-    assert (
-        _withhold_stale_semantic_revisions(
-            resolved, SimpleNamespace(project_root=tmp_path)
-        ).stories
-        == resolved.stories
+    kept, skips = _withhold_stale_semantic_revisions(
+        resolved, SimpleNamespace(project_root=tmp_path)
     )
+    assert kept.stories == resolved.stories
+    assert skips == []
+
+
+# ── Review iteration 2: remediated re-admission, dry-run, manifest dispatch ──
+
+
+def _gate_annotated(number: int = 2907) -> dict:
+    """An issue dict as the shape gate leaves it: annotated by the readiness pass."""
+    return {
+        "number": number,
+        "title": TITLE,
+        "shape_verdict": "runnable",
+        "semantic_requirement": "required",
+        "semantic_state": STATE_AWAITING_RATIFICATION,
+    }
+
+
+def test_a_remediated_issue_readded_after_the_gate_is_evaluated_not_just_withheld(
+    tmp_path: Path,
+) -> None:
+    """Entry remediation puts issues back after the gate's readiness pass ran.
+
+    They are structurally runnable, and therefore policy-required, but never
+    passed the seam that would evaluate them — so without this they reach the
+    dispatch check unevaluated and are withheld for want of a step nothing was
+    asked to perform, which is the whole defect this story exists to fix.
+    """
+    from theforge.cli.sprint import _admit_readmitted_issues_semantically
+    from theforge.eval import semantic_auto
+
+    runner = _Runner()
+    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    issues = [_gate_annotated(2901), {"number": 2907, "title": TITLE}]
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            lambda **_kw: SimpleNamespace(
+                issue_ref="issue-2907", title=TITLE, body=BODY, labels=("enhancement",)
+            ),
+        )
+        from theforge.eval.semantic_auto import ensure_semantic_evaluation as _ensure
+
+        patcher.setattr(
+            "theforge.eval.semantic_auto.ensure_semantic_evaluation",
+            lambda **kw: _ensure(**{**kw, "agent_runner": runner}),
+        )
+        patcher.setattr(
+            semantic_auto, "semantic_issue_entry_admission", _live_issue_entry_admission
+        )
+        kept, skips = _admit_readmitted_issues_semantically(issues=issues, config=config)
+
+    # The evaluation ran for the re-added issue — and only for it: the issue the
+    # gate already decided is not evaluated a second time.
+    assert runner.calls == 1
+    assert SemanticReviewStore(tmp_path).records_for_digest(_digest())
+    # It is still withheld (no ratification), but now on the strength of a
+    # record rather than of an absence, and the withholding is recorded.
+    assert [issue["number"] for issue in kept] == [2901]
+    assert [entry.issue_number for entry in skips] == [2907]
+    assert skips[0].reason_codes == (SEMANTIC_NOT_RATIFIED_CODE,)
+
+
+def test_a_readded_issue_that_clears_review_proceeds(tmp_path: Path) -> None:
+    from theforge.cli.sprint import _admit_readmitted_issues_semantically
+    from theforge.eval import semantic_auto
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+    _ratify(store, issue_ref="issue-2907", digest=_digest())
+
+    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    issues = [{"number": 2907, "title": TITLE}]
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            lambda **_kw: SimpleNamespace(
+                issue_ref="issue-2907", title=TITLE, body=BODY, labels=("enhancement",)
+            ),
+        )
+        patcher.setattr(
+            semantic_auto, "semantic_issue_entry_admission", _live_issue_entry_admission
+        )
+        kept, skips = _admit_readmitted_issues_semantically(issues=issues, config=config)
+
+    assert [issue["number"] for issue in kept] == [2907]
+    assert skips == []
+    # Annotated as decided, so a later pass can tell it was not missed.
+    assert "semantic_requirement" in kept[0]
+
+
+def test_issues_the_gate_already_decided_are_not_readmitted(tmp_path: Path) -> None:
+    from theforge.cli.sprint import _admit_readmitted_issues_semantically
+    from theforge.eval import semantic_auto
+
+    called: list[int] = []
+    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            semantic_auto,
+            "semantic_issue_entry_admission",
+            lambda **kw: called.append(kw["issue_number"]),
+        )
+        kept, skips = _admit_readmitted_issues_semantically(
+            issues=[_gate_annotated()], config=config
+        )
+
+    assert called == []
+    assert skips == []
+    assert len(kept) == 1
+
+
+def test_a_dry_run_previews_issues_the_dispatch_guard_would_have_no_admission_for(
+    tmp_path: Path, capsys
+) -> None:
+    """``--dry-run`` bypasses the gate, so there is no admitted revision to compare.
+
+    Applying the dispatch guard there would drop every policy-required issue
+    lacking a ratified record and report real, fetched issues as nothing to run
+    — a preview that lies about what an executing run would do.
+    """
+    import argparse
+    from unittest.mock import patch as _patch
+
+    from theforge.cli import cmd_sprint
+    from theforge.config import (
+        DEFAULT_VALIDATION,
+        ForgeConfig,
+        LogConfig,
+        PlanAgentReviewConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+    from theforge.eval import semantic_auto
+    from theforge.sprint.manifest import ResolvedSprint
+    from theforge.sprint.sources import GitHubIssueSource
+    from theforge.task.story import TaskStory
+
+    (tmp_path / "forge.yaml").write_text("project:\n  root: .\n", encoding="utf-8")
+    config = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="feat/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=_profile(),
+        preflight_profile=_profile(),
+        review_pool=[],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
+        log=LogConfig(enabled=False),
+    )
+    args = argparse.Namespace(
+        manifest=None,
+        config=None,
+        fg=True,
+        detach=False,
+        resume=False,
+        milestone="v0.5.0",
+        label=None,
+        budget="10",
+        parallel=1,
+        name=None,
+        dry_run=True,
+        auto_merge=False,
+        interactive=False,
+        verbose=False,
+        no_notify=True,
+        no_pull=False,
+    )
+    # A real fetched story for a policy-required issue with no evaluation on
+    # record — exactly what the guard withholds on an executing run.
+    resolved = ResolvedSprint(
+        name="v0.5.0",
+        budget_usd=10.0,
+        stories=[
+            (
+                TaskStory(
+                    name=TITLE,
+                    slug="issue-2907",
+                    story_text=BODY,
+                    github_issue=2907,
+                    source_revision_digest=_digest(),
+                    source_revision_type="enhancement",
+                ),
+                GitHubIssueSource(),
+                "issue:2907",
+            )
+        ],
+        max_parallel=1,
+    )
+
+    with (
+        _patch("theforge.cli.sprint.load_config", return_value=config),
+        _patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        _patch(
+            "theforge.sprint.query.fetch_issues_for_milestone",
+            return_value=[{"number": 2907, "title": TITLE}],
+        ),
+        _patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        _patch.object(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding),
+    ):
+        rc = cmd_sprint(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1 issue(s)" in out
+    assert "issue-2907" in out
+
+
+def test_manifest_mode_skips_an_entry_whose_fetched_revision_moved(tmp_path: Path) -> None:
+    """The manifest's own dispatch-check branch, end to end through build_tasks."""
+    from theforge.eval import semantic_auto
+    from theforge.sprint.manifest import SprintManifest, build_tasks_from_manifest
+    from theforge.task.story import TaskStory
+
+    class _Source:
+        def fetch(self, ref, _root):
+            return TaskStory(
+                name=TITLE,
+                slug=f"issue-{ref}",
+                story_text=EDITED_BODY,
+                github_issue=int(ref),
+                source_revision_digest=_digest(EDITED_BODY),
+                source_revision_type="enhancement",
+            )
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+    _ratify(store, issue_ref="issue-2907", digest=_digest())
+
+    manifest = SprintManifest(name="s", budget_usd=1.0, stories=[{"issue": 2907}], max_parallel=1)
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "theforge.sprint.sources.resolve",
+            lambda _entry, _root: (_Source(), "2907", "issue:2907"),
+        )
+        patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
+        built = build_tasks_from_manifest(manifest, tmp_path, semantic_admission=lambda *_a: None)
+
+    # The entry was admitted on the ratified revision; the fetch returned a
+    # newer one, so it is not dispatched on the older revision's clearance.
+    assert built == []
+
+
+def test_manifest_mode_keeps_an_entry_whose_fetched_revision_is_the_cleared_one(
+    tmp_path: Path,
+) -> None:
+    from theforge.eval import semantic_auto
+    from theforge.sprint.manifest import SprintManifest, build_tasks_from_manifest
+    from theforge.task.story import TaskStory
+
+    class _Source:
+        def fetch(self, ref, _root):
+            return TaskStory(
+                name=TITLE,
+                slug=f"issue-{ref}",
+                story_text=BODY,
+                github_issue=int(ref),
+                source_revision_digest=_digest(),
+                source_revision_type="enhancement",
+            )
+
+    store = SemanticReviewStore(tmp_path)
+    _schedule(tmp_path, _Runner(), store=store)
+    _ratify(store, issue_ref="issue-2907", digest=_digest())
+
+    manifest = SprintManifest(name="s", budget_usd=1.0, stories=[{"issue": 2907}], max_parallel=1)
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "theforge.sprint.sources.resolve",
+            lambda _entry, _root: (_Source(), "2907", "issue:2907"),
+        )
+        patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
+        built = build_tasks_from_manifest(manifest, tmp_path, semantic_admission=lambda *_a: None)
+
+    assert [task.slug for task, _s, _r in built] == ["issue-2907"]
+
+
+def test_a_human_baseline_landing_mid_schedule_is_reported_through_the_real_store(
+    tmp_path: Path,
+) -> None:
+    """The interleaving with the real freeze_baseline guard, not a stubbed one."""
+
+    class _InterleavingStore(SemanticReviewStore):
+        interleaved = False
+
+        def frozen_baseline(self, input_digest):
+            existing = super().frozen_baseline(input_digest)
+            if existing is None and not self.interleaved:
+                # An operator freezes a real baseline in the window between the
+                # automatic path's check and its own freeze.
+                self.interleaved = True
+                super().freeze_baseline(
+                    issue_ref="issue-2907",
+                    input_digest=input_digest,
+                    canonical_type="enhancement",
+                    defect_ids=("DEF-1",),
+                )
+            return existing
+
+    runner = _Runner()
+    readiness = _schedule(tmp_path, runner, store=_InterleavingStore(tmp_path))
+
+    assert runner.calls == 0
+    assert readiness.state == STATE_EVALUATION_FAILED
+    assert readiness.withholds_admission
+    # The operator's baseline survives; the automatic empty freeze lost.
+    baseline = SemanticReviewStore(tmp_path).frozen_baseline(_digest())
+    assert baseline is not None
+    assert baseline.defect_ids == ("DEF-1",)
+    assert baseline.provenance == BASELINE_PROVENANCE_HUMAN
+
+
+def test_semantic_admission_spend_is_disclosed_to_the_operator(tmp_path: Path, capsys) -> None:
+    """The evaluator runs before the sprint ledger exists; the spend is not hidden."""
+    from theforge.cli.sprint import _disclose_semantic_admission_spend, _semantic_record_count
+
+    before = _semantic_record_count(tmp_path)
+    _schedule(tmp_path, _Runner())
+    _disclose_semantic_admission_spend(tmp_path, before)
+
+    err = capsys.readouterr().err
+    assert "Semantic admission ran 1 evaluation" in err
+    assert "$0.02" in err
+    assert "not counted against --budget" in err
+
+
+def test_nothing_is_disclosed_when_admission_spent_nothing(tmp_path: Path, capsys) -> None:
+    from theforge.cli.sprint import _disclose_semantic_admission_spend
+
+    _disclose_semantic_admission_spend(tmp_path, 0)
+
+    assert capsys.readouterr().err == ""
