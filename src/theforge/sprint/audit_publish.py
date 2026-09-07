@@ -31,6 +31,7 @@ from typing import Any
 
 from ..config import ForgeConfig
 from ..coordinator import workspace as coordinator_workspace
+from ..coordinator.pr_auto_merge import _step_merge
 from ..coordinator.workspace import project_root_dirt_is_story_run_artifacts_only
 from ..log_util import _log_line
 from ..story_run_artifacts import story_run_artifact_dirt_only
@@ -40,6 +41,8 @@ from .memory_publication import (
     MEMORY_PUBLISH_CLEAN,
     MEMORY_PUBLISH_NO_REMOTE,
     MEMORY_PUBLISH_PUBLISHED,
+    MEMORY_PUBLISH_PUBLISHED_ARMED,
+    MEMORY_PUBLISH_PUBLISHED_UNARMED,
     MEMORY_PUBLISH_PUSHED_NO_PR,
     MEMORY_PUBLISH_STAGED_ONLY,
     PROJECT_MEMORY_DIRS,
@@ -419,6 +422,42 @@ def memory_transport(*, lands_locally: bool) -> str:
     return TRANSPORT_DIRECT if lands_locally else TRANSPORT_MEMORY_BRANCH
 
 
+def _arm_memory_carrier(config: ForgeConfig, pr_url: str) -> tuple[str, str]:
+    """Arm the project-memory pull request for auto-merge.
+
+    Memory takes the same kind of carrier into the same branch as the code this
+    run landed, so it is armed by the same mechanism and with the same configured
+    strategy — ``coordinator.pr_auto_merge._step_merge``, which is
+    ``gh pr merge --auto``. Arming asserts nothing over the base branch: it
+    delegates the decision to that branch's own requirements, exactly as every
+    story carrier already does. A base branch that refuses stays refused, and the
+    carrier simply waits (#2818).
+
+    Returns the ``MEMORY_PUBLISH_PUBLISHED_*`` refinement to record and the
+    detail suffix explaining it. Arming is never fatal: publication succeeded the
+    moment the carrier existed, so a refusal is reported in the recorded end
+    state rather than raised. The raw error travels in the detail together with
+    ``arming_failed``, because a policy refusal (auto-merge disabled on the
+    repository) and a host failure (``gh`` unauthenticated, a mergeability
+    conflict) both land here and the operator's next move differs.
+    """
+    strategy = config.workspace.merge_strategy
+    result = _step_merge(config.project_root, pr_url, strategy)
+    if result.get("success"):
+        _log(f"Armed the project-memory pull request for auto-merge ({strategy}): {pr_url}")
+        return MEMORY_PUBLISH_PUBLISHED_ARMED, f"auto-merge armed ({strategy})"
+    error = str(result.get("error") or "unknown error")
+    arming_failed = bool(result.get("arming_failed"))
+    _log(
+        f"⚠ SPRINT  the project-memory pull request was published but not armed for "
+        f"auto-merge; merge {pr_url} yourself once its checks pass: {error}"
+    )
+    return (
+        MEMORY_PUBLISH_PUBLISHED_UNARMED,
+        f"auto-merge not armed ({strategy}); arming_failed={arming_failed}; {error}",
+    )
+
+
 def _publish_via_memory_branch(config: ForgeConfig, *, push: bool, reason: str) -> str:
     """Stage the checkout clean and publish from the memory branch.
 
@@ -428,17 +467,32 @@ def _publish_via_memory_branch(config: ForgeConfig, *, push: bool, reason: str) 
     either published or retained in staging, so there is no outcome that both
     loses records and contaminates a later story's checkout — the two failure
     modes the raising direct path exists to shout about.
+
+    The return value stays the transport's own state. Whether the carrier was
+    *armed* refines only what is recorded: a caller asking whether the corpus got
+    off this machine is asking about the transport, and an unarmed carrier
+    published exactly as much as an armed one did.
     """
     state, pr_url = stage_and_publish_project_memory(
         config.project_root,
         config.workspace.base_branch,
         push=push,
     )
+    if state == MEMORY_PUBLISH_CLEAN and not pr_url:
+        # Nothing was pending, so nothing was published and there is nothing to
+        # arm. Recording an end state here would overwrite what the run that
+        # *did* publish recorded — including whether its carrier was armed — with
+        # a marker describing a run that did nothing (#2818).
+        return state
     detail = f"{reason}; pr={pr_url}" if pr_url else reason
+    recorded = state
+    if state == MEMORY_PUBLISH_PUBLISHED and pr_url:
+        recorded, arming_detail = _arm_memory_carrier(config, pr_url)
+        detail = f"{detail}; {arming_detail}"
     _record_audit_publish_state(
         config.project_root,
         config.workspace.base_branch,
-        f"memory_branch_{state}",
+        f"memory_branch_{recorded}",
         detail=detail,
     )
     if state in {MEMORY_PUBLISH_PUBLISHED, MEMORY_PUBLISH_CLEAN, MEMORY_PUBLISH_PUSHED_NO_PR}:

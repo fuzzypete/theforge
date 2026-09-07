@@ -7,7 +7,6 @@ import logging
 import shlex
 import subprocess
 import time
-import traceback
 from pathlib import Path
 
 from theforge.config import ForgeConfig
@@ -15,6 +14,7 @@ from theforge.review import ReviewResult
 from theforge.task import TaskStory
 
 from .changed_files import capture_changed_files
+from .exception_context import _build_exception_context
 from .gate import _parse_dirty_files
 from .gate_green_salvage import (
     SALVAGE_PENDING,
@@ -24,6 +24,17 @@ from .gate_green_salvage import (
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
+
+# Re-exported, not defined here: arming a carrier for auto-merge moved to
+# ``pr_auto_merge`` under #2818 so the project-memory carrier could be armed by
+# the same implementation. The names stay reachable at this address because the
+# merge step and its tests already reach for them here.
+from .pr_auto_merge import (  # noqa: F401
+    _AUTO_MERGE_ARMING_HINT,
+    _AUTO_MERGE_ARMING_MARKERS,
+    _is_auto_merge_arming_error,
+    _step_merge,
+)
 from .run_setup import delete_merge_state, load_merge_state, save_merge_state
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, MergeStepState, Phase
 from .util import _fmt_cost_total, _fmt_duration, _log, _log_verbose, _round_cost, _run_shell
@@ -171,114 +182,6 @@ def _branch_has_unique_commits(
         return int(output) > 0, None
     except ValueError:
         return False, f"git rev-list returned non-integer count: {output!r}"
-
-
-def _render_command_for_audit(cmd: list[str]) -> str:
-    """Render a subprocess command line while redacting bulky free-text args."""
-    rendered: list[str] = []
-    skip_next = False
-    for index, arg in enumerate(cmd):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--body" and index + 1 < len(cmd):
-            rendered.append(shlex.quote(arg))
-            rendered.append(shlex.quote(f"<redacted body len={len(cmd[index + 1])}>"))
-            skip_next = True
-            continue
-        rendered.append(shlex.quote(arg))
-    return " ".join(rendered)
-
-
-def _escape_control_preview(text: str) -> str:
-    """Render a preview string with control characters made explicit."""
-    out: list[str] = []
-    for char in text:
-        codepoint = ord(char)
-        if char == "\n":
-            out.append("\\n")
-        elif char == "\r":
-            out.append("\\r")
-        elif char == "\t":
-            out.append("\\t")
-        elif codepoint < 32 or codepoint == 127:
-            out.append(f"\\x{codepoint:02x}")
-        else:
-            out.append(char)
-    return "".join(out)
-
-
-def _preview_window(text: str, position: int, *, radius: int = 24) -> str:
-    """Return an escaped preview around a string position."""
-    start = max(0, position - radius)
-    end = min(len(text), position + radius + 1)
-    return _escape_control_preview(text[start:end])
-
-
-def _hex_window(text: str, position: int, *, radius: int = 8) -> str:
-    """Return a compact hex dump window around a string position."""
-    start = max(0, position - radius)
-    end = min(len(text), position + radius + 1)
-    return text[start:end].encode("utf-8", errors="replace").hex(" ")
-
-
-def _identify_embedded_null_source(
-    cmd: list[str],
-    input_sources: list[dict[str, str]] | None,
-) -> dict[str, object] | None:
-    """Locate the first embedded NUL in the command and source fields."""
-    for arg_index, arg in enumerate(cmd):
-        nul_position = arg.find("\x00")
-        if nul_position < 0:
-            continue
-
-        detail: dict[str, object] = {
-            "argument_index": arg_index,
-            "argument_flag": (
-                cmd[arg_index - 1]
-                if arg_index > 0 and cmd[arg_index - 1].startswith("--")
-                else None
-            ),
-            "position": nul_position,
-            "preview": _preview_window(arg, nul_position),
-            "hex_window": _hex_window(arg, nul_position),
-        }
-        for source in input_sources or []:
-            source_text = source.get("text", "")
-            source_nul_position = source_text.find("\x00")
-            if source_nul_position >= 0:
-                detail["source"] = source.get("source")
-                detail["source_position"] = source_nul_position
-                detail["source_preview"] = _preview_window(source_text, source_nul_position)
-                detail["source_hex_window"] = _hex_window(source_text, source_nul_position)
-                break
-        return detail
-    return None
-
-
-def _build_exception_context(
-    exc: Exception,
-    *,
-    cmd: list[str] | None = None,
-    input_sources: list[dict[str, str]] | None = None,
-) -> dict[str, object]:
-    """Serialize rich exception context for audit/debugging."""
-    context: dict[str, object] = {
-        "exception_class": type(exc).__name__,
-        "exception_args": [repr(arg) for arg in exc.args],
-        "traceback": traceback.format_exc(),
-    }
-    if cmd is not None:
-        context["command"] = _render_command_for_audit(cmd)
-    if (
-        isinstance(exc, ValueError)
-        and "embedded null byte" in str(exc).lower()
-        and cmd is not None
-    ):
-        offending_input = _identify_embedded_null_source(cmd, input_sources)
-        if offending_input is not None:
-            context["offending_input"] = offending_input
-    return context
 
 
 def _issue_is_operator_action(issue_number: int, project_root: Path) -> bool:
@@ -739,86 +642,6 @@ def _step_create_pr(
     if not pr_result.get("success"):
         return {"success": False, **pr_result}
     return {"success": True, "pr_url": pr_result["pr_url"]}
-
-
-_AUTO_MERGE_ARMING_MARKERS = (
-    "enablepullrequestautomerge",
-    "protected branch rules not configured",
-    "auto-merge is not allowed",
-    "auto merge is not allowed",
-    "allow_auto_merge",
-    "allowautomerge",
-)
-
-_AUTO_MERGE_ARMING_HINT = (
-    "Auto-merge arming was refused by GitHub; the PR itself was not rejected. "
-    "Configure branch protection on the target branch (enable required status "
-    "checks / allow auto-merge) or merge the PR manually with "
-    "`gh pr merge <PR> --squash --delete-branch` (without `--auto`)."
-)
-
-
-def _is_auto_merge_arming_error(stderr_text: str) -> bool:
-    """Return True if ``gh pr merge --auto`` stderr indicates the *arming*
-    step failed (rather than the PR being rejected on its merits)."""
-    if not stderr_text:
-        return False
-    lowered = stderr_text.lower()
-    return any(marker in lowered for marker in _AUTO_MERGE_ARMING_MARKERS)
-
-
-def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
-    """Execute ``gh pr merge --auto --{strategy}``.
-
-    Returns ``{"success": True}`` or
-    ``{"success": False, "error": ..., "retryable": bool, "arming_failed": bool}``.
-
-    ``arming_failed`` is True when GitHub refused to *arm* auto-merge (e.g.
-    target branch lacks the protection rules ``enablePullRequestAutoMerge``
-    requires) — distinct from a genuine PR rejection.
-    """
-    merge_retry_error = "base branch was modified"
-    try:
-        merge_proc = subprocess.run(
-            ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-            timeout=120,
-        )
-    except Exception as exc:
-        _pr_log.warning("gh pr merge --auto failed: %s", exc)
-        return {
-            "success": False,
-            "error": f"gh pr merge failed: {exc}",
-            "retryable": False,
-            "arming_failed": False,
-            "error_context": _build_exception_context(
-                exc,
-                cmd=["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
-            ),
-        }
-
-    if merge_proc.returncode != 0:
-        err = "\n".join(
-            part.strip()
-            for part in (merge_proc.stderr, merge_proc.stdout)
-            if part and part.strip()
-        )
-        _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
-        arming_failed = _is_auto_merge_arming_error(err)
-        if arming_failed:
-            error_msg = f"{_AUTO_MERGE_ARMING_HINT} Underlying error: {err}"
-        else:
-            error_msg = f"gh pr merge failed: {err}"
-        return {
-            "success": False,
-            "error": error_msg,
-            "retryable": merge_retry_error in err.lower(),
-            "arming_failed": arming_failed,
-        }
-
-    return {"success": True}
 
 
 def _step_await_merge_state(project_root: Path, pr_url: str) -> dict:
