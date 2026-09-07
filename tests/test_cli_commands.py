@@ -8,6 +8,8 @@ import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+from shape_gate_test_helpers import admit_every_issue_at_the_shape_gate
+
 from theforge.cli import cmd_run
 from theforge.config import (
     DEFAULT_VALIDATION,
@@ -582,6 +584,7 @@ class TestCmdSprintQueryMode:
             patch(
                 "theforge.sprint.query.build_resolved_sprint", return_value=resolved
             ) as mock_build,
+            admit_every_issue_at_the_shape_gate(),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint.run_sprint",
@@ -630,6 +633,7 @@ class TestCmdSprintQueryMode:
                 return_value=[{"number": 42, "title": "Story"}],
             ),
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            admit_every_issue_at_the_shape_gate(),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint.run_sprint",
@@ -684,6 +688,7 @@ class TestCmdSprintQueryMode:
                 return_value=[{"number": 42, "title": "Story"}],
             ),
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            admit_every_issue_at_the_shape_gate(),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint.run_sprint",

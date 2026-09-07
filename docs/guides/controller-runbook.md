@@ -122,6 +122,33 @@ the sprint-entry shape gate; it does not make a knowingly broken merge base safe
 to sprint against. Fix and land the baseline first, then resume ordinary
 sprints.
 
+### The shape gate could not evaluate an issue (issue #2910)
+
+A query-mode sprint (`--issues`, `--label`, `--milestone`) reads each issue with
+`gh issue view` before deciding admission. When that read fails, the gate has no
+input and reaches no verdict, so the issue is reported as **unevaluated** and
+refused — never admitted on the strength of the failure:
+
+```text
+[forge] 1 issue(s) could NOT be shape-checked (issue detail fetch failed) and are
+refused pending the check.
+  - #2910 (fetch_failure): shape_gate_unevaluated — ...
+```
+
+The `gh` error itself is logged at WARNING immediately above the banner; it is
+the diagnosis. The common causes are an unauthenticated or unreachable `gh` and
+a CLI version that rejects a `--json` field forge asks for. Forge drops a
+requested field it can survive without and continues with that capability
+degraded (saying so in the log); a field the verdict depends on is a hard fetch
+failure.
+
+Two dispositions, both visible in the run: fix the `gh` failure and re-run, or
+`forge sprint --force`, which runs the unevaluated issues on your explicit
+decision and records that they ran unchecked. Either way the audit, the summary,
+and `forge sprint-digest` carry `shape_gate_unevaluated` under the
+`gate_could_not_evaluate` category, so an unchecked story is never mistaken for
+one that passed.
+
 ### Landing precondition — clean project root (issue #2048)
 
 Under a landing workflow (`workspace.on_approve: merge`, or `--auto-merge`), a
