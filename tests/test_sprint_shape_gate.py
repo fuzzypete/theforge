@@ -907,6 +907,38 @@ def test_detail_fetch_drops_optional_field_the_installed_gh_rejects(tmp_path: Pa
     assert "comments" in retried_fields
 
 
+def test_detail_fetch_rediscovers_an_unsupported_field_only_once(tmp_path: Path) -> None:
+    """The rejection is a property of the installed gh, not of each issue.
+
+    A sprint of N issues must not pay a failing invocation plus a retry for
+    every one of them once the first has established the field is unsupported.
+    """
+    payload = json.dumps({"title": "T", "body": "B", "labels": [{"name": "bug"}], "state": "OPEN"})
+    issue_view_calls: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[1] == "api":  # timeline pagination
+            return _gh_result(1)
+        issue_view_calls.append(cmd[-1])
+        if "lastEditedAt" in cmd[-1]:
+            return _gh_result(1, stderr='Unknown JSON field: "lastEditedAt"')
+        return _gh_result(0, stdout=payload)
+
+    with patch("theforge.sprint.shape_gate.subprocess.run", side_effect=fake_run):
+        first = _fetch_issue_detail(21, tmp_path)
+        second = _fetch_issue_detail(22, tmp_path)
+        third = _fetch_issue_detail(23, tmp_path)
+
+    # One rejected call for the first issue, then a bare request per issue.
+    assert len(issue_view_calls) == 4
+    assert not any("lastEditedAt" in fields for fields in issue_view_calls[1:])
+    # And the degradation is still reported for every issue, not just the one
+    # that discovered it.
+    for detail in (first, second, third):
+        assert detail is not None
+        assert detail["unavailable_fields"] == ("lastEditedAt",)
+
+
 def test_detail_fetch_returns_none_when_a_required_field_is_rejected(tmp_path: Path) -> None:
     """Only fields the verdict can survive without are droppable."""
 

@@ -332,6 +332,22 @@ def _isolate_rate_registry():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_unsupported_gh_fields():
+    """Prevent one test's stubbed ``gh`` from shaping another's field request.
+
+    The shape gate remembers, for the process, which optional ``--json`` fields
+    the installed ``gh`` rejected, so a sprint discovers a CLI incompatibility
+    once instead of once per issue. In a test session that memory would carry
+    whatever the previous test's fake ``gh`` refused into the next one.
+    """
+    from theforge.sprint import shape_gate as _shape_gate
+
+    _shape_gate._reset_unsupported_detail_fields()
+    yield
+    _shape_gate._reset_unsupported_detail_fields()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_log_level():
     """Prevent log-level mutations from leaking across tests.
 

@@ -232,6 +232,18 @@ _OPTIONAL_DETAIL_FIELDS: dict[str, str] = {
 
 _UNKNOWN_JSON_FIELD_RE = re.compile(r'[Uu]nknown JSON field:\s*"(?P<field>[^"]+)"')
 
+# Optional fields the ``gh`` on this machine has already rejected. The installed
+# CLI does not change under a running sprint, so this is discovered once and
+# remembered for the process: without it a sprint of N issues pays a failing
+# invocation plus a retry for every one of them, and repeats the same warning N
+# times. Only ever holds keys of ``_OPTIONAL_DETAIL_FIELDS``.
+_unsupported_detail_fields: set[str] = set()
+
+
+def _reset_unsupported_detail_fields() -> None:
+    """Forget which fields the installed ``gh`` rejected. For tests only."""
+    _unsupported_detail_fields.clear()
+
 
 def _unknown_json_field(stderr: str) -> str | None:
     """Return the field name a ``gh`` invocation rejected, when it says so."""
@@ -275,8 +287,11 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
     than treating it as permission to run (#2910). The underlying ``gh`` error
     is logged at WARNING so the failure stays attributable to the environment.
     """
-    fields = list(_DETAIL_FIELDS)
-    unavailable: list[str] = []
+    # Fields an earlier issue already proved this ``gh`` does not know are not
+    # asked for again — the rejection is a property of the installed CLI, not of
+    # the issue being fetched.
+    unavailable = [field for field in _DETAIL_FIELDS if field in _unsupported_detail_fields]
+    fields = [field for field in _DETAIL_FIELDS if field not in _unsupported_detail_fields]
     stdout, error = _gh_issue_view_json(number, project_root, fields)
     while stdout is None:
         rejected = _unknown_json_field(error)
@@ -284,6 +299,9 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
             break
         fields.remove(rejected)
         unavailable.append(rejected)
+        _unsupported_detail_fields.add(rejected)
+        # Logged on discovery only, which is once per process for a given
+        # field, rather than once per issue in the sprint.
         _log.warning(
             "installed gh does not support the %r issue field; shape gate continues "
             "with degraded %s",
