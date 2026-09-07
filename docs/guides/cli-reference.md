@@ -162,6 +162,28 @@ manifest argument is optional when using `--milestone` or `--label`.
 | `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
 | `--force` | Bypass the sprint-entry shape gate and run every selected issue |
 
+`--force` covers shape refusals *and* issues the gate could not evaluate at all
+(see below); it does not cover the `operator-action` label or a semantic-readiness
+withholding, which stay refused.
+
+**When the gate cannot evaluate an issue.** Query mode fetches each issue's
+detail with `gh issue view`. If that fetch fails — an unreachable or
+unauthenticated `gh`, or an installed CLI that rejects a requested `--json`
+field — the gate has nothing to check, so no verdict exists for that issue. Such
+issues are reported as *unevaluated*, not skipped, and are **refused by default**:
+
+```text
+[forge] 1 issue(s) could NOT be shape-checked (issue detail fetch failed) and are
+refused pending the check. Fix the `gh` failure logged above, or re-run with
+--force to proceed without the check:
+  - #2910 (fetch_failure): shape_gate_unevaluated — Some issue [...]
+```
+
+They carry the `shape_gate_unevaluated` reason code and the
+`gate_could_not_evaluate` skip category in the sprint audit, summary, and
+`forge sprint-digest`, so a story that was never checked never looks like one
+that passed. `--force` runs them anyway and records that it did.
+
 `--detach` is manifest-only. Query mode (`--milestone`, `--label`, or `--issues`)
 must run in the current process, usually with `--fg` when you want foreground logs.
 

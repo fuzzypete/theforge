@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from shape_gate_test_helpers import admit_every_issue_at_the_shape_gate
 from sprint_test_helpers import stub_resolved
 
 from theforge import detach
@@ -107,6 +108,7 @@ def _run_query_mode(tmp_path: Path, config: ForgeConfig, run_id: str, run_sprint
             return_value=[{"number": 42, "title": "Story"}],
         ),
         patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        admit_every_issue_at_the_shape_gate(),
         patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
         patch("theforge.cli.sprint.release_story_locks"),
         patch("theforge.cli.sprint.run_sprint", **run_sprint_mock),

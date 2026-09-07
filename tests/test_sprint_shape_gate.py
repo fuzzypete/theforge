@@ -6,15 +6,20 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from theforge.shape_check import ShapeVerdict
 from theforge.sprint.shape_gate import (
     NEEDS_GROOMING_LABEL,
     REOPENED_STALE_CONTRACT_CODE,
+    SHAPE_GATE_UNEVALUATED_CODE,
+    SHAPE_GATE_UNEVALUATED_VERDICT,
     ShapeGateResult,
     SkippedIssue,
     _fetch_bot_reason_codes,
+    _fetch_issue_detail,
     _fetch_issue_timeline,
     apply_shape_gate,
     format_skipped_warning,
+    format_unevaluated_warning,
 )
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -760,11 +765,11 @@ def test_mixed_sprint_partitions_runnable_vs_skipped(tmp_path: Path) -> None:
     assert sources == {2: "label", 3: "local_check"}
 
 
-# ── Fail-open on gh errors ─────────────────────────────────────────────────
+# ── Unevaluated on gh fetch failure (#2910) ────────────────────────────────
 
 
-def test_fetch_failure_leaves_issue_runnable(tmp_path: Path) -> None:
-    """If gh returns nothing, do not invent a skip — leave it to sources.py."""
+def test_fetch_failure_refuses_issue_as_unevaluated(tmp_path: Path) -> None:
+    """A gate with no input reached no verdict — it must not admit the issue."""
     issues = [{"number": 1, "title": "unknown"}]
 
     result = apply_shape_gate(
@@ -773,8 +778,155 @@ def test_fetch_failure_leaves_issue_runnable(tmp_path: Path) -> None:
         fetch_detail=lambda _n, _r: None,
     )
 
-    assert [r["number"] for r in result.runnable] == [i["number"] for i in issues]
+    assert result.runnable == []
+    # Not a shape finding: nothing was evaluated, so nothing is "skipped".
     assert result.skipped == []
+    assert [u.issue_number for u in result.unevaluated] == [1]
+    entry = result.unevaluated[0]
+    assert entry.reason_codes == (SHAPE_GATE_UNEVALUATED_CODE,)
+    assert entry.source == "fetch_failure"
+    # No verdict claim is made for an issue that was never examined.
+    assert entry.verdict == ""
+    assert entry.detail
+
+
+def test_fetch_failure_emits_distinct_substrate_verdict(tmp_path: Path) -> None:
+    """The audit substrate must distinguish unevaluated from every verdict."""
+    events: list[dict] = []
+
+    apply_shape_gate(
+        [{"number": 4, "title": "unknown"}],
+        tmp_path,
+        fetch_detail=lambda _n, _r: None,
+        emit_verdict=events.append,
+    )
+
+    assert len(events) == 1
+    assert events[0]["issue_id"] == "4"
+    assert events[0]["verdict"] == SHAPE_GATE_UNEVALUATED_VERDICT
+    assert events[0]["verdict"] not in {v.value for v in ShapeVerdict}
+    assert events[0]["shape_gate_evaluated"] is False
+    assert events[0]["reason_codes"] == [SHAPE_GATE_UNEVALUATED_CODE]
+
+
+def test_fetch_failure_does_not_hide_evaluated_issues(tmp_path: Path) -> None:
+    """One unfetchable issue must not disturb the verdicts of its siblings."""
+
+    def fetch(number: int, root):
+        if number == 1:
+            return None
+        return _fake_detail(_RUNNABLE_BODY, ["enhancement"])(number, root)
+
+    result = apply_shape_gate(
+        [{"number": 1, "title": "unknown"}, {"number": 2, "title": "fine"}],
+        tmp_path,
+        fetch_detail=fetch,
+        semantic_readiness=lambda **_kwargs: None,
+    )
+
+    assert [r["number"] for r in result.runnable] == [2]
+    assert [u.issue_number for u in result.unevaluated] == [1]
+
+
+def test_force_runs_unevaluated_issues_and_records_that_they_were_not_checked(
+    tmp_path: Path,
+) -> None:
+    """--force is the operator's explicit decision to proceed without the check."""
+    result = apply_shape_gate(
+        [{"number": 9, "title": "unknown"}],
+        tmp_path,
+        force=True,
+        fetch_detail=lambda _n, _r: None,
+    )
+
+    assert [r["number"] for r in result.runnable] == [9]
+    # Running it does not erase the record that it ran unchecked.
+    assert result.runnable[0]["shape_gate_unevaluated"] is True
+    assert [u.issue_number for u in result.unevaluated] == [9]
+    # And it is never labelled with a passing verdict.
+    assert "shape_verdict" not in result.runnable[0]
+
+
+def test_unevaluated_warning_names_both_dispositions() -> None:
+    entry = SkippedIssue(
+        issue_number=3,
+        reason_codes=(SHAPE_GATE_UNEVALUATED_CODE,),
+        source="fetch_failure",
+        title="unknown",
+        detail="detail fetch failed",
+        verdict="",
+    )
+
+    refused = format_unevaluated_warning([entry])
+    assert "#3" in refused
+    assert "refused" in refused
+    assert "--force" in refused
+
+    forced = format_unevaluated_warning([entry], forced=True)
+    assert "#3" in forced
+    assert "unevaluated" in forced
+    assert "not a passing shape verdict" in forced
+
+    assert format_unevaluated_warning([]) == ""
+
+
+# ── gh compatibility drift (#2910) ─────────────────────────────────────────
+
+
+def _gh_result(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    proc.stderr = stderr
+    return proc
+
+
+def test_detail_fetch_drops_optional_field_the_installed_gh_rejects(tmp_path: Path) -> None:
+    """An unsupported optional field degrades a capability, not the whole gate."""
+    payload = json.dumps({"title": "T", "body": "B", "labels": [{"name": "bug"}], "state": "OPEN"})
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[1] == "api":  # timeline pagination
+            return _gh_result(1)
+        if "lastEditedAt" in cmd[-1]:
+            return _gh_result(1, stderr='Unknown JSON field: "lastEditedAt"')
+        return _gh_result(0, stdout=payload)
+
+    with patch("theforge.sprint.shape_gate.subprocess.run", side_effect=fake_run):
+        detail = _fetch_issue_detail(11, tmp_path)
+
+    assert detail is not None
+    assert detail["title"] == "T"
+    assert detail["labels"] == ["bug"]
+    assert detail["unavailable_fields"] == ("lastEditedAt",)
+    # The retry asked for everything else, so no other capability was dropped.
+    retried_fields = calls[1][-1].split(",")
+    assert "lastEditedAt" not in retried_fields
+    assert "comments" in retried_fields
+
+
+def test_detail_fetch_returns_none_when_a_required_field_is_rejected(tmp_path: Path) -> None:
+    """Only fields the verdict can survive without are droppable."""
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[1] == "api":
+            return _gh_result(1)
+        return _gh_result(1, stderr='Unknown JSON field: "body"')
+
+    with patch("theforge.sprint.shape_gate.subprocess.run", side_effect=fake_run):
+        assert _fetch_issue_detail(12, tmp_path) is None
+
+
+def test_detail_fetch_returns_none_on_generic_gh_failure(tmp_path: Path) -> None:
+    def fake_run(cmd, **_kwargs):
+        if cmd[1] == "api":
+            return _gh_result(1)
+        return _gh_result(1, stderr="gh: not authenticated")
+
+    with patch("theforge.sprint.shape_gate.subprocess.run", side_effect=fake_run):
+        assert _fetch_issue_detail(13, tmp_path) is None
 
 
 # ── Warning rendering ──────────────────────────────────────────────────────

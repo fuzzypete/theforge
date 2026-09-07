@@ -736,3 +736,140 @@ def test_cli_carries_remediated_numbers_from_env_into_shape_gate(
     import os as _os
 
     assert _os.environ.get(_INTAKE_REMEDIATED_ENV) == "1543,1545"
+
+
+# ── Detail-fetch failure: the gate could not evaluate the issue (#2910) ──────
+
+
+def _gh_always_fails(*_args, **_kwargs):
+    """Every `gh` call this gate makes exits non-zero.
+
+    Stands in for the reported environment: an installed CLI that rejects the
+    field set the gate asks for, so no issue detail is ever obtained.
+    """
+    from unittest.mock import MagicMock
+
+    proc = MagicMock()
+    proc.returncode = 1
+    proc.stdout = ""
+    proc.stderr = 'Unknown JSON field: "closedAt"'
+    return proc
+
+
+def test_cli_query_mode_refuses_issues_the_gate_could_not_evaluate(tmp_path: Path, capsys) -> None:
+    """A failed detail fetch must not admit the story to paid execution.
+
+    Exercises the whole entry seam — real ``apply_shape_gate``, real CLI
+    partition, real all-withheld audit write — with only the ``gh`` boundary
+    replaced, because the defect was precisely that the gate's failure never
+    reached any of those surfaces.
+    """
+    import yaml
+
+    config = _make_config(tmp_path)
+    args = _query_args(tmp_path)
+    fetched = [{"number": 2910, "title": "unfetchable"}]
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.shape_gate.subprocess.run", side_effect=_gh_always_fails),
+        patch("theforge.cli.sprint.run_sprint") as run_sprint,
+    ):
+        rc = cmd_sprint(args)
+
+    assert rc == 0
+    # The story never reached paid execution.
+    run_sprint.assert_not_called()
+
+    err = capsys.readouterr().err
+    assert "could NOT be shape-checked" in err
+    assert "#2910" in err
+    assert "--force" in err
+
+    # And the audit record separates "never evaluated" from "evaluated and
+    # skipped" for whoever reads the run afterwards.
+    audit = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
+    entry = audit["skipped"][0]
+    assert entry["issue_number"] == 2910
+    assert entry["reason_codes"] == ["shape_gate_unevaluated"]
+    assert entry["source"] == "fetch_failure"
+    # No verdict is claimed for an issue nothing examined.
+    assert not entry["verdict"]
+
+
+def test_cli_query_mode_force_runs_unevaluated_issues_and_says_so(tmp_path: Path, capsys) -> None:
+    """--force is the recorded operator decision to proceed without the check."""
+    config = _make_config(tmp_path)
+    args = _query_args(tmp_path, force=True)
+    fetched = [{"number": 2910, "title": "unfetchable"}]
+
+    captured: dict = {}
+
+    def fake_run_sprint(run_context):
+        captured["context"] = run_context
+        return _ok_result()
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.shape_gate.subprocess.run", side_effect=_gh_always_fails),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([2910])),
+        patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", side_effect=fake_run_sprint),
+    ):
+        rc = cmd_sprint(args)
+
+    assert rc == 0
+    assert "context" in captured
+    err = capsys.readouterr().err
+    assert "--force in effect" in err
+    assert "not a passing shape verdict" in err
+    # It ran, so it is not reported as dropped.
+    assert captured["context"].skipped_issues == []
+
+
+def test_unevaluated_issues_are_recorded_in_the_skip_substrate(tmp_path: Path) -> None:
+    """The audit substrate carries a category of its own for unevaluated issues.
+
+    Both dispositions are recorded: blocking when refused, advisory when the
+    operator forced the run — never absent, and never a shape category.
+    """
+    from theforge.shape_check.skip_taxonomy import SkipCategory
+    from theforge.sprint.shape_gate import SHAPE_GATE_UNEVALUATED_CODE
+    from theforge.sprint.skip_report import emit_shape_skip_events
+
+    unevaluated = SkippedIssue(
+        issue_number=2910,
+        reason_codes=(SHAPE_GATE_UNEVALUATED_CODE,),
+        source="fetch_failure",
+        title="unfetchable",
+        detail="detail fetch failed",
+        verdict="",
+    )
+    events: list[dict] = []
+
+    emit_shape_skip_events(
+        tmp_path,
+        run_id="run-1",
+        skipped=[unevaluated],
+        record=lambda _root, event: events.append(event) or 1,
+    )
+
+    assert len(events) == 1
+    assert events[0]["category"] == SkipCategory.GATE_UNEVALUATED.value
+    assert events[0]["severity"] == "blocking"
+    assert events[0]["reason_code"] == SHAPE_GATE_UNEVALUATED_CODE
+
+    events.clear()
+    emit_shape_skip_events(
+        tmp_path,
+        run_id="run-1",
+        advisories=[unevaluated],
+        record=lambda _root, event: events.append(event) or 1,
+    )
+    assert events[0]["category"] == SkipCategory.GATE_UNEVALUATED.value
+    assert events[0]["severity"] == "advisory"

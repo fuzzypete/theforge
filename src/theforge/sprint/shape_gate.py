@@ -5,11 +5,13 @@ the #811 GitHub Action: catches stale ``needs-grooming`` labels, issues that
 existed before the Action was deployed, and edits made while the Action was
 offline.
 
-Pure orchestration over ``shape_check`` and ``gh`` CLI. Fail-closed on
-unreachable ``gh`` calls: an issue whose labels/body cannot be fetched is
-left runnable (the pre-existing sources.py fetch will surface any real
-error). We do not want the shape gate itself to be a new source of silent
-drops.
+Pure orchestration over ``shape_check`` and ``gh`` CLI. An issue whose
+labels/body cannot be fetched has not been evaluated, and an unevaluated
+issue is never admitted as though it had passed: it is recorded as
+*unevaluated* with its own reason code and refused, unless the operator
+explicitly proceeds without the check via ``--force``. Missing evidence and
+evidence found acceptable are distinct outcomes and stay distinguishable in
+the run output, the sprint digest, and the audit substrate (#2910).
 
 The admissibility decision itself lives in ``theforge.admissibility`` so that
 operator-facing surfaces which advertise sprint-eligible work (``forge status
@@ -46,6 +48,24 @@ _log = logging.getLogger(__name__)
 VerdictEmitter = Callable[[dict], None]
 
 REOPENED_STALE_CONTRACT_CODE = "reopened_stale_contract"
+
+# The gate could not obtain the issue detail it evaluates, so no shape verdict
+# was reached for the issue at all. Deliberately distinct from every
+# ``ShapeVerdict`` value and from every ``shape_check`` reason code: "the gate
+# examined this and refused it" and "the gate never examined this" are different
+# outcomes and must not collapse into one another on any surface (#2910).
+SHAPE_GATE_UNEVALUATED_CODE = "shape_gate_unevaluated"
+
+# Verdict identifier recorded in the substrate for an unevaluated issue. Not a
+# ``ShapeVerdict``: no shape claim is being made, and verdict-distribution
+# queries must be able to separate these rows from real verdicts.
+SHAPE_GATE_UNEVALUATED_VERDICT = "unevaluated"
+
+SHAPE_GATE_UNEVALUATED_DETAIL = (
+    "issue detail could not be fetched via `gh issue view`, so the sprint-entry "
+    "shape gate had no input to evaluate; this issue was not checked (see the "
+    "logged gh error for the environment failure behind it)"
+)
 
 
 def _default_semantic_readiness(
@@ -88,6 +108,9 @@ __all__ = [
     "OPERATOR_ACTION_LABEL_CONFLICT_CODE",
     "OPERATOR_ACTION_MISSING_AC_CODE",
     "REOPENED_STALE_CONTRACT_CODE",
+    "SHAPE_GATE_UNEVALUATED_CODE",
+    "SHAPE_GATE_UNEVALUATED_DETAIL",
+    "SHAPE_GATE_UNEVALUATED_VERDICT",
     "ShapeGateResult",
     "SkippedIssue",
     "VerdictEmitter",
@@ -95,6 +118,7 @@ __all__ = [
     "format_advisory_warning",
     "format_operator_action_notice",
     "format_skipped_warning",
+    "format_unevaluated_warning",
     "skipped_issue_state_fields",
 ]
 
@@ -142,6 +166,14 @@ class ShapeGateResult:
     # operator work". Issues with ``operator-action`` plus a label conflict
     # or no AC section land in ``skipped`` instead.
     operator_action: list[SkippedIssue] = field(default_factory=list)
+    # Issues the gate could not evaluate at all because their detail could not
+    # be fetched. Held apart from ``skipped`` (evaluated and refused) and from
+    # ``runnable`` (evaluated and admitted) because "no verdict was reached" is
+    # a third outcome, and an error path must never confer the permission a
+    # passing verdict would have conferred (#2910). Refused by default; admitted
+    # only under ``force``, where the operator has explicitly decided to proceed
+    # without the check and that decision is recorded.
+    unevaluated: list[SkippedIssue] = field(default_factory=list)
 
 
 def skipped_issue_state_fields(skipped: object) -> tuple[str, dict]:
@@ -174,34 +206,107 @@ def skipped_issue_state_fields(skipped: object) -> tuple[str, dict]:
     return reason, detail
 
 
-def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
-    """Fetch issue detail for a single issue via ``gh``.
+# Fields the gate asks ``gh issue view`` for, in request order.
+_DETAIL_FIELDS: tuple[str, ...] = (
+    "title",
+    "body",
+    "labels",
+    "state",
+    "closedAt",
+    "stateReason",
+    "updatedAt",
+    "lastEditedAt",
+    "comments",
+)
 
-    Returns ``None`` on any fetch failure so callers can decide whether to
-    fail-open (leave the issue runnable) or fail-closed.
+# Fields the gate can lose without losing its verdict, mapped to the capability
+# that degrades when the installed ``gh`` does not know them. Requesting a field
+# an external CLI may not implement is a compatibility assumption; when the
+# assumption is unmet the gate degrades the named capability and says so, rather
+# than losing the whole evaluation. Every other field is load-bearing for the
+# shape verdict, so its absence is a fetch failure, not a degradation.
+_OPTIONAL_DETAIL_FIELDS: dict[str, str] = {
+    # reopen_context falls back to scanning timeline ``edited`` events.
+    "lastEditedAt": "reopen-contract staleness detection (falls back to timeline edit events)",
+}
+
+_UNKNOWN_JSON_FIELD_RE = re.compile(r'[Uu]nknown JSON field:\s*"(?P<field>[^"]+)"')
+
+
+def _unknown_json_field(stderr: str) -> str | None:
+    """Return the field name a ``gh`` invocation rejected, when it says so."""
+    match = _UNKNOWN_JSON_FIELD_RE.search(stderr or "")
+    return match.group("field") if match else None
+
+
+def _gh_issue_view_json(
+    number: int, project_root: Path | None, fields: list[str]
+) -> tuple[str | None, str]:
+    """Run ``gh issue view --json <fields>``; return ``(stdout, error_text)``.
+
+    ``stdout`` is ``None`` exactly when the fetch did not succeed, and
+    ``error_text`` then describes why in terms an operator can attribute to
+    their environment.
     """
     try:
         proc = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "view",
-                str(number),
-                "--json",
-                "title,body,labels,state,closedAt,stateReason,updatedAt,lastEditedAt,comments",
-            ],
+            ["gh", "issue", "view", str(number), "--json", ",".join(fields)],
             capture_output=True,
             text=True,
             cwd=str(project_root) if project_root else None,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, "gh issue view timed out after 30s"
+    except OSError as exc:
+        return None, f"gh issue view could not be executed: {exc}"
     if proc.returncode != 0:
+        return None, (proc.stderr or proc.stdout or "").strip() or (
+            f"gh issue view exited {proc.returncode} with no output"
+        )
+    return proc.stdout, ""
+
+
+def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
+    """Fetch issue detail for a single issue via ``gh``.
+
+    Returns ``None`` on any fetch failure. A ``None`` here means the gate has no
+    input to evaluate — callers must record that as an unevaluated issue rather
+    than treating it as permission to run (#2910). The underlying ``gh`` error
+    is logged at WARNING so the failure stays attributable to the environment.
+    """
+    fields = list(_DETAIL_FIELDS)
+    unavailable: list[str] = []
+    stdout, error = _gh_issue_view_json(number, project_root, fields)
+    while stdout is None:
+        rejected = _unknown_json_field(error)
+        if rejected is None or rejected not in _OPTIONAL_DETAIL_FIELDS or rejected not in fields:
+            break
+        fields.remove(rejected)
+        unavailable.append(rejected)
+        _log.warning(
+            "installed gh does not support the %r issue field; shape gate continues "
+            "with degraded %s",
+            rejected,
+            _OPTIONAL_DETAIL_FIELDS[rejected],
+        )
+        stdout, error = _gh_issue_view_json(number, project_root, fields)
+    if stdout is None:
+        _log.warning(
+            "shape gate could not fetch detail for issue #%s, so its shape was not evaluated: %s",
+            number,
+            error,
+        )
         return None
     try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        _log.warning(
+            "shape gate could not parse `gh issue view` output for issue #%s, so its "
+            "shape was not evaluated: %s",
+            number,
+            exc,
+        )
         return None
     label_names = [
         lbl.get("name", "")
@@ -219,6 +324,11 @@ def _fetch_issue_detail(number: int, project_root: Path | None) -> dict | None:
         "lastEditedAt": data.get("lastEditedAt"),
         "comments": data.get("comments") or [],
         "timeline": _fetch_issue_timeline(number, project_root),
+        # Instrumentation (CONVENTIONS rule 6): which requested fields the
+        # installed CLI could not supply, so a degraded run is visible as such
+        # downstream rather than looking like an issue that simply never had
+        # the data.
+        "unavailable_fields": tuple(unavailable),
     }
 
 
@@ -377,11 +487,20 @@ def apply_shape_gate(
     4. Otherwise, if the check returns a non-``RUNNABLE`` shape, skip with
        ``source='local_check'``.
 
+    An issue whose detail cannot be fetched is *unevaluated*: it reaches step 2
+    with nothing to check, so it is recorded in ``unevaluated`` with the
+    ``shape_gate_unevaluated`` reason code and refused. It never joins
+    ``runnable`` on the strength of the failure alone, and it is never recorded
+    as skipped-for-shape either — no shape finding was made.
+
     ``force=True`` returns every input issue as runnable but still populates
     ``skipped`` so the CLI can surface a prominent warning listing reasons.
     ``--force`` is an escape hatch over *structural* refusals only: the
     ``operator-action`` label and semantic readiness withholdings are operator
-    decisions, not shape findings, and stay refused.
+    decisions, not shape findings, and stay refused. Unevaluated issues *do*
+    run under ``--force`` — that is the operator explicitly deciding to proceed
+    without the check — and each carries ``shape_gate_unevaluated=True`` so the
+    run records which stories were admitted without one.
 
     5. An issue the structural check admits is then checked against its
        recorded, operator-ratified semantic readiness (#2785). This is an
@@ -418,6 +537,11 @@ def apply_shape_gate(
     # operator-action label, these are operator decisions rather than shape
     # findings, so --force must not run them either.
     semantic_withheld_numbers: set[int] = set()
+    # Issues whose detail could not be fetched: no verdict was reached for them
+    # at all. Refused by default; under --force they run, and the annotation
+    # below records that they ran unevaluated rather than checked.
+    unevaluated: list[SkippedIssue] = []
+    unevaluated_numbers: set[int] = set()
 
     def _safe_emit(payload: dict) -> None:
         # Substrate emission is observability, not gating: a write failure
@@ -438,8 +562,33 @@ def apply_shape_gate(
         title_short = issue.get("title", "")
         detail = fetch_detail(number, project_root)
         if detail is None:
-            # Fail-open: let the downstream source.fetch surface the real error.
-            runnable.append(issue)
+            # The gate has no input, so it reached no verdict. Recording that as
+            # its own outcome — and refusing the issue unless the operator
+            # explicitly proceeds without the check — is what keeps an error
+            # path from silently conferring the permission a passing verdict
+            # would have conferred (#2910).
+            unevaluated_numbers.add(number)
+            unevaluated.append(
+                SkippedIssue(
+                    issue_number=number,
+                    reason_codes=(SHAPE_GATE_UNEVALUATED_CODE,),
+                    source="fetch_failure",
+                    title=title_short,
+                    detail=SHAPE_GATE_UNEVALUATED_DETAIL,
+                    # No verdict claim: nothing was evaluated.
+                    verdict="",
+                    verdict_description="",
+                )
+            )
+            _safe_emit(
+                {
+                    "issue_id": str(number),
+                    "verdict": SHAPE_GATE_UNEVALUATED_VERDICT,
+                    "source": "fetch_failure",
+                    "reason_codes": [SHAPE_GATE_UNEVALUATED_CODE],
+                    "shape_gate_evaluated": False,
+                }
+            )
             continue
 
         labels = detail["labels"]
@@ -645,13 +794,27 @@ def apply_shape_gate(
         # awaiting-ratification, failed and accepted-concern revisions all
         # lack the ratified state admission consumes, and --force overrides
         # shape refusals, not the operator's ratification record.
+        # Unevaluated issues are NOT excluded: --force is exactly the operator's
+        # explicit decision to proceed without the check, and that is one of the
+        # two dispositions #2910 permits. They are annotated so the run records
+        # that they were admitted unevaluated rather than checked and passed.
         force_excluded = operator_action_label_numbers | semantic_withheld_numbers
-        force_runnable = [issue for issue in issues if int(issue["number"]) not in force_excluded]
+        force_runnable = []
+        for issue in issues:
+            if int(issue["number"]) in force_excluded:
+                continue
+            if int(issue["number"]) in unevaluated_numbers:
+                forced = dict(issue)
+                forced["shape_gate_unevaluated"] = True
+                force_runnable.append(forced)
+            else:
+                force_runnable.append(issue)
         return ShapeGateResult(
             runnable=force_runnable,
             skipped=skipped,
             advisories=advisories,
             operator_action=operator_action,
+            unevaluated=unevaluated,
         )
 
     return ShapeGateResult(
@@ -659,6 +822,7 @@ def apply_shape_gate(
         skipped=skipped,
         advisories=advisories,
         operator_action=operator_action,
+        unevaluated=unevaluated,
     )
 
 
@@ -692,6 +856,38 @@ def format_operator_action_notice(operator_action: list[SkippedIssue]) -> str:
     for entry in operator_action:
         title = f" — {entry.title}" if entry.title else ""
         lines.append(f"  - #{entry.issue_number} (label): {OPERATOR_ACTION_LABEL}{title}")
+    return "\n".join(lines)
+
+
+def format_unevaluated_warning(unevaluated: list[SkippedIssue], *, forced: bool = False) -> str:
+    """Render the banner for issues the gate could not evaluate.
+
+    Worded so the two dispositions are unmistakable and never read as a passing
+    verdict: refused pending the check (default), or run on the operator's
+    explicit ``--force`` decision to proceed without it.
+    """
+    if not unevaluated:
+        return ""
+    if forced:
+        head = (
+            f"[forge] {len(unevaluated)} issue(s) could NOT be shape-checked "
+            "(issue detail fetch failed); --force in effect, so they run "
+            "unevaluated — this is not a passing shape verdict:"
+        )
+    else:
+        head = (
+            f"[forge] {len(unevaluated)} issue(s) could NOT be shape-checked "
+            "(issue detail fetch failed) and are refused pending the check. "
+            "Fix the `gh` failure logged above, or re-run with --force to "
+            "proceed without the check:"
+        )
+    lines = [head]
+    for entry in unevaluated:
+        title = f" — {entry.title}" if entry.title else ""
+        lines.append(
+            f"  - #{entry.issue_number} ({entry.source}): "
+            f"{SHAPE_GATE_UNEVALUATED_CODE}{title} [{entry.detail}]"
+        )
     return "\n".join(lines)
 
 
