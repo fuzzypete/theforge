@@ -374,12 +374,46 @@ def test_a_cyclic_proposal_refuses_before_creating_anything(tmp_path):
     assert gh.closes() == []
 
 
-def test_an_original_without_a_recognized_type_label_refuses(tmp_path):
+def test_a_label_edit_that_removed_the_type_falls_back_to_the_storys_own(tmp_path):
+    """The offer was made from the type intake derived; a later label edit does
+    not invalidate the split the operator accepted, so the slices inherit that
+    type rather than the application failing on something they never saw."""
     gh = FakeGh(labels=("needs-grooming",))
     outcome = _apply(tmp_path, gh)
 
+    assert outcome.status == APPLY_STATUS_APPLIED
+    for call in gh.creates():
+        assert call[call.index("--label") + 1] == "enhancement"
+
+
+def test_an_original_with_no_appliable_type_anywhere_refuses(tmp_path):
+    gh = FakeGh(labels=("needs-grooming",))
+    outcome = _apply(tmp_path, gh, task=_task(tmp_path, type_="bug"))
+
     assert outcome.status == APPLY_STATUS_FAILED
     assert "runnable at creation" in outcome.error
+    assert gh.creates() == []
+
+
+def test_two_appliable_type_labels_are_an_ambiguity_and_refuse(tmp_path):
+    """Which type the slices inherit is not forge's to guess."""
+    gh = FakeGh(labels=("enhancement", "task"))
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert "2 appliable type labels" in outcome.error
+    assert gh.creates() == []
+
+
+def test_a_corrupt_criteria_mapping_refuses_rather_than_substituting(tmp_path):
+    """A dropped criterion index would silently ship the scope-boundary fallback."""
+    assessment = _assessment()
+    assessment["slices"][1]["covers_criteria"] = ["two"]
+    gh = FakeGh()
+    outcome = _apply(tmp_path, gh, assessment=assessment)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert "non-integer acceptance-criterion index" in outcome.error
     assert gh.creates() == []
 
 
@@ -429,3 +463,111 @@ def test_a_tracker_backed_feature_story_with_a_split_is_appliable(tmp_path):
 def test_no_assessment_is_not_appliable(tmp_path):
     assert not proposal_is_appliable(None, _task(tmp_path))
     assert not proposal_is_appliable({"slices": []}, _task(tmp_path))
+
+
+# ── Interruption: what exists is recorded as it starts existing ───────────────
+
+
+def test_each_created_slice_is_handed_to_the_recorder_before_the_next_create(tmp_path):
+    """The callback is what makes an interruption recoverable.
+
+    A recorder that only ran at the end would lose every issue filed before a
+    kill — which is exactly how a re-entry came to file the first slice twice.
+    """
+    seen: list[tuple[int, int]] = []
+    gh = FakeGh()
+
+    def _record(item):
+        # Ordering is the assertion: at the moment slice N is recorded, N is
+        # the most recent create and no later create has been attempted.
+        seen.append((item.slice_id, len(gh.creates())))
+
+    _apply(tmp_path, gh, on_created=_record)
+
+    assert [slice_id for slice_id, _ in seen] == [1, 2, 3, 4]
+    assert [creates for _, creates in seen] == [1, 2, 3, 4]
+
+
+def test_an_interruption_after_the_first_create_leaves_that_issue_recorded(tmp_path):
+    """Simulates a kill: the recorder raises the way a dying process would."""
+
+    class _Killed(Exception):
+        pass
+
+    recorded: list[dict] = []
+    gh = FakeGh()
+
+    def _record(item):
+        recorded.append(item.to_dict())
+        if len(recorded) == 1:
+            raise _Killed("process died after the first slice was created")
+
+    # The recorder's failure must not lose the issue or stop the application:
+    # the issue exists either way, and unwinding is not available.
+    _apply(tmp_path, gh, on_created=_record)
+
+    assert [entry["issue"] for entry in recorded][0] == 2900
+
+
+def test_reentry_reconciles_slices_the_tracker_already_carries(tmp_path):
+    """The window the recorder cannot close: created, then killed before recording."""
+
+    class _ReconcilingGh(FakeGh):
+        def __call__(self, args, project_root):
+            if args[:3] == ["gh", "issue", "list"]:
+                self.calls.append(list(args))
+                body = f"<!-- {DECOMPOSITION_MARKER} source=2541 slice=1 -->"
+                return _ok(f'[{{"number": 2900, "body": "{body}"}}]')
+            return super().__call__(args, project_root)
+
+    gh = _ReconcilingGh()
+    gh.next_number = 2910
+    outcome = _apply(tmp_path, gh, reconcile_existing=True)
+
+    assert outcome.status == APPLY_STATUS_APPLIED
+    # Slice 1 was recovered from the tracker rather than created a second time.
+    created_titles = [c[c.index("--title") + 1] for c in gh.creates()]
+    assert "extract the portable diagnosis record" not in created_titles
+    assert len(created_titles) == 3
+    assert [item.issue_number for item in outcome.created] == [2900, 2910, 2911, 2912]
+    # And the recovered number is what the dependants' edges point at.
+    assert gh.body_for("route diagnosis").startswith("---\ndepends_on:\n  - issue-2900\n---")
+
+
+def test_reconciliation_only_matches_this_proposals_own_marker(tmp_path):
+    """A body carrying another issue's marker is not this split's slice."""
+
+    class _WrongMarkerGh(FakeGh):
+        def __call__(self, args, project_root):
+            if args[:3] == ["gh", "issue", "list"]:
+                self.calls.append(list(args))
+                body = f"<!-- {DECOMPOSITION_MARKER} source=9999 slice=1 -->"
+                return _ok(f'[{{"number": 1234, "body": "{body}"}}]')
+            return super().__call__(args, project_root)
+
+    gh = _WrongMarkerGh()
+    outcome = _apply(tmp_path, gh, reconcile_existing=True)
+
+    assert [item.issue_number for item in outcome.created] == [2900, 2901, 2902, 2903]
+
+
+def test_a_failed_reconciliation_search_does_not_block_the_application(tmp_path):
+    class _SearchBrokenGh(FakeGh):
+        def __call__(self, args, project_root):
+            if args[:3] == ["gh", "issue", "list"]:
+                self.calls.append(list(args))
+                return _fail("gh: search unavailable")
+            return super().__call__(args, project_root)
+
+    gh = _SearchBrokenGh()
+    outcome = _apply(tmp_path, gh, reconcile_existing=True)
+
+    assert outcome.status == APPLY_STATUS_APPLIED
+    assert len(gh.creates()) == 4
+
+
+def test_a_first_attempt_never_pays_for_the_reconciliation_search(tmp_path):
+    gh = FakeGh()
+    _apply(tmp_path, gh)
+
+    assert not [c for c in gh.calls if c[:3] == ["gh", "issue", "list"]]

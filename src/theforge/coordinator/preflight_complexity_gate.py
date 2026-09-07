@@ -136,6 +136,39 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def _parse_iso(value: object) -> datetime.datetime | None:
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _answered_within_the_window(record: dict, answer_at: object) -> bool:
+    """Whether an answer found after an expiry was given before the deadline.
+
+    The gate re-reads the pending record after the poller reports an expiry,
+    because an operator who answered in the last moments of the window may have
+    written it between the poller's final check and its return — losing that is
+    losing a decision they made in time.
+
+    An answer written *after* ``timeout_at`` is a different thing. The pause has
+    already resolved by the configured no-decision route, and the run has been
+    told what it is doing; honouring the late answer would let an expired pause
+    be answered — with ``accept``, by mutating the tracker. Unreadable or absent
+    timestamps count as outside the window: this runs only on the expiry path,
+    where the record is not supposed to carry an answer at all, so the case that
+    cannot be verified is the case that fails closed.
+    """
+    deadline = _parse_iso(record.get("timeout_at"))
+    decided = _parse_iso(answer_at)
+    if deadline is None or decided is None:
+        return False
+    return decided <= deadline
+
+
 def gate_threshold(config: "ForgeConfig") -> int:
     """The configured score at which the gate opens."""
     from theforge.config.types import DEFAULT_PREFLIGHT_COMPLEXITY_GATE_THRESHOLD  # noqa: PLC0415
@@ -548,6 +581,71 @@ def _application_failed_result(
     )
 
 
+def _refuse_application(
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    task: "TaskStory",
+    *,
+    reason: str,
+    logger: "StructuredLogger | None",
+) -> CoordinatorResult:
+    """Record that an ``accept`` was not acted on, and end the run.
+
+    The one thing this must not do is quietly continue or quietly return the
+    story: a recorded acceptance forge refused to honour is a fact about the
+    run's provenance, and the operator has to be able to see that their split
+    did not happen and why.
+    """
+    from .decomposition_application import APPLY_STATUS_FAILED, ApplicationOutcome  # noqa: PLC0415
+
+    outcome = ApplicationOutcome(
+        status=APPLY_STATUS_FAILED,
+        created=(),
+        source_issue=getattr(task, "github_issue", None),
+        source_issue_closed=bool(state.preflight_decomposition_source_issue_closed),
+        error=reason,
+        applied_at=_now_iso(),
+    )
+    _record_application(state, outcome)
+    _persist_gate_state(state, config, task, logger=logger)
+    if logger:
+        logger._safe_emit(
+            "preflight_decomposition_application",
+            phase=PREFLIGHT_GATE_PHASE,
+            status=outcome.status,
+            created=[],
+            source_issue=outcome.source_issue,
+            source_issue_closed=outcome.source_issue_closed,
+            error=reason,
+        )
+    _cu._log(f"  ✗ PREFLIGHT gate  refusing to apply the recorded acceptance: {reason}")
+    return _application_failed_result(state, task, outcome)
+
+
+def _acceptance_is_actionable(state: "_cs.CoordinatorState") -> str | None:
+    """Why a recorded ``accept`` may not be acted on, or None when it may.
+
+    Applying a split is the only thing this gate does that an operator cannot
+    undo cheaply, so the provenance of the acceptance is re-checked at the point
+    of mutation rather than trusted because it is written down. A record that
+    says ``accept`` while saying no operator decided it, or while carrying no
+    assessment to apply, describes something that cannot have happened — a
+    hand-edited resume record, a state assembled by a caller that skipped the
+    pause — and the safe reading of an impossible record is to mutate nothing.
+    """
+    if state.preflight_complexity_gate_decision_source != DECISION_SOURCE_OPERATOR:
+        return (
+            "the recorded acceptance names no operator decision "
+            f"(source: {state.preflight_complexity_gate_decision_source or 'none'}), "
+            "and only an operator may apply a split"
+        )
+    if not state.preflight_complexity_gate_assessment_generated:
+        return (
+            "no decomposition assessment was generated for this story, so there is none to apply"
+        )
+    return None
+
+
 def _apply_accepted_proposal(
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
@@ -557,13 +655,36 @@ def _apply_accepted_proposal(
 ) -> CoordinatorResult:
     """Apply the recorded proposal, record what happened, and end the run.
 
-    Idempotent by construction: whatever a previous attempt created is passed
-    back in, so a re-entry after a partial failure finishes the split rather
-    than filing a second copy of it. The state is persisted immediately after
-    the application returns — before the terminal result leaves this function —
-    because the created issue numbers are the only handle on a partial split.
+    Idempotent by construction, in two layers. Each created slice is written to
+    the state and saved *as it is created*, not once the application returns, so
+    a process killed between two creates leaves every issue it filed on the
+    resume record — the version that recorded only at the end lost the first
+    issue and filed it again on re-entry. And a re-entry (any state that already
+    carries an application status) additionally asks the tracker which slices
+    already carry this proposal's marker, which covers a kill in the gap between
+    ``gh`` returning and the recorder running.
     """
-    from .decomposition_application import apply_decomposition  # noqa: PLC0415
+    from .decomposition_application import (  # noqa: PLC0415
+        APPLY_STATUS_IN_PROGRESS,
+        apply_decomposition,
+    )
+
+    reentry = bool(state.preflight_decomposition_application_status)
+
+    def _record_one_created(record: "_da.CreatedSlice") -> None:
+        """Persist one created slice the moment it exists."""
+        entries = list(state.preflight_decomposition_created or [])
+        if any(entry.get("slice_id") == record.slice_id for entry in entries):
+            return
+        entries.append(record.to_dict())
+        state.preflight_decomposition_created = entries
+        state.preflight_decomposition_source_issue = task.github_issue
+        # An application that is still running is neither applied nor failed,
+        # and saying either would misreport an interruption caught at this
+        # moment. The terminal status overwrites this a few lines below.
+        state.preflight_decomposition_application_status = APPLY_STATUS_IN_PROGRESS
+        state.preflight_decomposition_application_error = None
+        _persist_gate_state(state, config, task, logger=logger)
 
     outcome = apply_decomposition(
         assessment=state.preflight_complexity_gate_assessment,
@@ -571,6 +692,8 @@ def _apply_accepted_proposal(
         config=config,
         prior_created=state.preflight_decomposition_created,
         source_issue_already_closed=bool(state.preflight_decomposition_source_issue_closed),
+        reconcile_existing=reentry,
+        on_created=_record_one_created,
     )
     _record_application(state, outcome)
     _persist_gate_state(state, config, task, logger=logger)
@@ -625,6 +748,12 @@ def evaluate_preflight_complexity_gate(
             # Re-entering an application, not re-deciding it. Whatever the
             # earlier attempt created is on the state, so a fully applied split
             # costs no gh call and a partial one is finished rather than doubled.
+            #
+            # The provenance is re-checked first: a restored decision arrives
+            # from a file, and this branch is the one that mutates the tracker.
+            refusal = _acceptance_is_actionable(state)
+            if refusal is not None:
+                return _refuse_application(state, config, task, reason=refusal, logger=logger)
             return _apply_accepted_proposal(state, config, task, logger=logger)
         if prior in (PREFLIGHT_GATE_DECOMPOSE, PREFLIGHT_GATE_DECLINE):
             return _decompose_result(
@@ -679,11 +808,15 @@ def evaluate_preflight_complexity_gate(
 
     if decision == PREFLIGHT_GATE_ACCEPT:
         # The one mutating branch, and it is reachable only from an operator
-        # answer: ``accept`` is offered only where the proposal is appliable,
-        # the poller's answer is validated against exactly what was offered, and
-        # the no-decision vocabulary cannot name it at all.
-        if source != DECISION_SOURCE_OPERATOR:  # pragma: no cover - defence in depth
-            return _decompose_result(state, task, source=source)
+        # answer given while the pause was open: ``accept`` is offered only
+        # where the proposal is appliable, the poller's answer is validated
+        # against exactly what was offered and against the pause's own deadline,
+        # and the no-decision vocabulary cannot name it at all. The same
+        # provenance check the restored path uses runs here too, so both routes
+        # into the mutation are guarded by one rule rather than two.
+        refusal = _acceptance_is_actionable(state)
+        if refusal is not None:
+            return _refuse_application(state, config, task, reason=refusal, logger=logger)
         return _apply_accepted_proposal(state, config, task, logger=logger)
 
     _cu._log(
@@ -847,6 +980,21 @@ def _open_gate(
         answer_at = decided_at
     else:
         answer_at = record.get("decided_at") or decided_at
+
+    # An answer the poller never saw is only an answer if it was given before
+    # the deadline the operator was shown. Checked before cleanup, because the
+    # deadline lives on the record this is about to remove.
+    if (
+        answer is not None
+        and decision == "timeout"
+        and not _answered_within_the_window(record, answer_at)
+    ):
+        _cu._log(
+            f"  ⚠ PREFLIGHT gate  the pause expired before {str(answer).strip().lower()!r} "
+            f"was recorded (at {answer_at or 'an unknown time'}) — applying the "
+            f"no-decision action {no_decision_action}"
+        )
+        answer = None
 
     _pending.cleanup_pending(eff_run_id, project_root)
 

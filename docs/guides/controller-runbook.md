@@ -419,6 +419,14 @@ APPLIED   → created #2900  extract the portable diagnosis record
   rather than as a clean split, and the message names the issues that were
   created. Re-running the story re-enters the application from the persisted
   slice map and creates only what is missing — it never files a second copy.
+- **An interrupted application is recoverable.** Each slice is written to the
+  resume record *as it is created*, not once the application finishes, so a run
+  killed between two creates leaves every issue it filed on the record with
+  `status: in_progress`. Re-entry additionally asks the tracker which issues
+  already carry this proposal's marker
+  (`<!-- forge-decomposition-v1 source=#N slice=M -->`), which recovers an issue
+  created in the instant before the record was written. So `forge run` on the
+  same story after a kill finishes the split; it does not restart it.
 - **Nothing else can apply a split.** `decline`, `decompose`, `approve`, a
   timeout, and `retry.preflight_complexity_gate_no_decision` all create nothing;
   that key still accepts only `approve` or `decompose`. `accept` is offered only
@@ -426,6 +434,22 @@ APPLIED   → created #2900  extract the portable diagnosis record
   (`enhancement`, `task`, `spike` — not `bug`, whose shape needs an
   observed/expected/diagnosis body forge has no evidence to write), so an
   action that could not succeed is never on the menu.
+- **An expired pause cannot be answered late.** Once the wait window closes the
+  story resolves by the no-decision route, and an answer written *after*
+  `timeout_at` is not honoured — including `accept`. An answer written before
+  the deadline that the poller simply did not see in time still counts, which is
+  the race the post-expiry record read exists for.
+- **A recorded acceptance is re-checked before it mutates anything.** Both routes
+  into the mutation — a live answer and one restored from a resume record —
+  require the recorded decision source to be `operator` and an assessment to
+  exist. A record that says `accept` while saying nobody decided it (a
+  hand-edited resume file, a state assembled without the pause) creates nothing
+  and is reported as a refusal with the reason, not as a clean split.
+
+If the tracker's labels were edited after intake read the issue, the created
+slices inherit the type intake derived — the type the pause offered `accept`
+for. Two type labels on the original is the one label case that refuses: which
+type the slices inherit is not forge's to guess.
 
 An applied `accept` is reported the same way `decompose` is — `outcome:
 decomposed`, `⤺` on the sprint row, not a failure. Where to look afterwards:

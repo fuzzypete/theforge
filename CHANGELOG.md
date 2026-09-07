@@ -44,7 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The original closes last, or not at all.** A failure partway through leaves
   the original open, reports the issues that *were* created, and re-running the
   story finishes the split from the persisted slice map instead of filing a
-  second copy of it. The close is routed through the repository's spike closure
+  second copy of it. Each slice is written to the resume record as it is
+  created, so a run *killed* between two creates is recoverable the same way; a
+  re-entry also reconciles against the decomposition marker in created bodies,
+  which covers an issue filed in the instant before the record was written.
+
+  **The acceptance has to be a live operator acceptance.** An answer recorded
+  after the pause's deadline is not honoured (the story has already resolved by
+  the no-decision route), and both the live and the restored route into the
+  mutation require the recorded decision source to be the operator and an
+  assessment to exist — a record that says `accept` while saying nobody decided
+  it creates nothing and reports the refusal. The close is routed through the repository's spike closure
   guard and uses a `not planned` reason, so a decomposed issue is
   distinguishable from a completed one. The audit's
   `preflight_complexity_gate.assessment_application` block (record schema v47)

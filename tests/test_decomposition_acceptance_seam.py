@@ -139,6 +139,26 @@ def _never_answered(run_id, timeout_seconds, **kwargs):
     return "timeout", None
 
 
+def _stamp_decided_at(run_id: str, project_root, *, seconds_past_deadline: int) -> None:
+    """Move a recorded answer's timestamp relative to the pause's own deadline.
+
+    Positive seconds put the answer after ``timeout_at`` (the pause had already
+    lapsed when it was written); negative put it inside the window the operator
+    was shown.
+    """
+    import datetime
+
+    import yaml
+
+    path = Path(project_root) / ".forge" / "pending" / f"{run_id}.yaml"
+    record = yaml.safe_load(path.read_text(encoding="utf-8"))
+    deadline = datetime.datetime.fromisoformat(record["timeout_at"])
+    record["decided_at"] = (
+        deadline + datetime.timedelta(seconds=seconds_past_deadline)
+    ).isoformat()
+    path.write_text(yaml.safe_dump(record), encoding="utf-8")
+
+
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=["gh"], returncode=0, stdout=stdout, stderr="")
 
@@ -631,3 +651,217 @@ class TestAuditRecordMigration:
         assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 47
         assert audit_storage.MIGRATION_HELPERS[46] is audit_storage._migrate_v46_to_v47
         assert audit_storage.MIGRATION_HELPERS[45] is audit_storage._migrate_v45_to_v46
+
+
+# ── An acceptance is only actionable with live operator provenance ───────
+
+
+class TestAcceptanceProvenance:
+    """Both routes into the mutation re-check who accepted, and when."""
+
+    def _accepted_state(self, source: str | None) -> CoordinatorState:
+        state = _gated_state()
+        state.preflight_complexity_gate_opened = True
+        state.preflight_complexity_gate_decision = "accept"
+        state.preflight_complexity_gate_decision_source = source
+        state.preflight_complexity_gate_threshold = 9
+        state.preflight_complexity_gate_score = 10
+        return state
+
+    @pytest.mark.parametrize("source", [None, "no_decision", ""])
+    def test_a_restored_accept_with_no_operator_behind_it_mutates_nothing(
+        self, tmp_path: Path, source
+    ):
+        """A resume record is a file. An accept it carries that no operator made
+        describes something that cannot have happened, and the safe reading of an
+        impossible record is to create nothing."""
+        config = _config(tmp_path)
+        state = self._accepted_state(source)
+        gh = FakeGh()
+
+        with (
+            patch("theforge.pending.write_pending") as mock_write,
+            patch("theforge.coordinator.decomposition_application._run_gh", gh),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        mock_write.assert_not_called()
+        assert gh.calls == []
+        assert result is not None and result.success is False
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_FAILED
+        assert state.preflight_decomposition_created == []
+        assert state.preflight_decomposition_source_issue_closed is False
+        assert "only an operator may apply a split" in (
+            state.preflight_decomposition_application_error or ""
+        )
+        # Not reported as a clean split — the operator has to see the refusal.
+        assert returned_for_decomposition(state) is False
+
+    def test_a_restored_operator_accept_still_applies(self, tmp_path: Path):
+        config = _config(tmp_path)
+        state = self._accepted_state("operator")
+        gh = FakeGh()
+
+        with (
+            patch("theforge.pending.write_pending") as mock_write,
+            patch("theforge.coordinator.decomposition_application._run_gh", gh),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        mock_write.assert_not_called()
+        assert result is not None
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+        assert returned_for_decomposition(state) is True
+
+    def test_a_restored_accept_with_no_assessment_to_apply_mutates_nothing(self, tmp_path: Path):
+        config = _config(tmp_path)
+        state = _gated_state(with_assessment=False)
+        state.preflight_complexity_gate_decision = "accept"
+        state.preflight_complexity_gate_decision_source = "operator"
+        gh = FakeGh()
+
+        with patch("theforge.coordinator.decomposition_application._run_gh", gh):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert gh.calls == []
+        assert result is not None and result.success is False
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_FAILED
+        assert "none to apply" in (state.preflight_decomposition_application_error or "")
+
+    def test_an_accept_recorded_after_the_pause_expired_is_not_honoured(self, tmp_path: Path):
+        """The pause has already resolved by the no-decision route; an answer
+        written after its deadline is not the answer that resolved it, and must
+        not be able to mutate the tracker."""
+        config = _config(tmp_path)
+        state = _gated_state()
+        gh = FakeGh()
+
+        def _expire_then_answer(run_id, timeout_seconds, **kwargs):
+            project_root = kwargs.get("project_root")
+            pending.resolve_pending(run_id, "accept", project_root)
+            _stamp_decided_at(run_id, project_root, seconds_past_deadline=60)
+            return "timeout", None
+
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_expire_then_answer),
+            patch("theforge.coordinator.decomposition_application._run_gh", gh),
+        ):
+            result = evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert gh.calls == []
+        assert state.preflight_complexity_gate_decision == "decompose"
+        assert state.preflight_complexity_gate_decision_source == "no_decision"
+        assert state.preflight_decomposition_application_status is None
+        assert result is not None and result.success is False
+
+    def test_an_answer_given_inside_the_window_is_still_honoured_after_an_expiry(
+        self, tmp_path: Path
+    ):
+        """The race the post-poll record read exists for: the operator answered
+        in time, the poller just did not see it before returning."""
+        config = _config(tmp_path)
+        state = _gated_state()
+        gh = FakeGh()
+
+        def _answer_then_expire(run_id, timeout_seconds, **kwargs):
+            project_root = kwargs.get("project_root")
+            pending.resolve_pending(run_id, "accept", project_root)
+            _stamp_decided_at(run_id, project_root, seconds_past_deadline=-60)
+            return "timeout", None
+
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_answer_then_expire),
+            patch("theforge.coordinator.decomposition_application._run_gh", gh),
+        ):
+            evaluate_preflight_complexity_gate(state, config, _issue_task(), "PROCEED")
+
+        assert state.preflight_complexity_gate_decision == "accept"
+        assert state.preflight_complexity_gate_decision_source == "operator"
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+
+
+# ── An interrupted application is recoverable ────────────────────────────
+
+
+class TestInterruptedApplication:
+    def test_every_created_slice_is_on_the_state_before_the_next_create(self, tmp_path: Path):
+        config = _config(tmp_path)
+        task = _issue_task()
+        state = _gated_state()
+        observed: list[tuple[int, str | None]] = []
+
+        class _WatchingGh(FakeGh):
+            def __call__(self, args, project_root):
+                if args[:3] == ["gh", "issue", "create"]:
+                    observed.append(
+                        (
+                            len(state.preflight_decomposition_created or []),
+                            state.preflight_decomposition_application_status,
+                        )
+                    )
+                return super().__call__(args, project_root)
+
+        _run_gate(state, config, task, _WatchingGh(), answer="accept")
+
+        # Before create N, N-1 slices are already recorded — the record never
+        # lags the tracker by more than the create in flight.
+        assert [count for count, _ in observed] == [0, 1, 2]
+        assert [status for _, status in observed][1:] == ["in_progress", "in_progress"]
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+
+    def test_a_kill_between_creates_leaves_the_created_issues_on_the_resume_record(
+        self, tmp_path: Path
+    ):
+        """The interruption the per-create recorder exists for: the process dies
+        after slice 1 is filed, and the split resumes into it rather than
+        filing it a second time."""
+        config = _config(tmp_path)
+        task = _issue_task()
+        state = _gated_state()
+
+        class _Killed(BaseException):
+            """Not an Exception: a kill is not something the apply path catches."""
+
+        class _DyingGh(FakeGh):
+            def __call__(self, args, project_root):
+                if args[:3] == ["gh", "issue", "create"] and len(self.calls) > 1:
+                    raise _Killed("the process was killed mid-application")
+                return super().__call__(args, project_root)
+
+        with pytest.raises(_Killed):
+            _run_gate(state, config, task, _DyingGh(), answer="accept")
+
+        # What the killed process left behind, read back off the resume record
+        # rather than off the in-memory state.
+        record = load_resume_record(tmp_path, task.slug)
+        assert record is not None
+        resumed = CoordinatorState()
+        apply_resume_record_to_state(resumed, record)
+        assert resumed.preflight_complexity_gate_decision == "accept"
+        assert resumed.preflight_complexity_gate_decision_source == "operator"
+        assert [entry["issue"] for entry in resumed.preflight_decomposition_created] == [2900]
+        assert resumed.preflight_decomposition_application_status == "in_progress"
+
+        # The resumed run finishes the split without filing slice 1 again.
+        resumed.run_id = state.run_id
+        second = FakeGh()
+        second.next_number = 2910
+        with (
+            patch("theforge.pending.write_pending") as mock_write,
+            patch("theforge.coordinator.decomposition_application._run_gh", second),
+        ):
+            evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        mock_write.assert_not_called()
+        created_titles = [
+            call[call.index("--title") + 1]
+            for call in second.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]
+        assert "extract the portable diagnosis record" not in created_titles
+        assert resumed.preflight_decomposition_application_status == APPLY_STATUS_APPLIED
+        assert [entry["issue"] for entry in resumed.preflight_decomposition_created] == [
+            2900,
+            2910,
+            2911,
+        ]

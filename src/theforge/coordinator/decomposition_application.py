@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -55,11 +56,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: so a partially applied split is identifiable from the tracker alone.
 DECOMPOSITION_MARKER = "forge-decomposition-v1"
 
-#: ``preflight_decomposition_application_status`` values. There are only two:
-#: a proposal that was never accepted records no status at all, which is what
-#: keeps "declined" distinguishable from "accepted and failed".
+_log = logging.getLogger(__name__)
+
+#: ``preflight_decomposition_application_status`` values. A proposal that was
+#: never accepted records no status at all, which is what keeps "declined"
+#: distinguishable from "accepted and failed". ``in_progress`` is written by the
+#: caller's per-create recorder while creates are still running, so a record
+#: found in that state after a kill says "an application was interrupted here",
+#: which is exactly what a re-entry needs to know.
 APPLY_STATUS_APPLIED = "applied"
 APPLY_STATUS_FAILED = "failed"
+APPLY_STATUS_IN_PROGRESS = "in_progress"
 
 _GH_TIMEOUT_SECONDS = 60
 
@@ -236,6 +243,14 @@ def proposal_is_appliable(assessment: dict | None, task: "TaskStory") -> bool:
     describe a split, the story must be tracker-backed (a file-backed story has
     no issue to create siblings beside or to close), and its type must be one a
     rendered slice can be a well-shaped instance of.
+
+    All three are answered from what intake already read, with **no ``gh`` call**
+    — this runs while the pause is being written, and a network round trip there
+    would delay the notification the operator is waiting on. The consequence is
+    that the type is the one intake derived, not necessarily the one the live
+    issue carries now; :func:`_read_context` re-reads the tracker at application
+    time and tolerates a label edit that removed the type, refusing only the
+    genuinely ambiguous case of two type labels.
     """
     if getattr(task, "github_issue", None) is None:
         return False
@@ -293,8 +308,16 @@ def _validated_slices(assessment: dict | None) -> list[_Slice]:
         for index_value in entry.get("covers_criteria") or ():
             try:
                 covers.append(int(index_value))
-            except (TypeError, ValueError):
-                continue
+            except (TypeError, ValueError) as exc:
+                # Refused rather than dropped, for the same reason a malformed
+                # edge is: a slice whose criteria mapping is corrupt would be
+                # created carrying the scope-boundary fallback in place of the
+                # criteria the operator read in the proposal, and they would
+                # have no way to see the substitution.
+                raise ApplicationRefused(
+                    f"slice {slice_id} declares a non-integer acceptance-criterion "
+                    f"index {index_value!r}"
+                ) from exc
         slices.append(
             _Slice(
                 slice_id=slice_id,
@@ -392,7 +415,7 @@ def render_slice_body(
     frontmatter = _frontmatter(dep_issues)
     if frontmatter:
         parts.append(frontmatter)
-    parts.append(f"<!-- {DECOMPOSITION_MARKER} source={source_issue} slice={item.slice_id} -->")
+    parts.append(_slice_marker(source_issue, item.slice_id))
     parts.append(
         f"Slice {position} of {total}, split from #{source_issue} by TheForge's preflight "
         "complexity gate after the operator accepted its decomposition proposal."
@@ -523,12 +546,29 @@ def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) ->
 
     appliable = applicable_type_labels()
     type_labels = [name for name in labels if name.lower() in appliable]
-    if len(type_labels) != 1:
+    if len(type_labels) > 1:
+        # Two type labels is not a declaration, it is an ambiguity — intake
+        # refuses the original for the same reason, and guessing which one the
+        # slices inherit would be inventing the answer.
         raise ApplicationRefused(
             f"#{number} carries {len(type_labels)} appliable type labels "
-            f"({', '.join(sorted(type_labels)) or 'none'}); a created slice needs exactly "
+            f"({', '.join(sorted(type_labels))}); a created slice needs exactly "
             f"one of {', '.join(sorted(appliable))} to be runnable at creation"
         )
+    if not type_labels:
+        # The live issue carries no appliable type label — its labels were
+        # edited after intake read it. Fall back to the type intake derived,
+        # which is the type the pause offered ``accept`` for; refusing here
+        # would fail an application the operator was told was available, for a
+        # label edit that does not change what the slices should be.
+        fallback = str(getattr(task, "type", "") or "").strip().lower()
+        if fallback not in appliable:
+            raise ApplicationRefused(
+                f"#{number} carries no appliable type label and the story's own type "
+                f"{fallback or 'none'!r} is not one of {', '.join(sorted(appliable))}; "
+                "a created slice needs one to be runnable at creation"
+            )
+        type_labels = [fallback]
     return _Context(
         type_label=type_labels[0],
         milestone=milestone,
@@ -585,6 +625,99 @@ def _prior_map(prior_created: object) -> dict[int, CreatedSlice]:
     return out
 
 
+def _slice_marker(source_issue: int, slice_id: int) -> str:
+    """The exact comment written into a created slice's body.
+
+    One definition, used to write the marker and to recognise it, so a
+    reconciliation can never match a body the renderer did not produce.
+    """
+    return f"<!-- {DECOMPOSITION_MARKER} source={source_issue} slice={slice_id} -->"
+
+
+def _notify_created(on_created: "Callable[[CreatedSlice], None]", record: CreatedSlice) -> None:
+    """Hand one created slice to the caller's recorder, swallowing its failures.
+
+    A persistence error must not lose the issue: it already exists, and the
+    application's own report still carries it. Raising here would turn a
+    recoverable write failure into a partial split with a stack trace where the
+    created issue numbers should be.
+    """
+    try:
+        on_created(record)
+    except Exception as exc:  # noqa: BLE001 - recording is best-effort, the issue is real
+        _log.warning("recording created slice #%s failed: %s", record.issue_number, exc)
+
+
+def _existing_by_marker(
+    *,
+    source_issue: int,
+    slices: list[_Slice],
+    runner: GhRunner,
+    project_root: Path,
+) -> dict[int, CreatedSlice]:
+    """Slices of this proposal that already exist on the tracker.
+
+    Recovers issues an interrupted attempt created but never got to record.
+    Matching is on the exact marker string this module writes, not on the search
+    engine's idea of relevance — the search only narrows what is fetched, and
+    every candidate body is checked in Python — so a false positive would have
+    to be an issue quoting this application's own marker verbatim.
+
+    Any failure (``gh`` unavailable, malformed JSON, an unindexed body) yields
+    an empty mapping: the persisted record remains the primary mechanism, and a
+    reconciliation that cannot answer must not block the application.
+    """
+    titles = {item.slice_id: item.title for item in slices}
+    try:
+        raw = _gh_or_raise(
+            runner,
+            [
+                "gh",
+                "issue",
+                "list",
+                "--search",
+                f"{DECOMPOSITION_MARKER} source={source_issue} in:body",
+                "--state",
+                "all",
+                "--limit",
+                "100",
+                "--json",
+                "number,body",
+            ],
+            project_root,
+            f"gh issue list for prior slices of #{source_issue}",
+        )
+        data = json.loads(raw or "[]")
+    except Exception as exc:  # noqa: BLE001 - reconciliation is best-effort
+        _log.warning("could not reconcile prior slices of #%s: %s", source_issue, exc)
+        return {}
+
+    found: dict[int, CreatedSlice] = {}
+    if not isinstance(data, list):
+        return found
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        body = str(entry.get("body") or "")
+        try:
+            number = int(entry.get("number"))
+        except (TypeError, ValueError):
+            continue
+        for slice_id in titles:
+            if _slice_marker(source_issue, slice_id) in body:
+                # Lowest issue number wins, so a duplicate a previous bug left
+                # behind resolves to the first one filed rather than at random.
+                existing = found.get(slice_id)
+                if existing is None or number < existing.issue_number:
+                    found[slice_id] = CreatedSlice(
+                        slice_id=slice_id,
+                        title=titles[slice_id],
+                        issue_number=number,
+                        reused=True,
+                    )
+    return found
+
+
 def _may_close(
     *, number: int, project_root: Path, story_type: str | None, closing_comment: str
 ) -> tuple[bool, str]:
@@ -607,15 +740,31 @@ def apply_decomposition(
     config: "ForgeConfig",
     prior_created: object = (),
     source_issue_already_closed: bool = False,
+    reconcile_existing: bool = False,
+    on_created: "Callable[[CreatedSlice], None] | None" = None,
     runner: GhRunner | None = None,
 ) -> ApplicationOutcome:
     """Create the proposal's slices, write its edges, and close the original.
 
     Returns an :class:`ApplicationOutcome` in every case — this never raises for
     a tracker failure, because the caller's job on failure is to *report* what
-    exists, not to unwind it. ``prior_created`` carries what an earlier attempt
-    already filed, which makes re-entry after a partial failure additive rather
-    than duplicating.
+    exists, not to unwind it.
+
+    Three parameters carry the whole idempotency story, and each one closes a
+    different way a re-entry could duplicate work:
+
+    * ``prior_created`` is what an earlier attempt filed. Those slices are
+      reused, not re-created.
+    * ``on_created`` is called with each newly created slice **before the next
+      create is attempted**, so a process killed mid-application leaves every
+      issue it created on the caller's durable record rather than only the ones
+      that survived to a return. Without it, an interruption after the first
+      create loses that issue and the retry files it again.
+    * ``reconcile_existing`` asks the tracker which slices already carry this
+      application's marker, which recovers the one window ``on_created`` cannot:
+      a kill between ``gh issue create`` returning and the callback running.
+      Off for a first attempt, since there is nothing to reconcile and the
+      search would be a round trip spent proving it.
     """
     runner = runner or _run_gh
     project_root = Path(config.project_root)
@@ -662,6 +811,20 @@ def apply_decomposition(
             error=str(exc),
             applied_at=_now_iso(),
         )
+
+    if reconcile_existing and any(item.slice_id not in created_records for item in slices):
+        # Best-effort, and deliberately additive only: it can decide a slice was
+        # already created, never that one was not.
+        for slice_id, record in _existing_by_marker(
+            source_issue=source_issue,
+            slices=slices,
+            runner=runner,
+            project_root=project_root,
+        ).items():
+            if slice_id not in created_records:
+                created_records[slice_id] = record
+                if on_created is not None:
+                    _notify_created(on_created, record)
 
     slice_titles = {item.slice_id: item.title for item in slices}
     numbers = {sid: record.issue_number for sid, record in created_records.items()}
@@ -718,6 +881,11 @@ def apply_decomposition(
             created.append(record)
             created_records[item.slice_id] = record
             numbers[item.slice_id] = issue_number
+            # Durable before the next create is attempted. An issue that exists
+            # on GitHub but on no record is the one state nothing downstream can
+            # act on, so it is recorded at the moment it starts existing.
+            if on_created is not None:
+                _notify_created(on_created, record)
     except Exception as exc:  # noqa: BLE001 - report the partial state, never unwind
         return ApplicationOutcome(
             status=APPLY_STATUS_FAILED,
