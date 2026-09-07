@@ -1,0 +1,430 @@
+issues:
+  2595:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: 'Exempt `.forge/audits/runs/` and `.forge/knowledge/summaries/` from the project-root
+      dirty check, or write those artifacts outside the checkout. Either leaves the publish-once-per-sprint
+      / check-once-per-story timing mismatch exactly as diagnosed, yet satisfies every clause: no ESCALATE
+      cites those paths, and operator-introduced dirt still refuses.'
+    criterion_sha256: c67723291217dcc1cf03fa90df1b74ba0bd57e8cabee4b40af71a345f98e9496
+    governance_unconfirmed: false
+    inspected_source: 016a4625b83c16f7a3e03ab397425216b38cb120
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: Run artifacts are published once per sprint but the gate that requires them committed
+      runs once per story, so every story after the first is refused
+    landed_classification: cause_addressing
+    landed_commit: 016a4625b83c16f7a3e03ab397425216b38cb120
+    landed_reason: null
+    notes: The spec's worked example. The landed change adds `publish_pending_story_run_artifacts` and
+      calls it inside the story-dispatch loop, so publication keeps pace with enforcement — the timing
+      mismatch itself. The issue body rules the exemption out in prose and the dev read the whole body.
+    run_id: 4048c4b7e85c
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2689:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: Raise `_LEASE_AGE_SLACK_SECONDS` from 1.0 to a value larger than any observed cached-`btime`
+      drift. That is neither widening `_wait_until`'s timeout, nor a retry, nor a weakened assertion —
+      the three moves the criterion explicitly forecloses — and it leaves the stale cached `/proc/stat`
+      boot epoch in place.
+    criterion_sha256: ec65a676bd0b1626da50d8ccbeff2267ad9255770b99b2b8510998b54b593056
+    governance_unconfirmed: false
+    inspected_source: 19dad7d8147bd67d44f17eddd540d711328b64e0
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: Two process-lease tests return different gate verdicts for the same commit, so a red
+      clears on a re-run while auto-merge stands armed behind it
+    landed_classification: cause_addressing
+    landed_commit: 19dad7d8147bd67d44f17eddd540d711328b64e0
+    landed_reason: null
+    notes: Landed change adds `opened_since_boot` to the lease and prunes in the kernel's boot-relative
+      frame, so the two times come from one clock and the cross-clock bridge the cause names is removed
+      rather than padded.
+    run_id: d14fca18c350
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2775:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: Unconditionally skip any project-root dirt whose paths sit under `.forge/audits/runs/`,
+      `.forge/audits/landing/` or `.forge/knowledge/summaries/` at the entry check, with no attribution
+      to a sibling and no publish retry. That satisfies the text — such an ESCALATE can no longer fire,
+      and operator-authored dirt still refuses — while leaving the entry check's missing attribution/retry
+      machinery exactly as diagnosed.
+    criterion_sha256: 11468fd73a5d5a3254edc6db9fcbd8b48cc86c7dfea0611f30246005a26d1ea4
+    governance_unconfirmed: false
+    inspected_source: 5a30d60822303c9a4557763420bff3c11ea84e66
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A sprint refuses its own stories at entry for artifacts a sibling landing has not finished
+      committing
+    landed_classification: cause_addressing
+    landed_commit: 5a30d60822303c9a4557763420bff3c11ea84e66
+    landed_reason: null
+    notes: 'Closest call in the cohort. The landed change is path-scoped, but it installs the attribution
+      the cause names as missing: `project_root_dirt_is_story_run_artifacts_only` is lifted beside `project_root_dirty_status`,
+      shared with the merge-time path, probes with `-uall` so a wholly-untracked tree is attributable,
+      and fails closed on a status git cannot describe. A blanket prefix skip would have done none of
+      that.'
+    run_id: 1b243e290b44
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2848:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: 'Take only the criterion''s second disjunct: on a declared/evaluated verdict mismatch,
+      fall back to a landing destination that carries no lifecycle requirement. The run then records its
+      cause on the issue as required, while `partial` continues to be derived from the runner''s `success`
+      flag and `_declared_diagnosis_verdict` continues to disagree with the gate — the cause as diagnosed.'
+    criterion_sha256: b5f6175a45cdfcab777587c8a14523277bb74468c408cfcb3d5b130255ef93ae
+    governance_unconfirmed: false
+    inspected_source: 19a74a09deed6d76f48563b6cec74dee63214703
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A diagnose run that reaches a confirmed, source-verified cause records nothing on the
+      issue, so completed investigation is paid for and discarded
+    landed_classification: cause_addressing
+    landed_commit: 19a74a09deed6d76f48563b6cec74dee63214703
+    landed_reason: null
+    notes: 'The criterion itself offers the fallback as an acceptable fix, so the admitted change is licensed
+      rather than smuggled — it is still a change that satisfies the text without touching the cause.
+      The landed change took the first disjunct instead: the declared verdict is now derived from `lifecycle_blocking_missing_fields`,
+      and a complete artifact no longer enters the partial branch.'
+    run_id: 1bf648267907
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2886:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: Stop `require_conforming_body` refusing on a declare-side gap — downgrade it to an
+      audit note — while `lifecycle_blocking_missing_fields` keeps treating empty `hypotheses` and unsatisfied
+      `symptom_scope_coverage` as blocking. The confirmed cause is the divergence between the two completeness
+      definitions, and this change preserves it while satisfying the criterion.
+    criterion_sha256: 0f3fb40943651cb0ddbf4ac80f464d03ea718feee327d94f58ce873c5d1be4d6
+    governance_unconfirmed: false
+    inspected_source: 6c3d3d5d61b975509cc755398878b5779046d48d
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: Diagnose discards a confirmed cause instead of recording it on the issue
+    landed_classification: cause_addressing
+    landed_commit: 6c3d3d5d61b975509cc755398878b5779046d48d
+    landed_reason: null
+    notes: 'Landed change puts the declaration in parity with the gate: `_declared_diagnosis_verdict`
+      now reads the prospective rendered section through the same `diagnosis_completeness` heuristics
+      the validator applies at LAND, and the strict-schema gaps become `nonblocking_missing_fields`. The
+      divergence is closed, not routed around.'
+    run_id: aec6c56b6dfe
+    selection: body_contains_criterion
+    skipped_attempts:
+    - reason: criterion_not_in_issue_body
+      run_id: 186074b0caf8
+  2887:
+    admits_rationale: 'The criterion states the required property as the negation of the cause: classification
+      must depend on whether the turn produced real output reading as an unresolved delegation, `regardless
+      of whether the runner''s success flag is True or False`. The cause is precisely that `_ended_on_delegated_waiting_placeholder`
+      requires `result.success`. No change can satisfy the text while leaving that guard standing; special-casing
+      the issue''s exact quoted symptom fails the `regardless of` clause.'
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: ad37db664a88f7603eda7f5ea7dfc83c6c65e6b2a8a71325430288af61f351f3
+    governance_unconfirmed: false
+    inspected_source: d04124f59981b3a2529f1df3665ddce8697690cd
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: Diagnose treats a missing agent result as malformed and retries reformatting nothing
+    landed_classification: cause_addressing
+    landed_commit: d04124f59981b3a2529f1df3665ddce8697690cd
+    landed_reason: null
+    notes: 'Landed change deletes the `if not result.success: return ""` guard outright and stops overwriting
+      an already-set failure_code.'
+    run_id: da0aaa8cccb6
+    selection: body_contains_criterion
+    skipped_attempts:
+    - reason: criterion_not_in_issue_body
+      run_id: 3ece875b728c
+  2889:
+    admits_rationale: The criterion requires the failed record to contain the model's actual response
+      text, recoverable without relying on fragments quoted inside the parser exception. The cause is
+      that `_failure_record` is passed only the exception text and the record has no field for the response.
+      Satisfying the criterion means carrying the response into the record, which is the cause removed.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: c08f7020f4283550eb357965792a007abd7fe00e26ef6b9d04b1e67d2d62ccfa
+    governance_unconfirmed: false
+    inspected_source: 0a6dc09a9a4453a493069d2ef0a78a25143bac60
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: review-semantic discards a completed evaluation's findings and retains no record of them
+    landed_classification: cause_addressing
+    landed_commit: 0a6dc09a9a4453a493069d2ef0a78a25143bac60
+    landed_reason: null
+    notes: Landed change adds `raw_output`/`raw_output_tail`/`raw_output_path`/`raw_output_sha256` to
+      `SemanticEvaluationRecord`, passes `result.output` through, and surfaces the retention in the CLI
+      summary.
+    run_id: bfad409e480c
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2906:
+    admits_rationale: null
+    admits_symptom_removing_change: true
+    admitted_change: Wrap `_open_validated` in a retry loop that retries on any `sqlite3.DatabaseError`.
+      A locked substrate then succeeds once the sibling releases it, the operator never sees the rebuild
+      ESCALATE, and a genuinely corrupt file still fails after the retries — every clause satisfied while
+      `OperationalError` and real corruption stay conflated in one `except`, which is the cause.
+    criterion_sha256: af6c6750450c407d866fe4d56d9d94dcb041b8b3dc1cb0e7f3f11517689109f6
+    governance_unconfirmed: false
+    inspected_source: 57fa575e088257361e20fc50c708b3240ba10838
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: The audit substrate reports a lock held by a sibling worker as corruption, escalating
+      the story
+    landed_classification: cause_addressing
+    landed_commit: 57fa575e088257361e20fc50c708b3240ba10838
+    landed_reason: null
+    notes: Landed change introduces `SubstrateLockTimeoutError` as a class distinct from `SubstrateCorruptError`,
+      with a size-derived bounded wait rather than a fixed ceiling. The conflation is removed at its source.
+    run_id: cf417b6f46da
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2908:
+    admits_rationale: The cause is that one ESCALATE branch never calls `_log`. The criterion demands
+      the console/log output contain a line naming the specific reason at the moment of failure, matching
+      `state.error`. The required property and the missing mechanism are the same thing; there is no change
+      that produces the line without adding it.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: e54fbb37fc35bcc10e23a7904d69501a0a3a34c86fcb30c038bffe2dd3b7f207
+    governance_unconfirmed: false
+    inspected_source: cc187fc60cd9665f38792cab9e8e9c0c364af45b
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: forge sprint fails a story with no stated reason when its worktree path holds unregistered
+      residue
+    landed_classification: cause_addressing
+    landed_commit: cc187fc60cd9665f38792cab9e8e9c0c364af45b
+    landed_reason: null
+    notes: Landed change is four `_log(f"✗ ESCALATE   {state.error}")` calls in the branches that lacked
+      them.
+    run_id: 037a3bd91e31
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2909:
+    admits_rationale: The criterion requires check-config to stop printing an unqualified `✓ ready` for
+      a profile whose entitlement it cannot establish, and to attach a visibly distinct third state to
+      that same line. The cause is that the binary-presence result is rendered as unqualified ready with
+      no cross-reference to the co-reported unconfirmed-identity caveat. Attaching the caveat to the row
+      is the cause removed; suppressing the row entirely would not satisfy `attached to that same line`.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 9cbf71dfcff39ea0041f4bd3407deb30fbc29eacc7a44a724a8aac8d1f129e06
+    governance_unconfirmed: false
+    inspected_source: 4f90ab3b4f501cee85bdf171c33457c7129b6a94
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: forge check-config reports a model as ready when the account is not entitled to call
+      it
+    landed_classification: cause_addressing
+    landed_commit: 4f90ab3b4f501cee85bdf171c33457c7129b6a94
+    landed_reason: null
+    notes: 'Selected by `latest_done`, not body containment — governance confirmed by hand: the issue
+      body''s Fix-success criterion is this attempt''s text with a second requirement removed under a
+      dated operator scope-trim note (the removed clause moved to a separate issue), which is why containment
+      could not match. The dev was graded against the trimmed text, and the trim only narrowed scope.
+      Landed change resolves the identity caveat per profile and renders it beside the verdict.'
+    run_id: 9a04cdc4a470
+    selection: latest_done
+    skipped_attempts:
+    - reason: superseded_by_later_attempt
+      run_id: dbbc4fc7fe2b
+    - reason: superseded_by_later_attempt
+      run_id: 2f8975aa53d9
+  2910:
+    admits_rationale: The criterion is conditioned on a run whose per-issue detail fetch fails, and requires
+      a distinct machine-readable indication that the gate could not evaluate the issue plus a visible
+      disposition. The obvious symptom-removing move — stop requesting the `lastEditedAt` field so the
+      fetch stops failing — does not satisfy a conditional whose antecedent it merely avoids; the fail-open
+      branch would still admit silently on the next fetch failure. Nothing satisfies the consequent without
+      recording the unevaluated verdict, which is the cause.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: cd065e270bdce3e01c68aaeeb453b9853dff73370c657b8599e18297d14b53ed
+    governance_unconfirmed: false
+    inspected_source: null
+    issue_state: OPEN
+    issue_state_reason: ''
+    issue_title: Sprint-entry shape checking is skipped entirely when the issue-detail fetch fails, so
+      every story is admitted unchecked and the gate reports nothing
+    landed_classification: no_landed_change
+    landed_commit: null
+    landed_reason: issue still OPEN and no commit carries its title
+    notes: Issue is still OPEN and no integration commit carries its title, so the landed-change question
+      is answered by absence rather than left unresolved.
+    run_id: 541a52353a71
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2913:
+    admits_rationale: The criterion requires the refused call's `AgentResult` to carry a measured `cost_usd=0.0`,
+      with genuinely unmeasurable failures still cost-unknown. The downstream symptom — unrelated sibling
+      stories skipped for an unverifiable budget — could be removed by changing the budget gate alone,
+      but that leaves the first sentence unsatisfied, and the first sentence is the cause (`_exited_before_any_turn`
+      disqualifying on `turn.started`) stated as a property.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 763e134ffd1be7c36407e83b27a2ad6301369d821f6876c9c4372854d9faf8d0
+    governance_unconfirmed: false
+    inspected_source: ae2275bc4410652d6b83210b26f912cd43076a24
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A dev call the provider refuses without consuming tokens is recorded as cost-unknown,
+      and the unverifiable budget skips unrelated stories
+    landed_classification: cause_addressing
+    landed_commit: ae2275bc4410652d6b83210b26f912cd43076a24
+    landed_reason: null
+    notes: Landed change classifies an HTTP 400 `invalid_request_error` as a pre-generation refusal costing
+      a measured $0.00, explicitly excluding 5xx, mid-turn quota refusals and timeouts from the same treatment.
+    run_id: 019fc425c970
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2919:
+    admits_rationale: 'The criterion names the mechanism, not just the outcome: `state.budget.is_exhausted()`
+      (or an equivalent check against the counter engine.py already increments) must be consulted before
+      this branch''s retry decision. That check''s absence is the cause.'
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: e1f25e97c688b4a93606741ae75017bc60c35a38fb0edaa82be0ccaa7a9932e1
+    governance_unconfirmed: false
+    inspected_source: da31c95f8f78783c0cedd2889c98221b4390a769
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: DEV retries a no-submit dev agent past the configured retry budget, without bound
+    landed_classification: cause_addressing
+    landed_commit: da31c95f8f78783c0cedd2889c98221b4390a769
+    landed_reason: null
+    notes: Landed change adds the `is_exhausted()` guard and an ESCALATE transition to the `max_iterations_reached`/no-submit
+      branch.
+    run_id: 2d376b91d801
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2920:
+    admits_rationale: The criterion requires that changing `retry.max_dev_iterations` alone must not move
+      the per-invocation ceiling and vice versa. The cause is the `or` fallback that couples them. An
+      independence requirement stated in both directions cannot be met while the coupling stands.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 48d3a14851bf12cf992be259806afd02a01c155a40167aa6d500e6a53962afba
+    governance_unconfirmed: false
+    inspected_source: dcefc97bed29cde30d7c38d406a7f01dedf84473
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A dev agent on the API transport is terminated after three turns, far below the configured
+      agent-loop ceiling
+    landed_classification: cause_addressing
+    landed_commit: dcefc97bed29cde30d7c38d406a7f01dedf84473
+    landed_reason: null
+    notes: 'Landed change separates the two: the runner''s turn ceiling comes from `dev_profile.max_iterations`
+      (None meaning the runner default), and `_static_dev_max` counts phase attempts only.'
+    run_id: 4812bda288fb
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2921:
+    admits_rationale: The criterion requires the run to produce a `RunOutcome` whose `dev_termination_cause`
+      is non-None and is excluded by `_fold_dev_bucket`, without widening the exclusion beyond coordinator-imposed
+      max-iterations-no-submit. The cause is that `build_run_outcome` never consults the state where that
+      condition is recorded. Producing the required non-None cause means consulting it.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: e6a08108fe27a4aa05ec40237aa6b16dcef4e8e88f4643500f48302ee1f533e5
+    governance_unconfirmed: false
+    inspected_source: 8700a161cfa52243dbc0b4bdef0d082f10e84f2a
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A run terminated by the coordinator is recorded against the model's capability history
+      as a model failure
+    landed_classification: cause_addressing
+    landed_commit: 8700a161cfa52243dbc0b4bdef0d082f10e84f2a
+    landed_reason: null
+    notes: Landed change records a dedicated state flag at the branch that actually ends the run for the
+      coordinator's own budget — deliberately not on mere occurrence, so a retried attempt that later
+      produces judged work still folds into capability stats.
+    run_id: a5a481a3d37a
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2922:
+    admits_rationale: 'Display-side clamping — having `forge status` print max(summed rows, highest logged
+      checkpoint) — would satisfy the first sentence while leaving the deferred in-process variable unpersisted.
+      The second sentence forecloses it: no story''s persisted `cost_usd` may regress below the pre-restart
+      spend, which is the cause stated as an invariant on persisted state.'
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 13f635116c18ff7f0cb15dfaff644aa24a1c979e30ad0bc61d6c74a55452a54a
+    governance_unconfirmed: false
+    inspected_source: 5f923a36cd7e12bbb887a3b7a5046cb00cc672b5
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: A sprint's final cost falls below spend it reported before a re-exec
+    landed_classification: cause_addressing
+    landed_commit: 5f923a36cd7e12bbb887a3b7a5046cb00cc672b5
+    landed_reason: null
+    notes: Landed change persists recorded spend as a high-water mark across the re-exec and compares
+      at the precision both sides are stored to.
+    run_id: 5ded84d3f8d8
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2923:
+    admits_rationale: The criterion requires the rendering be sourced from whichever store currently holds
+      the freshest recorded decision, and requires `no record anywhere` to be distinguishable in the message
+      from `a record exists but could not be read`. The cause is that explain resolves exclusively through
+      the terminal-write substrate. Reading the store that holds an unfinished story's decision is that
+      cause removed.
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 3204f31a21081fef3d002912ee8912684144dc302ee2d0aa3e6c35428397e439
+    governance_unconfirmed: false
+    inspected_source: e94f70d1909619f68ba18f3fd6b47f8d1f335df8
+    issue_state: CLOSED
+    issue_state_reason: COMPLETED
+    issue_title: forge explain cannot read the routing record of a live or stopped story, though the record
+      exists on disk
+    landed_classification: cause_addressing
+    landed_commit: e94f70d1909619f68ba18f3fd6b47f8d1f335df8
+    landed_reason: null
+    notes: Landed change adds `cli/explain_live.py` and threads an `absent_reason` so `this store does
+      not hold it` and `this run never recorded it` are printed as different facts.
+    run_id: 1cd6a151f591
+    selection: body_contains_criterion
+    skipped_attempts: []
+  2926:
+    admits_rationale: 'The criterion requires the dev-role `candidate_pool` to list the model as `included:
+      false` under a canonical reason distinct from `tier_mismatch`, and requires `assign_models()` never
+      to select it, on both a fresh and a resumed-from-snapshot story. Filtering the model out before
+      the pool is built would satisfy the selection half but not the visibility half. Any change meeting
+      both makes the declaration reach the router, which is the cause (`AgentDef` cannot carry it) removed.'
+    admits_symptom_removing_change: false
+    admitted_change: null
+    criterion_sha256: 323d4896c63aa22da2517d2330d599baf8f9ace32f5ef3dc11aff381a6dc15c0
+    governance_unconfirmed: false
+    inspected_source: null
+    issue_state: OPEN
+    issue_state_reason: ''
+    issue_title: A model declared not dev-capable is still selected for dev by the adaptive router
+    landed_classification: no_landed_change
+    landed_commit: null
+    landed_reason: issue still OPEN and no commit carries its title
+    notes: Issue is still OPEN and no integration commit carries its title.
+    run_id: ce016f1562d6
+    selection: body_contains_criterion
+    skipped_attempts: []
+window:
+  corpus_root: /Users/pwickersham/src/theforge
+  include_issues:
+  - 2595
+  integration_refs:
+  - refs/heads/main
+  - refs/remotes/origin/main
+  - refs/heads/release/*
+  - refs/remotes/origin/release/*
+  record_date: '2026-09-06'
+  since: '2026-09-01T00:00:00+00:00'
+  until: '2026-09-07T00:00:00+00:00'
