@@ -45,6 +45,38 @@ RUN_SCOPED_DETAIL_KEYS: frozenset[str] = frozenset(
 )
 
 
+def issue_number_for(
+    *,
+    canonical_ref: str | None = None,
+    slug: str | None = None,
+    path: str | None = None,
+) -> int | None:
+    """The GitHub issue number behind a story record, or ``None``.
+
+    Identity comes from the fields that carry it — ``canonical_ref`` then
+    ``slug`` — never from the display label. ``path`` is consulted last and
+    only for records written before titles were carried there (#2664), where
+    the literal ``Issue #<number>`` was the sole surviving trace of the number.
+    A record whose ``path`` now holds a real title still resolves, because the
+    slug never stopped being ``issue-<number>``.
+    """
+    ref = str(canonical_ref or "").strip()
+    if ref.startswith("issue:"):
+        number = ref.split(":", 1)[1].strip()
+        return int(number) if number.isdigit() else None
+    if ref:
+        # A non-issue canonical ref means a file-backed story, whose ``path``
+        # is a repository path — never parse a number out of it.
+        return None
+    number = str(slug or "").strip().removeprefix("issue-")
+    if number.isdigit():
+        return int(number)
+    legacy = str(path or "").strip()
+    if legacy.startswith("Issue #") and legacy[len("Issue #") :].strip().isdigit():
+        return int(legacy[len("Issue #") :].strip())
+    return None
+
+
 def issue_reference_label(canonical_ref: str | None = None, slug: str | None = None) -> str | None:
     """``Issue #<number>`` when the story is issue-backed, else ``None``.
 

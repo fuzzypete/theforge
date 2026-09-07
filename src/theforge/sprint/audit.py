@@ -19,7 +19,7 @@ from .abnormal import accumulate_failure_history, carry_failure_cause
 from .budget import budget_overrun_usd, budget_status
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
-from .story_state import story_title
+from .story_state import issue_number_for, story_title
 
 
 def _optional_cost(value: object) -> float | None:
@@ -416,11 +416,18 @@ def _carried_story_record(
     outcome_name = str(entry.get("outcome") or "").upper() or None
     cost = entry.get("cost_usd")
     cost = None if isinstance(cost, bool) or not isinstance(cost, (int, float)) else float(cost)
+    # Issue identity comes from the fields that carry it (canonical_ref, slug),
+    # not from the display label: ``path`` holds the story's real title now, so
+    # a record recovered from that string alone lost its issue linkage and
+    # dropped out of every issue-keyed audit query (#2664). ``path`` remains the
+    # last fallback for rows written before titles were carried there.
     issue = entry.get("github_issue")
     if issue is None:
-        path = str(entry.get("path") or "")
-        if path.startswith("Issue #") and path[7:].strip().isdigit():
-            issue = int(path[7:].strip())
+        issue = issue_number_for(
+            canonical_ref=entry.get("canonical_ref"),
+            slug=entry.get("slug"),
+            path=entry.get("path"),
+        )
     record: dict = {
         "run_id": entry.get("story_run_id"),
         "sprint_id": sprint_id,
@@ -838,8 +845,16 @@ def _load_story_summary_entry_from_audit(
     sprint_log_dir: Path,
     canonical_ref: str,
     slug: str,
+    fallback_title: str | None = None,
 ) -> dict | None:
-    """Return a sprint-summary story entry derived from per-story audit.yaml."""
+    """Return a sprint-summary story entry derived from per-story audit.yaml.
+
+    ``fallback_title`` is the label the rest of this run uses for the story,
+    consulted only when the per-story audit carries no task name of its own.
+    Without it a reconstructed row would restate the issue reference where its
+    title belongs, which is the defect this reconstruction path would otherwise
+    reintroduce one story at a time (#2664).
+    """
     audit_path = sprint_log_dir / slug / "audit.yaml"
     if not audit_path.exists():
         return None
@@ -868,10 +883,13 @@ def _load_story_summary_entry_from_audit(
     if isinstance(preflight_block, dict) and preflight_block.get("verdict") == "ALREADY_DONE":
         final_phase = "ALREADY_DONE"
 
-    display_key = (
-        f"Issue #{canonical_ref.split(':')[1]}"
-        if canonical_ref.startswith("issue:")
-        else canonical_ref
+    # The generation that ran this story recorded its title in the per-story
+    # audit; that is the same label this run's own rows carry, so a
+    # reconstructed row is not the one row in the digest naming a number.
+    task_block = audit_data.get("task")
+    audit_title = task_block.get("name") if isinstance(task_block, dict) else None
+    display_key = story_title(
+        audit_title or fallback_title, canonical_ref=canonical_ref, slug=slug
     )
 
     reviews = audit_data.get("reviews")
@@ -1678,7 +1696,14 @@ def _write_sprint_summary(
             # of emitting a SKIPPED entry (which would hide a completed story).
             historical_entry = _select_historical_story_entry(
                 prior_by_ref[canonical_ref],
-                _load_story_summary_entry_from_audit(sprint_log_dir, canonical_ref, slug),
+                _load_story_summary_entry_from_audit(
+                    sprint_log_dir,
+                    canonical_ref,
+                    slug,
+                    # The prior generation's row already holds the resolved
+                    # title; whichever source wins the merge, the row keeps it.
+                    fallback_title=prior_by_ref[canonical_ref].get("path"),
+                ),
             )
             if historical_entry is None:
                 historical_entry = prior_by_ref[canonical_ref]

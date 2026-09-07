@@ -295,3 +295,190 @@ def test_run_sprint_records_the_issue_title_for_landed_and_failed_stories(
     assert "Reap orphaned worktrees" in output
     assert "Issue #2524" not in output
     assert "Issue #2541" not in output
+
+
+# ── carried stories: a title must not cost the issue linkage ─────────────────
+
+
+def _sprint_result_for(name: str, total: float):
+    from theforge.sprint.manifest import SprintResult
+
+    return SprintResult(
+        name=name,
+        specs_total=1,
+        specs_succeeded=1,
+        specs_failed=0,
+        specs_skipped=0,
+        total_cost_usd=total,
+        budget_usd=50.0,
+        results=[],
+    )
+
+
+class TestCarriedStoryIssueLinkage:
+    """A titled ``path`` must not cost a carried story its issue number.
+
+    ``_carried_story_record`` synthesizes the run record for a story completed
+    in an earlier generation of a resumed sprint. It recovered the issue number
+    by parsing the literal ``Issue #<n>`` out of ``path`` — which a titled
+    record no longer contains — so issue-keyed audit consumers (per-issue cost
+    totals, ``forge audits`` queries) would silently drop the story (#2664).
+    """
+
+    def _entry(self, **overrides: object) -> dict:
+        entry = {
+            "canonical_ref": "issue:2686",
+            "slug": "issue-2686",
+            "path": "Cache the model catalog",
+            "outcome": "DONE",
+            "cost_usd": 29.2,
+            "story_run_id": "story-2686",
+            "started_at": "2026-09-02T05:46:00Z",
+            "finished_at": "2026-09-02T06:32:00Z",
+        }
+        entry.update(overrides)
+        return entry
+
+    def _record(self, entry: dict) -> dict:
+        from theforge.sprint.audit import _carried_story_record
+
+        return _carried_story_record(entry, sprint_id="sprint-1", sprint_name="issues-2686")
+
+    def test_titled_record_keeps_its_issue_number(self) -> None:
+        record = self._record(self._entry())
+        assert record["task"]["github_issue"] == 2686
+        assert record["task"]["path"] == "Cache the model catalog"
+
+    def test_issue_number_survives_without_a_canonical_ref(self) -> None:
+        """Summary rows carry no canonical_ref — the slug still identifies them."""
+        entry = self._entry()
+        del entry["canonical_ref"]
+        assert self._record(entry)["task"]["github_issue"] == 2686
+
+    def test_legacy_reference_shaped_path_still_resolves(self) -> None:
+        """Records written before titles were carried keep working."""
+        entry = self._entry(path="Issue #2686")
+        del entry["canonical_ref"]
+        entry["slug"] = "2686-legacy-slug"
+        assert self._record(entry)["task"]["github_issue"] == 2686
+
+    def test_file_backed_story_has_no_issue_number(self) -> None:
+        entry = self._entry(
+            canonical_ref="stories/story-a.md", slug="story-a", path="stories/a.md"
+        )
+        assert self._record(entry)["task"]["github_issue"] is None
+
+
+def test_carried_story_record_is_queryable_by_issue_after_retitling(tmp_path: Path) -> None:
+    """Seam: accumulated state → summary writer → audit substrate.
+
+    The story ran in an earlier generation, so no run record was flushed for it
+    in this process. The synthesized one must stay addressable by issue, and its
+    digest row must still name the work.
+    """
+    from theforge.coordinator import audit_read_model, audit_substrate
+    from theforge.sprint.audit import _write_sprint_summary, persist_accumulated_story_state
+    from theforge.sprint.manifest import ResolvedSprint
+
+    name = "issues-2686"
+    persist_accumulated_story_state(
+        "sprint-1",
+        name,
+        tmp_path,
+        [
+            {
+                "canonical_ref": "issue:2686",
+                "slug": "issue-2686",
+                "path": "Cache the model catalog",
+                "outcome": "DONE",
+                "cost_usd": 29.2,
+                "story_run_id": "story-2686",
+                "started_at": "2026-09-02T05:46:00Z",
+                "finished_at": "2026-09-02T06:32:00Z",
+                "landing_status": "merged",
+            }
+        ],
+    )
+    now = __import__("datetime").datetime(
+        2026, 9, 2, 6, 33, tzinfo=__import__("datetime").timezone.utc
+    )
+    log_dir = tmp_path / ".forge" / "logs" / name
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_sprint_summary(
+        manifest=ResolvedSprint(name=name, budget_usd=50.0, stories=[]),
+        result=_sprint_result_for(name, 29.2),
+        canonical_refs=[],
+        started_at=now,
+        finished_at=now,
+        duration=1.0,
+        sprint_log_dir=log_dir,
+        sprint_id="sprint-1",
+        project_root=tmp_path,
+    )
+
+    conn = audit_substrate.create_or_open(tmp_path)
+    try:
+        record = audit_read_model.latest_record_for(conn, slug="issue-2686")
+    finally:
+        conn.close()
+    assert record is not None
+    # The linkage every issue-keyed consumer reads (#2847 records, per-issue
+    # cost totals) survives the retitling.
+    assert record["task"]["github_issue"] == 2686
+    assert record["task"]["path"] == "Cache the model catalog"
+
+    summary = yaml.safe_load((log_dir / "sprint-summary.yaml").read_text(encoding="utf-8"))
+    assert summary["stories"][0]["path"] == "Cache the model catalog"
+
+
+def test_row_reconstructed_from_per_story_audit_keeps_its_title(tmp_path: Path) -> None:
+    """The audit-file reconstruction path must not reintroduce the bare reference.
+
+    ``_load_story_summary_entry_from_audit`` rebuilt ``path`` from the canonical
+    ref, so whenever its entry won the historical merge the row lost its title.
+    """
+    from theforge.sprint.audit import _load_story_summary_entry_from_audit
+
+    log_dir = tmp_path / "issues-2686"
+    (log_dir / "issue-2686").mkdir(parents=True, exist_ok=True)
+    (log_dir / "issue-2686" / "audit.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task": {"name": "Cache the model catalog", "github_issue": 2686},
+                "outcome": {"final_phase": "DONE", "success": True},
+                "timing": {
+                    "started_at": "2026-09-02T05:46:00Z",
+                    "finished_at": "2026-09-02T06:32:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    entry = _load_story_summary_entry_from_audit(log_dir, "issue:2686", "issue-2686")
+    assert entry is not None
+    assert entry["path"] == "Cache the model catalog"
+
+
+def test_reconstructed_row_falls_back_to_the_prior_generations_title(tmp_path: Path) -> None:
+    """A per-story audit with no task name still yields a titled row."""
+    from theforge.sprint.audit import _load_story_summary_entry_from_audit
+
+    log_dir = tmp_path / "issues-2686"
+    (log_dir / "issue-2686").mkdir(parents=True, exist_ok=True)
+    (log_dir / "issue-2686" / "audit.yaml").write_text(
+        yaml.safe_dump({"outcome": {"final_phase": "DONE", "success": True}}),
+        encoding="utf-8",
+    )
+
+    entry = _load_story_summary_entry_from_audit(
+        log_dir, "issue:2686", "issue-2686", fallback_title="Cache the model catalog"
+    )
+    assert entry is not None
+    assert entry["path"] == "Cache the model catalog"
+
+    # With nothing to fall back on, the reference remains the honest label.
+    bare = _load_story_summary_entry_from_audit(log_dir, "issue:2686", "issue-2686")
+    assert bare is not None
+    assert bare["path"] == "Issue #2686"
