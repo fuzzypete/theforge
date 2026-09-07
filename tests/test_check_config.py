@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,11 +21,6 @@ from theforge.config import (
     SprintConfig,
     TransportSpec,
     WorkspaceConfig,
-)
-from theforge.config.model_identity import (
-    IDENTITY_STATUS_SERVED,
-    UNCONFIRMED_IDENTITY,
-    IdentityVerification,
 )
 from theforge.config.models import AGENT_REGISTRY, AgentDef, AgentSpec, RoutingPolicy
 from theforge.config.models import TransportSpec as ModelTransportSpec
@@ -1269,14 +1263,8 @@ overrides:
         assert "dev" in output
 
 
-class TestCliReadinessIsUnverified:
-    """A CLI-transport row must not claim more than the check established (#2909).
-
-    ``check_agent_auth`` clears a CLI profile on launcher presence alone. That
-    cannot distinguish a model the account may call from one the provider will
-    refuse outright, so the row reports a third state rather than resolving its
-    own uncertainty toward ``ready``.
-    """
+class TestAvailabilityReporting:
+    """Account callability is reported separately from launcher readiness."""
 
     def _format(self, config: ForgeConfig) -> str:
         from theforge.cli.check_config import _format_config
@@ -1284,56 +1272,15 @@ class TestCliReadinessIsUnverified:
         output, _ = _format_config(config, {})
         return output
 
-    def _codex_registry(self, identity: IdentityVerification) -> dict[str, AgentSpec]:
-        return {
-            "openai/gpt-5.4/cli": AgentSpec(
-                provider="openai",
-                model="gpt-5.4",
-                transport=ModelTransportSpec(kind="cli", runner="codex", executable="codex"),
-                routing=RoutingPolicy(tier="strong", capability=9, cost_rank=3),
-                identity=identity,
-            )
-        }
-
-    def test_cli_profile_reports_unverified_not_ready(self, tmp_path: Path) -> None:
+    def test_cli_launcher_readiness_does_not_repeat_identity_caveat(self, tmp_path: Path) -> None:
         config = _make_forge_config(
             tmp_path,
             review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
-            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
         )
         output = self._format(config)
         row = next(ln for ln in output.splitlines() if "openai-gpt-5.4-cli" in ln)
-        assert "? unverified" in row
-        assert "✓ ready" not in row
-        # Names what was actually established, and what was not.
-        assert "codex launcher on PATH" in row
-        assert "neither credentials nor this account's entitlement to call 'gpt-5.4'" in row
-
-    def test_identity_caveat_rides_the_same_row_as_the_verdict(self, tmp_path: Path) -> None:
-        """The qualifying fact sits with the verdict, not in a separate section."""
-        config = _make_forge_config(
-            tmp_path,
-            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
-            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
-        )
-        row = next(ln for ln in self._format(config).splitlines() if "openai-gpt-5.4-cli" in ln)
-        assert "never checked against the provider's published model list" in row
-
-    def test_confirmed_identity_drops_only_the_identity_clause(self, tmp_path: Path) -> None:
-        """A checked identifier removes its caveat; entitlement stays unverified."""
-        confirmed = IdentityVerification(
-            status=IDENTITY_STATUS_SERVED,
-            verified_against="the provider's published model list",
-            verified_on=date.today(),
-        )
-        config = _make_forge_config(
-            tmp_path,
-            review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
-            model_registry=self._codex_registry(confirmed),
-        )
-        row = next(ln for ln in self._format(config).splitlines() if "openai-gpt-5.4-cli" in ln)
-        assert "? unverified" in row
-        assert "never checked against the provider's published model list" not in row
+        assert "✓ ready" in row
+        assert "never checked against the provider's published model list" not in output
 
     def test_api_profile_still_reports_ready(self, tmp_path: Path) -> None:
         """API profiles resolve a real credential — a different, narrower claim."""
@@ -1355,29 +1302,89 @@ class TestCliReadinessIsUnverified:
         assert "unverified" not in row
         assert exit_code == 1
 
-    def test_unverified_is_not_a_warning_and_does_not_change_exit_code(
-        self, tmp_path: Path
-    ) -> None:
-        """Unverified qualifies a row; it is not a problem to fix, so exit stays 0.
+    def test_availability_rows_include_state_auth_mode_and_timestamp(self, tmp_path: Path) -> None:
+        from datetime import datetime, timezone
 
-        Promoting it to a warning would flip every CLI-only config to exit 1 and
-        bury the failures that do need action.
-        """
+        from theforge.cli.check_config import _availability_targets, _format_config
+        from theforge.config.model_identity import (
+            MODEL_AVAILABILITY_UNAVAILABLE,
+            ModelAvailability,
+        )
+
         config = _make_forge_config(
             tmp_path,
             review_pool=[_cli_profile("openai-gpt-5.4-cli", cli="codex", model="gpt-5.4")],
-            model_registry=self._codex_registry(UNCONFIRMED_IDENTITY),
         )
-        output, exit_code = __import__(
-            "theforge.cli.check_config", fromlist=["_format_config"]
-        )._format_config(config, {})
-        assert "? unverified" in output
-        assert "WARNINGS" not in output
-        assert exit_code == 0
+        targets = _availability_targets(config)
+        answers = {
+            target.key or target.canonical_id: ModelAvailability(
+                MODEL_AVAILABILITY_UNAVAILABLE,
+                "ChatGPT-account auth",
+                datetime(2026, 9, 6, 19, 41, tzinfo=timezone.utc),
+                "not in account catalog",
+                "current",
+            )
+            for target in targets
+        }
+        output, _ = _format_config(config, {}, targets, answers)
+        assert "AVAILABILITY" in output
+        assert "openai/gpt-5.4/cli" in output
+        assert "unavailable" in output
+        assert "ChatGPT-account auth" in output
+        assert "2026-09-06 19:41 UTC" in output
+        assert "never checked against the provider's published model list" not in output
 
-    def test_phases_section_is_qualified_too(self, tmp_path: Path) -> None:
-        """The reported symptom included the dev phase row, not just the pool."""
+    def test_phases_keep_launcher_readiness(self, tmp_path: Path) -> None:
         output = self._format(_make_forge_config(tmp_path))
         dev_row = next(ln for ln in output.splitlines() if ln.strip().startswith("dev "))
-        assert "? unverified" in dev_row
-        assert "claude launcher on PATH" in dev_row
+        assert "✓ ready" in dev_row
+
+    def test_availability_enumerates_fallback_and_knowledge_dispatches(
+        self, tmp_path: Path
+    ) -> None:
+        from theforge.cli.check_config import _availability_targets
+        from theforge.config import KnowledgeConfig, ModelRef, TransportFallbackConfig
+
+        fallback = TransportFallbackConfig(provider="openai", model="api-fallback")
+        dev = ModelProfile(
+            name="dev",
+            cli="codex",
+            model="primary",
+            fallback_models=("model-fallback",),
+            api_fallback=fallback,
+            budget_usd=2.0,
+            timeout_seconds=300,
+            allowed_tools=("Read",),
+        )
+        preflight_fallback = ModelProfile(
+            name="preflight-fallback",
+            cli="codex",
+            model="preflight-fallback",
+            budget_usd=1.0,
+            timeout_seconds=120,
+            allowed_tools=("Read",),
+        )
+        config = replace(
+            _make_forge_config(tmp_path),
+            dev_profile=dev,
+            preflight_fallback_profile=preflight_fallback,
+            knowledge=KnowledgeConfig(
+                run_summaries=True,
+                ref=ModelRef(
+                    provider="openai",
+                    model="knowledge-summary",
+                    budget_usd=0.5,
+                    timeout_seconds=120,
+                ),
+            ),
+        )
+
+        canonical_ids = {target.canonical_id for target in _availability_targets(config)}
+
+        assert {
+            "openai/primary/cli",
+            "openai/model-fallback/api",
+            "openai/api-fallback/api",
+            "openai/preflight-fallback/cli",
+            "openai/knowledge-summary/api",
+        } <= canonical_ids

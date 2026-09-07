@@ -319,8 +319,8 @@ class TestIdentityVerificationWindow:
             assert key not in reported
         assert "anthropic/sonnet/cli" in reported
 
-    def test_check_config_reports_an_unconfirmed_identifier(self, tmp_path, capsys):
-        """Reported where configuration is read, before a run can spend on it."""
+    def test_check_config_reports_account_availability(self, tmp_path, capsys):
+        """Callability is reported from account catalog evidence, not identity age."""
         import argparse
 
         from theforge.cli.check_config import cmd_check_config
@@ -331,8 +331,11 @@ class TestIdentityVerificationWindow:
         )
         cmd_check_config(argparse.Namespace(config=str(path), verbose=False))
         out = capsys.readouterr().out
-        assert "upstream identifier not confirmed" in out
+        assert "AVAILABILITY" in out
         assert "anthropic/sonnet/cli" in out
+        assert "unverified" in out
+        assert "provider publishes no account catalog" in out
+        assert "never checked against the provider's published model list" not in out
 
 
 # ── Schema validation at the config integrity boundary ────────────────────

@@ -6,9 +6,23 @@ import platform
 import shutil
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .defaults import PROVIDER_API_KEY_MAP, SUPPORTED_CLIS
+from .model_identity import (
+    AVAILABILITY_FRESHNESS_CURRENT,
+    MODEL_AVAILABILITY_AVAILABLE,
+    MODEL_AVAILABILITY_UNAVAILABLE,
+    MODEL_AVAILABILITY_UNVERIFIED,
+    UNCONFIRMED_IDENTITY,
+    IdentityVerification,
+    ModelAvailability,
+    TransportSpec,
+    availability_freshness,
+)
 from .types import SUPPORTED_PROVIDERS, ModelProfile
 
 # CLI names that use npx rather than a direct binary
@@ -28,6 +42,30 @@ _LOCAL_PREFIXES = (
 # a provider-native ``--sandbox`` flag, so it is mechanically contained without
 # the host wrapper.
 _HOST_WRAPPED_CLIS = frozenset({"claude", "gemini"})
+
+
+@dataclass(frozen=True)
+class ModelAvailabilityTarget:
+    """The dispatch identity used to resolve one account-catalog answer."""
+
+    canonical_id: str
+    provider: str
+    model: str
+    transport: TransportSpec
+    base_url: str | None = None
+    identity: IdentityVerification = UNCONFIRMED_IDENTITY
+    key: str | None = None  # caller-local key; canonical_id remains display identity
+
+
+@dataclass(frozen=True)
+class _CatalogResult:
+    """One account catalog lookup, shared by all targets with its identity."""
+
+    models: frozenset[str] | None
+    auth_mode: str
+    checked_at: datetime | None
+    reason: str | None = None
+    freshness: str = AVAILABILITY_FRESHNESS_CURRENT
 
 
 def _grants_bash(profile: ModelProfile) -> bool:
@@ -290,6 +328,267 @@ def check_claude_credentials(
             "an expired refresh token; re-authenticate the CLI (`claude` → /login)",
         )
     return (True, "")
+
+
+# ── Account model catalogs ──────────────────────────────────────────────
+#
+# These probes deliberately use provider catalog surfaces only.  In particular,
+# do not reuse a runner here: a completion proves neither less nor more than an
+# actual paid dispatch and would defeat the point of check-config.
+
+
+def codex_home() -> Path:
+    """Return Codex's data directory, respecting its documented relocation."""
+    configured = os.environ.get("CODEX_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".codex"
+
+
+def codex_models_cache_path() -> Path:
+    """Path of the signed-in Codex account's cached model catalog."""
+    return codex_home() / "models_cache.json"
+
+
+def codex_auth_path() -> Path:
+    """Path of Codex's auth metadata, used only to classify dispatch auth mode."""
+    return codex_home() / "auth.json"
+
+
+def _codex_auth_mode(merged: Mapping[str, str]) -> str:
+    """Classify the credential Codex will use without exposing credential data."""
+    if (merged.get("OPENAI_API_KEY") or "").strip():
+        return "API-key auth"
+    try:
+        payload = json.loads(codex_auth_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "auth mode undetermined"
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "auth mode undetermined"
+    if isinstance(payload, dict):
+        # Codex has used more than one auth.json layout.  A readable object is
+        # evidence of interactive account auth unless it explicitly carries an
+        # API-key mode (the key itself is never inspected or reported).
+        if any(name in payload for name in ("OPENAI_API_KEY", "api_key")):
+            return "API-key auth"
+        return "ChatGPT-account auth"
+    return "auth mode undetermined"
+
+
+def _parse_catalog_timestamp(raw: object) -> datetime | None:
+    """Read an ISO-8601 or epoch timestamp without accepting fabricated time."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        try:
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _codex_cache_catalog() -> _CatalogResult:
+    """Read Codex's local account-model cache; it never starts the Codex runner."""
+    path = codex_models_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            datetime.now(timezone.utc),
+            "account catalog cache not found",
+        )
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            datetime.now(timezone.utc),
+            f"account catalog cache could not be read: {exc}",
+        )
+    if not isinstance(payload, dict):
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            datetime.now(timezone.utc),
+            "account catalog cache is not an object",
+        )
+    checked_at = _parse_catalog_timestamp(payload.get("fetched_at"))
+    models = payload.get("models")
+    if checked_at is None or not isinstance(models, list):
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            checked_at or datetime.now(timezone.utc),
+            "account catalog cache has no usable fetched_at/models data",
+            availability_freshness(checked_at or datetime.now(timezone.utc)),
+        )
+    slugs = {
+        item["slug"].strip()
+        for item in models
+        if isinstance(item, dict) and isinstance(item.get("slug"), str) and item["slug"].strip()
+    }
+    if len(slugs) != len(models):
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            checked_at,
+            "account catalog cache has an unrecognized model entry",
+            availability_freshness(checked_at),
+        )
+    freshness = availability_freshness(checked_at)
+    if freshness != AVAILABILITY_FRESHNESS_CURRENT:
+        return _CatalogResult(
+            None,
+            "ChatGPT-account auth",
+            checked_at,
+            "account catalog cache is stale",
+            freshness,
+        )
+    return _CatalogResult(frozenset(slugs), "ChatGPT-account auth", checked_at)
+
+
+def _openai_catalog(target: ModelAvailabilityTarget, merged: Mapping[str, str]) -> _CatalogResult:
+    """Retrieve an OpenAI-compatible account catalog through ``models.list`` only."""
+    key_name = PROVIDER_API_KEY_MAP.get(target.provider, "OPENAI_API_KEY")
+    api_key = (merged.get(key_name) or "").strip()
+    if not api_key:
+        return _CatalogResult(
+            None, "API-key auth", datetime.now(timezone.utc), f"{key_name} not set"
+        )
+    try:
+        import openai
+
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if target.base_url:
+            kwargs["base_url"] = target.base_url
+        response = openai.OpenAI(**kwargs).models.list()
+        data = getattr(response, "data", response)
+        ids = {
+            value
+            for item in data
+            for value in [item.get("id") if isinstance(item, dict) else getattr(item, "id", None)]
+            if isinstance(value, str) and value
+        }
+    except Exception as exc:  # SDK/network/auth errors are unverified, never unavailable.
+        return _CatalogResult(
+            None,
+            "API-key auth",
+            datetime.now(timezone.utc),
+            f"account catalog request failed: {exc}",
+        )
+    return _CatalogResult(frozenset(ids), "API-key auth", datetime.now(timezone.utc))
+
+
+def _catalog_result(
+    target: ModelAvailabilityTarget,
+    merged: Mapping[str, str],
+) -> _CatalogResult:
+    """Resolve one provider/transport/auth/endpoint catalog, or explain why not."""
+    if target.transport.kind == "cli" and target.transport.runner == "codex":
+        mode = _codex_auth_mode(merged)
+        if mode == "ChatGPT-account auth":
+            return _codex_cache_catalog()
+        if mode == "API-key auth":
+            return _openai_catalog(target, merged)
+        return _CatalogResult(
+            None,
+            mode,
+            datetime.now(timezone.utc),
+            "Codex authentication mode could not be determined",
+        )
+    if target.transport.kind == "api" and target.transport.runner == "openai":
+        return _openai_catalog(target, merged)
+    if target.transport.kind == "cli" and target.transport.runner == "claude":
+        mode = "OAuth"
+    elif target.transport.kind == "cli":
+        mode = "CLI auth"
+    else:
+        mode = "API-key auth"
+    return _CatalogResult(
+        None,
+        mode,
+        datetime.now(timezone.utc),
+        "provider publishes no account catalog",
+    )
+
+
+def resolve_model_availability(
+    targets: list[ModelAvailabilityTarget] | tuple[ModelAvailabilityTarget, ...],
+    secrets: Mapping[str, str] | None = None,
+) -> dict[str, ModelAvailability]:
+    """Resolve each target from an account catalog without dispatching a model.
+
+    Catalog attempts are shared only where the dispatch identity is the same:
+    provider family, transport kind and runner, auth mode, and endpoint metadata.
+    This preserves the distinction between the same model under different
+    credentials or endpoints.
+    """
+    merged: dict[str, str] = {**os.environ, **(secrets or {})}
+    results: dict[str, ModelAvailability] = {}
+    catalogs: dict[tuple[str, str, str, str, str | None], _CatalogResult] = {}
+    for target in targets:
+        result_key = target.key or target.canonical_id
+        # A maintained withdrawal is stronger than account evidence; avoid even
+        # consulting the catalog for it so a stale account cache cannot revive it.
+        if target.identity.retired:
+            results[result_key] = ModelAvailability(
+                MODEL_AVAILABILITY_UNAVAILABLE,
+                _codex_auth_mode(merged)
+                if target.transport.runner == "codex"
+                else "configured auth",
+                datetime.now(timezone.utc),
+                f"retired upstream — {target.identity.retired_reason or 'no reason recorded'}",
+            )
+            continue
+        auth_mode = (
+            _codex_auth_mode(merged)
+            if target.transport.kind == "cli" and target.transport.runner == "codex"
+            else "API-key auth"
+            if target.transport.kind == "api" and target.transport.runner == "openai"
+            else "OAuth"
+            if target.transport.kind == "cli" and target.transport.runner == "claude"
+            else "CLI auth"
+            if target.transport.kind == "cli"
+            else "API-key auth"
+        )
+        key = (
+            target.provider,
+            target.transport.kind,
+            target.transport.runner,
+            auth_mode,
+            target.base_url,
+        )
+        catalog = catalogs.get(key)
+        if catalog is None:
+            catalog = _catalog_result(target, merged)
+            catalogs[key] = catalog
+        if catalog.models is None:
+            results[result_key] = ModelAvailability(
+                MODEL_AVAILABILITY_UNVERIFIED,
+                catalog.auth_mode,
+                catalog.checked_at,
+                catalog.reason,
+                catalog.freshness,
+            )
+        elif target.model in catalog.models:
+            results[result_key] = ModelAvailability(
+                MODEL_AVAILABILITY_AVAILABLE,
+                catalog.auth_mode,
+                catalog.checked_at,
+                freshness=catalog.freshness,
+            )
+        else:
+            results[result_key] = ModelAvailability(
+                MODEL_AVAILABILITY_UNAVAILABLE,
+                catalog.auth_mode,
+                catalog.checked_at,
+                "not in account catalog",
+                catalog.freshness,
+            )
+    return results
 
 
 def check_agent_auth(

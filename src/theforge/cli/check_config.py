@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date
 from pathlib import Path
 
 from theforge.cli.hooks import post_run_hook_upgrade_warnings
@@ -16,10 +15,16 @@ from theforge.config import (
     load_config,
     resolve_agent_spec,
 )
-from theforge.config.auth import check_agent_auth
+from theforge.config.auth import (
+    ModelAvailabilityTarget,
+    check_agent_auth,
+    resolve_model_availability,
+)
 from theforge.config.bridge import model_ref_to_profile
+from theforge.config.model_identity import ModelAvailability
 from theforge.config.models import (
     canonical_model_id,
+    model_fallback_transport,
     provider_for_transport,
     transport_from_raw_fields,
 )
@@ -276,33 +281,6 @@ def _unattributed_pricing_models(
     return flagged
 
 
-def _unconfirmed_identity_models(
-    model_keys: list[str],
-    registry: dict | None = None,
-) -> list[tuple[str, str]]:
-    """Return ``(model_key, explanation)`` for enabled models with an unchecked identifier.
-
-    A model identifier is a claim about something outside this repository, and it
-    can stop being true without anything here changing — providers retire and
-    re-point names, and a retired name that keeps resolving upstream produces
-    successful runs whose declarations describe a different model. That is only
-    catchable before spend if it is reported where configuration is read (#2352).
-
-    Reported, never fatal: an unchecked identifier is usually fine. What it must
-    not be is invisible.
-    """
-    today = date.today()
-    rows: list[tuple[str, str]] = []
-    for model_key in model_keys:
-        try:
-            spec = resolve_agent_spec(model_key, registry=registry)
-        except ValueError:
-            continue  # unresolvable keys (including retired ones) report elsewhere
-        if not spec.identity.confirmed_on(today):
-            rows.append((model_key, spec.identity.describe(today)))
-    return rows
-
-
 def _cost_band_bases(
     model_keys: list[str],
     registry: dict | None = None,
@@ -448,62 +426,160 @@ def _collapse_complexity_labels(mapping: dict[str, str]) -> str:
     return ("\n" + " " * 16).join(parts)
 
 
-def _profile_model_key(profile: ModelProfile) -> str | None:
-    """Return the canonical registry key a profile's identity resolves to."""
-    if profile.registry_id:
-        return profile.registry_id
-    provider = profile.provider_family
-    if not provider or profile.transport is None:
+def _availability_target(
+    profile: ModelProfile,
+    config: ForgeConfig,
+    *,
+    key: str,
+    model: str | None = None,
+    transport: TransportSpec | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> ModelAvailabilityTarget | None:
+    """Build an account-catalog target from a profile's actual dispatch identity."""
+    effective_transport = transport or profile.transport
+    effective_provider = provider or profile.provider_family
+    effective_model = model or profile.model
+    if effective_transport is None or effective_provider is None:
         return None
-    return canonical_model_id(provider, profile.model, profile.transport.kind)
-
-
-def _identity_caveat(profile: ModelProfile, config: ForgeConfig) -> str | None:
-    """Return this profile's unconfirmed-identifier note, or None when confirmed.
-
-    The same statement ``_unconfirmed_identity_models`` renders in MODEL
-    REGISTRY, resolved per profile so it can be shown beside the verdict it
-    qualifies instead of in a separate section (#2909).
-    """
-    model_key = _profile_model_key(profile)
-    if not model_key:
-        return None
+    canonical_id = canonical_model_id(
+        effective_provider, effective_model, effective_transport.kind
+    )
     try:
-        spec = resolve_agent_spec(model_key, registry=config.model_registry)
+        spec = resolve_agent_spec(canonical_id, registry=config.model_registry)
+        identity = spec.identity
     except ValueError:
-        return None  # unresolvable keys are reported elsewhere
-    today = date.today()
-    if spec.identity.confirmed_on(today):
-        return None
-    return spec.identity.describe(today)
+        identity = None
+    kwargs = {} if identity is None else {"identity": identity}
+    return ModelAvailabilityTarget(
+        canonical_id=canonical_id,
+        provider=effective_provider,
+        model=effective_model,
+        transport=effective_transport,
+        base_url=profile.base_url if base_url is None else base_url,
+        key=key,
+        **kwargs,
+    )
 
 
-def _unverified_because(profile: ModelProfile, config: ForgeConfig) -> str | None:
-    """Return why a passing readiness check still establishes no callability.
+def _availability_targets(config: ForgeConfig) -> list[ModelAvailabilityTarget]:
+    """Enumerate every configured identity a normal dispatch can reach."""
+    targets: list[ModelAvailabilityTarget] = []
+    seen: set[tuple[str, str, str, str, str | None]] = set()
 
-    ``check_agent_auth`` clears a CLI-transport profile once its launcher
-    resolves on PATH. That establishes the binary exists — not that the
-    credentials it will present are live, and not that the signed-in account is
-    entitled to call the model this profile names. Reporting that as an
-    unqualified ``✓ ready`` is what let an account-entitlement refusal (a 400
-    from the provider, invariant across stories and attempts) arrive only after
-    a story had been routed and paid for (#2909).
+    def add(target: ModelAvailabilityTarget | None) -> None:
+        if target is None:
+            return
+        identity = (
+            target.canonical_id,
+            target.transport.runner,
+            target.transport.kind,
+            target.provider,
+            target.base_url,
+        )
+        if identity not in seen:
+            seen.add(identity)
+            targets.append(target)
 
-    Returns None for API-transport profiles: their check resolves an actual
-    credential, a different and narrower claim, and ``forge check-providers``
-    probes them separately.
-    """
-    if profile.transport is None or profile.transport.kind != "cli":
-        return None
-    runner = profile.transport.runner
-    parts = [
-        f"{runner} launcher on PATH; neither credentials nor this account's "
-        f"entitlement to call {profile.model!r} was checked"
-    ]
-    caveat = _identity_caveat(profile, config)
-    if caveat:
-        parts.append(caveat)
-    return "; ".join(parts)
+    def add_profile(role: str, profile: ModelProfile) -> None:
+        profile = _apply_transport_fallback(profile, config.transport_fallbacks)
+        add(_availability_target(profile, config, key=f"{role}:primary"))
+        provider = profile.provider_family
+        fallback_transport = model_fallback_transport(provider)
+        if provider and fallback_transport:
+            for index, fallback_model in enumerate(profile.fallback_models):
+                add(
+                    _availability_target(
+                        profile,
+                        config,
+                        key=f"{role}:model-fallback:{index}",
+                        model=fallback_model,
+                        transport=fallback_transport,
+                        provider=provider,
+                    )
+                )
+        if profile.api_fallback is not None:
+            fallback = profile.api_fallback
+            add(
+                _availability_target(
+                    profile,
+                    config,
+                    key=f"{role}:transport-fallback",
+                    model=fallback.model,
+                    transport=fallback.transport(),
+                    provider=fallback.provider,
+                    base_url=fallback.base_url,
+                )
+            )
+
+    add_profile("preflight", config.preflight_profile)
+    add_profile("dev", config.dev_profile)
+    if config.preflight_fallback_profile is not None:
+        add_profile("preflight-fallback", config.preflight_fallback_profile)
+    for index, profile in enumerate(config.review_pool):
+        add_profile(f"review:{index}", profile)
+    if config.synthesis_profile is not None:
+        add_profile("synthesis", config.synthesis_profile)
+    if config.plan.enabled:
+        add_profile("plan", model_ref_to_profile("plan", config.plan.ref))
+    if config.plan_agent_review.enabled:
+        for index, profile in enumerate(config.plan_agent_review.profiles):
+            add_profile(f"plan-review:{index}", profile)
+    for index, agent in enumerate(config.agents):
+        add_profile(f"agent:{index}", agent.to_model_profile(allowed_tools=()))
+    if config.knowledge.run_summaries and config.knowledge.ref is not None:
+        add_profile(
+            "knowledge-summary",
+            model_ref_to_profile("knowledge_summary", config.knowledge.ref, allowed_tools=()),
+        )
+    for index, model_key in enumerate(config.models or ()):
+        try:
+            spec = resolve_agent_spec(model_key, registry=config.model_registry)
+        except ValueError:
+            continue
+        add(
+            ModelAvailabilityTarget(
+                canonical_id=canonical_model_id(spec.provider, spec.model, spec.transport.kind),
+                provider=spec.provider,
+                model=spec.model,
+                transport=spec.transport,
+                base_url=spec.base_url,
+                identity=spec.identity,
+                key=f"models:{index}",
+            )
+        )
+    return targets
+
+
+def _format_availability(
+    targets: list[ModelAvailabilityTarget],
+    results: dict[str, ModelAvailability],
+) -> list[str]:
+    """Render timestamped catalog answers grouped by the dispatch credentials."""
+    if not targets:
+        return []
+    groups: dict[
+        tuple[str, str, str], list[tuple[ModelAvailabilityTarget, ModelAvailability]]
+    ] = {}
+    for target in targets:
+        answer = results.get(target.key or target.canonical_id)
+        if answer is None:
+            continue
+        runner_label = (
+            target.transport.runner if target.transport.kind == "cli" else target.provider
+        )
+        checked_at = answer.checked_at
+        timestamp = checked_at.strftime("%Y-%m-%d %H:%M UTC") if checked_at else "not obtained"
+        group = (runner_label, answer.auth_mode, timestamp)
+        groups.setdefault(group, []).append((target, answer))
+    lines = ["AVAILABILITY"]
+    for (runner, auth_mode, timestamp), rows in groups.items():
+        lines.append(f"  availability ({runner}, {auth_mode}, checked {timestamp}):")
+        for target, answer in rows:
+            reason = answer.reason
+            reason_text = f"   {reason}" if reason else ""
+            lines.append(f"    {target.canonical_id:<32}{answer.state:<12}{reason_text}")
+    return lines
 
 
 def _format_auth_status(
@@ -512,18 +588,21 @@ def _format_auth_status(
     reason: str,
     config: ForgeConfig,
 ) -> str:
-    """Render one profile's readiness verdict: ready, unverified, or failed."""
+    """Render one profile's launcher/credential readiness verdict.
+
+    Model callability is reported in the dedicated availability section; this
+    row intentionally says only whether dispatch prerequisites are present.
+    """
     if not ready:
         return f"✗ {reason}"
-    unverified = _unverified_because(profile, config)
-    if unverified is None:
-        return "✓ ready"
-    return f"? unverified — {unverified}"
+    return "✓ ready"
 
 
 def _format_config(
     config: ForgeConfig,
     auth_results: AuthResults,
+    availability_targets: list[ModelAvailabilityTarget] | None = None,
+    availability_results: dict[str, ModelAvailability] | None = None,
 ) -> tuple[str, int]:
     """Build the output string and determine exit code.
 
@@ -592,17 +671,6 @@ def _format_config(
             # The cost band is the other price-shaped routing input, so show what
             # each enabled model's band is derived from — an operator diagnosing a
             # selection can otherwise only see the number, not its source (#2203).
-            # An identifier nothing has checked against the provider recently is
-            # the state that produced #2352: the declaration kept describing a
-            # model the name had stopped designating, and the only symptom was a
-            # cost figure that looked plausible.
-            unconfirmed = _unconfirmed_identity_models(
-                config.models, registry=config.model_registry
-            )
-            if unconfirmed:
-                lines.append("  upstream identifier not confirmed:")
-                for model_key, explanation in unconfirmed:
-                    lines.append(f"    {model_key:<32}{explanation}")
             bands = _cost_band_bases(config.models, registry=config.model_registry)
             if bands:
                 lines.append("  cost band basis:")
@@ -657,6 +725,13 @@ def _format_config(
                         f"({'; '.join(d.describe() for d in duplicate.routing_differences)}) — "
                         "removing the declaration would change model selection"
                     )
+        lines.append("")
+
+    availability_lines = _format_availability(
+        availability_targets or [], availability_results or {}
+    )
+    if availability_lines:
+        lines.extend(availability_lines)
         lines.append("")
 
     # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────
@@ -892,7 +967,14 @@ def cmd_check_config(args: object) -> int:
         )
     )
 
-    output, exit_code = _format_config(config, auth_results)
+    availability_targets = _availability_targets(config)
+    availability_results = resolve_model_availability(availability_targets, config.secrets)
+    output, exit_code = _format_config(
+        config,
+        auth_results,
+        availability_targets,
+        availability_results,
+    )
 
     # Fold in captured log warnings (e.g. deprecated fields)
     if captured_warnings:
