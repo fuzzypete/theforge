@@ -219,6 +219,38 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
         assert process_group.reap_orphan_agents(tmp_path) == 0
         assert not sidecar.exists()
 
+    def test_unverifiable_group_reaps_a_start_time_verified_observed_escapee(
+        self, tmp_path: Path
+    ) -> None:
+        """A vanished group does not prevent the reaper reaching a real escapee."""
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        info = process_group.process_tree.process_info(proc.pid)
+        assert info is not None
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": 4242,
+                    "sandbox_dir": str(tmp_path),
+                    "observed": {str(proc.pid): info.fingerprint},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            assert process_group.reap_orphan_agents(tmp_path) == 1
+            assert proc.wait(timeout=5) == -signal.SIGKILL
+            assert not sidecar.exists()
+        finally:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except OSError:
+                pass
+
     def _leaderless_group(self, tmp_path: Path) -> tuple[int, int]:
         """Spawn a group, let its leader exit with a grandchild still in it.
 
@@ -668,7 +700,7 @@ class TestGroupMembers:
 
 
 class TestListOrphanAgents:
-    """``forge status`` must be able to see orphans without touching them."""
+    """``forge status`` must list verified orphans without touching them."""
 
     def test_lists_dead_owner_records_without_signalling_or_unlinking(
         self, tmp_path: Path
@@ -682,7 +714,14 @@ class TestListOrphanAgents:
         agents_dir.mkdir(parents=True, exist_ok=True)
         sidecar = agents_dir / f"999999-{pgid}.json"
         sidecar.write_text(
-            json.dumps({"owner_pid": 999_999, "pgid": pgid, "sandbox_dir": str(tmp_path)}),
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                }
+            ),
             encoding="utf-8",
         )
         live = agents_dir / f"{os.getpid()}-4242.json"
@@ -695,6 +734,104 @@ class TestListOrphanAgents:
             assert live.exists()
         finally:
             process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_lists_unverifiable_dead_owner_record_with_its_reason(self, tmp_path: Path) -> None:
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps({"owner_pid": 999_999, "pgid": 4242, "sandbox_dir": str(tmp_path)}),
+            encoding="utf-8",
+        )
+
+        assert process_group.list_orphan_agents(tmp_path) == [
+            {
+                "owner_pid": 999_999,
+                "pgid": 4242,
+                "sandbox_dir": str(tmp_path),
+                "orphan_kind": "unverifiable_sidecar",
+                "orphan_reason": (
+                    "the leader is gone and the record names no surviving member to identify "
+                    "the group by"
+                ),
+            }
+        ]
+        assert sidecar.exists(), "a read-only listing must not consume stale records"
+
+    def test_lists_test_origin_record_as_sweep_discarded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Status must not promise that an operator sweep will reap suite residue."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = os.getpgid(proc.pid)
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / f"999999-{pgid}.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                    "origin": "test",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(process_group, "_running_under_pytest", lambda: False)
+        try:
+            assert process_group.list_orphan_agents(tmp_path) == [
+                {
+                    "owner_pid": 999_999,
+                    "pgid": pgid,
+                    "sandbox_dir": str(tmp_path),
+                    "leader_fingerprint": process_group._leader_fingerprint(pgid),
+                    "origin": "test",
+                    "orphan_kind": "unverifiable_sidecar",
+                    "orphan_reason": (
+                        "test-origin sidecar will be discarded unsignalled by a sweep"
+                    ),
+                }
+            ]
+            assert proc.poll() is None, "a read-only listing killed a process group"
+            assert sidecar.exists(), "a read-only listing must not consume records"
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_lists_live_observed_escapees_when_the_group_is_unverifiable(
+        self, tmp_path: Path
+    ) -> None:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        info = process_group.process_tree.process_info(proc.pid)
+        assert info is not None
+        agents_dir = tmp_path / ".forge" / "runs" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = agents_dir / "999999-4242.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "owner_pid": 999_999,
+                    "pgid": 4242,
+                    "sandbox_dir": str(tmp_path),
+                    "observed": {str(proc.pid): info.fingerprint},
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            orphans = process_group.list_orphan_agents(tmp_path)
+            assert len(orphans) == 1
+            assert orphans[0]["orphan_kind"] == "escaped_descendants"
+            assert orphans[0]["escaped_pids"] == [proc.pid]
+            assert proc.poll() is None, "a read-only listing killed an escapee"
+        finally:
+            proc.kill()
             proc.wait(timeout=5)
 
     def test_missing_agents_dir_lists_nothing(self, tmp_path: Path) -> None:

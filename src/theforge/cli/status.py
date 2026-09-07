@@ -447,16 +447,39 @@ def _resolve_watch_run_ids(active_run_ids: list[str], project_root: Path) -> lis
 
 
 def _report_orphan_agents(orphans: list[dict]) -> None:
-    """Print orphaned agent process groups; kill nothing (#2115)."""
+    """Print orphaned agent process state; kill nothing (#2115)."""
     if not orphans:
         return
-    print(f"[forge] {len(orphans)} orphaned agent process group record(s):")
-    for record in orphans:
+    groups = [record for record in orphans if record.get("orphan_kind") == "process_group"]
+    escapees = [record for record in orphans if record.get("orphan_kind") == "escaped_descendants"]
+    unverifiable = [
+        record for record in orphans if record.get("orphan_kind") == "unverifiable_sidecar"
+    ]
+    if groups:
+        print(f"[forge] {len(groups)} orphaned agent process group record(s):")
+    for record in groups:
         print(
             f"  pgid={record.get('pgid')} owner sprint pid={record.get('owner_pid')} "
             f"(dead) run={record.get('run_id')} sandbox={record.get('sandbox_dir')}"
         )
-    print("[forge] These are reaped by `forge stop` or the next sprint launch.")
+    if escapees:
+        print(f"[forge] {len(escapees)} orphaned agent escapee record(s):")
+    for record in escapees:
+        print(
+            f"  pids={record.get('escaped_pids')} owner sprint pid={record.get('owner_pid')} "
+            f"(dead) run={record.get('run_id')} sandbox={record.get('sandbox_dir')} "
+            f"(process group unverifiable: {record.get('orphan_reason')})"
+        )
+    if unverifiable:
+        print(f"[forge] {len(unverifiable)} unverifiable agent sidecar record(s):")
+    for record in unverifiable:
+        print(
+            f"  pgid={record.get('pgid')} owner sprint pid={record.get('owner_pid')} "
+            f"(dead) run={record.get('run_id')} sandbox={record.get('sandbox_dir')} "
+            f"(will be discarded unsignalled: {record.get('orphan_reason')})"
+        )
+    if groups or escapees:
+        print("[forge] These are reaped by `forge stop` or the next sprint launch.")
 
 
 def cmd_status(args: object) -> int:
