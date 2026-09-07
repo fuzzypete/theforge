@@ -13,11 +13,12 @@ from theforge.assignment import (
     AssignmentDecision,
     EscalationRecord,
     _check_promotion,
+    _enforce_budget,
     _normalize_complexity,
     _reviewer_count,
     assign_models,
 )
-from theforge.config import AgentDef, TransportFallbackConfig
+from theforge.config import AgentDef, ModelProfile, TransportFallbackConfig
 
 
 def _dev_profiles(
@@ -1032,6 +1033,40 @@ def test_budget_cap_downgrade_dev_medium_stops_at_mid():
     assert decision.dev.name != "haiku", (
         f"Dev should not fall below mid floor for MEDIUM; got {decision.dev.name}"
     )
+
+
+def test_budget_downgrade_skips_declared_dev_incapable_candidate():
+    """The budget path cannot replace dev with an excluded cheaper model."""
+    incapable = AgentDef(
+        "incapable-cheap", "anthropic", "haiku", 1.0, 300, "cheap", dev_capable=False
+    )
+    eligible = AgentDef("eligible-mid", "anthropic", "sonnet", 3.0, 900, "mid")
+    strong = AgentDef("strong-dev", "anthropic", "opus", 10.0, 1200, "strong")
+    placeholder = ModelProfile(
+        name="placeholder",
+        provider="anthropic",
+        model="placeholder",
+        budget_usd=0.0,
+        timeout_seconds=60,
+        allowed_tools=(),
+    )
+    decision = AssignmentDecision(
+        preflight=placeholder,
+        planner=placeholder,
+        plan_reviewers=[],
+        dev=strong.to_model_profile(),
+        code_reviewers=[],
+    )
+
+    downgraded = _enforce_budget(
+        decision,
+        [incapable, eligible, strong],
+        max_cost_per_story_usd=5.0,
+        role_pools={"dev": [incapable, eligible, strong]},
+    )
+
+    assert downgraded.dev.name == "eligible-mid"
+    assert downgraded.budget_audit["steps"][0]["to_model"] == "sonnet"
 
 
 def test_budget_cap_preserves_strong_planner_when_dev_is_also_strong():

@@ -15,7 +15,7 @@ import random
 
 import pytest
 
-from theforge.assignment import assign_models
+from theforge.assignment import REASON_DEV_INCAPABLE, assign_models
 from theforge.config import AgentDef, AssignmentConfig
 from theforge.config.types import ExplorationConfig
 from theforge.model_profiles import RunOutcome, apply_run
@@ -29,7 +29,7 @@ def _anthropic_key(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
 
-def _agents(rival_tier: str = "strong") -> list[AgentDef]:
+def _agents(rival_tier: str = "strong", rival_dev_capable: bool = True) -> list[AgentDef]:
     return [
         AgentDef(
             name="winner",
@@ -46,6 +46,7 @@ def _agents(rival_tier: str = "strong") -> list[AgentDef]:
             budget_usd=1.0,
             timeout_seconds=600,
             tier=rival_tier,
+            dev_capable=rival_dev_capable,
         ),
     ]
 
@@ -107,6 +108,29 @@ def test_challenger_fires_on_cadence_and_overrides_dev(_anthropic_key):
     assert set(block["pool"]) == {"winner", "rival"}
     # The challenger actually replaces the winner as the dev model that runs.
     assert decision.dev.name == "rival"
+
+
+def test_exploration_never_routes_a_declared_dev_incapable_challenger(_anthropic_key):
+    """The exploration input is the same filtered dev pool as normal routing."""
+    decision = assign_models(
+        _agents(rival_dev_capable=False),
+        _cfg(),
+        complexity="HIGH",
+        complexity_score=9,
+        model_profiles=_profiles(4),
+        sprint_exploration_budget=1,
+        explore_rng=random.Random(0),
+    )
+
+    block = _dev_exploration(decision)
+    assert decision.dev.name == "winner"
+    assert block["selected"] == "winner"
+    assert set(block["pool"]) == {"winner"}
+    dev_pool = {
+        entry["name"]: entry for entry in decision.routing_decision["dev"]["candidate_pool"]
+    }
+    assert dev_pool["rival"]["included"] is False
+    assert dev_pool["rival"]["reason"] == REASON_DEV_INCAPABLE
 
 
 def test_challenger_block_is_labeled_even_in_winner_mode(_anthropic_key):
