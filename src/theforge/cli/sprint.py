@@ -931,6 +931,8 @@ def _emit_shape_skip_events(
     original_skips: list,
     original_advisories: list,
     intake_outcomes: "dict | None" = None,
+    unevaluated: "list | None" = None,
+    unevaluated_forced: bool = False,
 ) -> None:
     """Record shape-gate skip classification events into the audit substrate.
 
@@ -938,6 +940,12 @@ def _emit_shape_skip_events(
     the entry-intake gate REMEDIATED vs. one it declined) and hands the gate's
     original skip/advisory partition to :func:`emit_shape_skip_events`.
     Best-effort — the helper swallows substrate failures internally.
+
+    ``unevaluated`` issues (#2910) are recorded in both dispositions, so the
+    audit distinguishes an unchecked story from a checked one either way. They
+    are blocking when refused and advisory when ``unevaluated_forced`` — the
+    operator decided to run them without the check — and carry the
+    ``gate_could_not_evaluate`` category in both cases.
     """
     from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.skip_report import emit_shape_skip_events
@@ -953,14 +961,21 @@ def _emit_shape_skip_events(
             audit = getattr(outcome, "audit", None) or {}
             if isinstance(audit, dict) and audit.get("remediation_source") == "declined":
                 declined.add(int(num))
+    unevaluated = list(unevaluated or [])
+    blocking = list(original_skips)
+    advisory = list(original_advisories)
+    if unevaluated_forced:
+        advisory += unevaluated
+    else:
+        blocking += unevaluated
     try:
         emit_shape_skip_events(
             config.project_root,
             run_id=run_id,
             sprint_name=sprint_name,
             milestone=milestone,
-            skipped=original_skips,
-            advisories=original_advisories,
+            skipped=blocking,
+            advisories=advisory,
             remediated_numbers=remediated,
             declined_numbers=declined,
         )
@@ -1151,6 +1166,7 @@ def _run_query_mode(
         format_advisory_warning,
         format_operator_action_notice,
         format_skipped_warning,
+        format_unevaluated_warning,
     )
 
     try:
@@ -1266,6 +1282,15 @@ def _run_query_mode(
         # the ones remediation later moves back to runnable.
         original_gate_skips = list(gate_result.skipped)
         original_gate_advisories = list(gate_result.advisories)
+        # Issues the gate could not evaluate (#2910). Reported on their own
+        # terms — never folded into the shape-skip warning, which speaks for
+        # findings that were actually made.
+        gate_unevaluated = list(gate_result.unevaluated)
+        if gate_unevaluated:
+            print(
+                format_unevaluated_warning(gate_unevaluated, forced=force),
+                file=sys.stderr,
+            )
         if gate_result.skipped:
             if force:
                 # --force overrides shape refusals, not the operator's
@@ -1369,6 +1394,16 @@ def _run_query_mode(
                 config=config,
             )
 
+        # Unevaluated issues join the skip records only once remediation has
+        # settled: there is no body edit that repairs a failed detail fetch, so
+        # routing them through remediation would only advertise a remedy that
+        # cannot clear the condition. Under --force they are running instead,
+        # on the operator's explicit decision, so they are not recorded as
+        # dropped — the substrate emission below still records that they were
+        # never evaluated.
+        if gate_unevaluated and not force:
+            skipped_issues = list(skipped_issues) + gate_unevaluated
+
         # Both remediation passes above put issues back into the runnable list
         # after the gate ran its semantic pass over it. A remediated issue is
         # structurally runnable and therefore policy-required, so it gets the
@@ -1400,14 +1435,26 @@ def _run_query_mode(
             original_skips=original_gate_skips,
             original_advisories=original_gate_advisories,
             intake_outcomes=entry_intake_outcomes,
+            unevaluated=gate_unevaluated,
+            unevaluated_forced=force,
         )
 
         if not issues:
-            print(
-                f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
-                "— nothing to run.",
-                file=sys.stderr,
-            )
+            # "Skipped by shape gate" claims a verdict, so it is only used when
+            # every withheld issue actually got one. Where some were never
+            # evaluated, the line says so and counts them separately.
+            if gate_unevaluated:
+                message = (
+                    f"[forge] All {len(skipped_issues)} issue(s) withheld at sprint "
+                    f"entry, {len(gate_unevaluated)} of them never evaluated (the "
+                    "shape gate could not fetch their detail) — nothing to run."
+                )
+            else:
+                message = (
+                    f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
+                    "— nothing to run."
+                )
+            print(message, file=sys.stderr)
             _emit_all_skipped_audit(
                 config=config,
                 sprint_name=_derive_query_sprint_name(
