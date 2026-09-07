@@ -1,0 +1,175 @@
+schema_version: 2
+run_id: bf841883c647
+authoritative_run_record: .forge/audits/runs/bf841883c647.json
+generated_at: '2026-09-07T21:41:50.049052+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01624125
+story:
+  slug: issue-2949
+  name: Model availability resolves per account and auth mode to a timestamped three-state
+    answer
+  github_issue: 2949
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- config
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/check_config.py
+- src/theforge/config/auth.py
+- src/theforge/config/model_identity.py
+- tests/test_check_config.py
+- tests/test_model_availability.py
+- tests/test_model_identity_verification.py
+what_changed:
+  description: This run defined and surfaced per-model availability as a timestamped
+    three-state result for the configured account and auth mode, and rendered that
+    information in `forge check-config`. It also enforced that manually withdrawn
+    packaged identities stay unavailable regardless of provider catalog contents.
+  approach: The work introduced a resolver contract for availability answers, gathered
+    non-generative account catalog data through auth-specific paths, threaded those
+    answers into config checking, and updated focused verification around resolver
+    behavior, auth labeling, retired identities, and staleness-related identity checks.
+  files_modified: *id002
+what_was_learned:
+- claim: Availability probes that run during `check-config` need explicit failure
+    bounds, because unconditional live catalog requests can turn configuration inspection
+    into an indefinite hang instead of yielding `unverified`.
+  evidence:
+  - type: review_finding
+    finding_id: 883f5f59eba12c91
+    description: The review found that `resolve_model_availability`, called unconditionally
+      from `cmd_check_config`, performed live `models.list` requests without a timeout,
+      and an unresponsive endpoint stalled `forge check-config` forever; this shows
+      future runs must treat provider-catalog probing as bounded preflight work rather
+      than assume it will fail fast.
+  - type: file
+    path: src/theforge/cli/check_config.py
+    description: This CLI path is where availability resolution is invoked for config
+      inspection, so the finding demonstrates that any network behavior introduced
+      here directly affects whether a supposedly diagnostic command remains responsive.
+- claim: Auth-mode labeling must be derived from the credentials actually used for
+    the catalog request, not from a coarse endpoint classification, because local
+    OpenAI-compatible targets can still authenticate with a real API key.
+  evidence:
+  - type: review_finding
+    finding_id: ab798c1f00a8f44b
+    description: The review caught a case where a local endpoint with a configured
+      API key displayed `local endpoint (no API key)` even though the request was
+      sent with that key, showing that endpoint locality and effective auth mode can
+      diverge and must be resolved from actual request inputs.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approved after this mismatch was fixed, confirming that the
+      review considered key-aware auth labeling part of the contract rather than cosmetic
+      output.
+- claim: Retired or withdrawn identities need to stay in the availability output even
+    when identity resolution is incomplete, so enumeration paths must not drop them
+    before an unavailable/unverified answer can be produced.
+  evidence:
+  - type: review_finding
+    finding_id: 2436dcce2db5c445
+    description: The review found that a direct role override naming a packaged retired
+      identity was being carried as an unconfirmed identity and sent through the ordinary
+      catalog path as `unverified`, which exposed that identity status and availability
+      rendering are coupled in edge cases.
+  - type: review_finding
+    finding_id: ef9ec1d057a3fc5e
+    description: A separate review finding showed that a retired registry key in simple-mode
+      `config.models` raised during `resolve_agent_spec` and was skipped entirely
+      from the availability section, demonstrating that future runs must preserve
+      rows for retired identities across all enumeration paths rather than let resolver
+      exceptions erase them.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes explicitly called out retired-identity fixes with dedicated
+      tests, showing that keeping these identities visible in output was a recurring
+      review concern, not an isolated bug.
+- claim: Catalog parsing for account-based availability should tolerate duplicate
+    entries for the same slug, because strict set-vs-count validation can discard
+    an otherwise usable catalog and incorrectly degrade the answer to `unverified`.
+  evidence:
+  - type: review_finding
+    finding_id: 9d29c97694c04b90
+    description: The review found that a Codex cache with two entries for the same
+      slug caused `_codex_cache_catalog` to reject the entire catalog as having an
+      unrecognized entry; this shows future runs should validate catalog shape in
+      a way that preserves usable membership information when duplicates appear.
+  - type: file
+    path: src/theforge/config/auth.py
+    description: This is the auth-side catalog resolution path where duplicate-handling
+      affected whether availability could be resolved from cached account data at
+      all, making the parsing strategy a behaviorally important design point.
+- claim: Local OpenAI-compatible availability logic has to distinguish 'local endpoint
+    with no key' from 'local endpoint using API-key auth', because those two cases
+    differ both in whether a catalog request should be attempted and in the resulting
+    availability state.
+  evidence:
+  - type: review_finding
+    finding_id: 71c018c59f821e00
+    description: The review identified that when a localhost `base_url` had no `OPENAI_API_KEY`,
+      availability resolved to `unverified` and no account-catalog request was made;
+      this demonstrates one branch of local-endpoint behavior that future runs must
+      preserve explicitly.
+  - type: review_finding
+    finding_id: ab798c1f00a8f44b
+    description: 'A later finding showed the contrasting branch: a local endpoint
+      can still send the catalog request with a real configured key, so logic keyed
+      only on endpoint locality is insufficient.'
+learned_patterns:
+- bounded-preflight-networking
+- effective-auth-over-endpoint-heuristics
+- preserve-retired-identities-in-enumeration
+- tolerant-catalog-membership-parsing
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 71c018c59f821e00
+    severity: P1
+    file: src/theforge/config/auth.py
+    description: When a dispatchable OpenAI API profile points at a localhost base_url
+      and no OPENAI_API_KEY is set, availability resolves to unverified with OPENAI_API_KEY
+      not set and no account-catalog request is made.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 2436dcce2db5c445
+    severity: P1
+    file: src/theforge/cli/check_config.py
+    description: When a direct role override names the packaged retired identity deepseek/deepseek-chat/api,
+      the availability target carries an unconfirmed identity and resolves through
+      the ordinary catalog path as unverified.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 2486a5351e84a671
+    severity: P1
+    file: src/theforge/config/auth.py
+    description: When a non-Codex target with a retired identity resolves unavailable,
+      its answer carries the auth mode configured auth.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases where availability semantics were
+    correct in principle but mislabeled or omitted when auth mode, local endpoints,
+    or retired identities took non-default paths.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 24.074145100000003
+  dominant_difficulty: Reconciling availability with auth-specific and identity-specific
+    edge cases across multiple enumeration paths without making `check-config` behave
+    like a fragile live network operation.
