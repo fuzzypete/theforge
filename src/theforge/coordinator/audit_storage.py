@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 46
+CURRENT_RECORD_SCHEMA_VERSION = 47
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2824,6 +2824,24 @@ def _migrate_v45_to_v46(record: dict) -> dict:
     }
 
 
+def _migrate_v46_to_v47(record: dict) -> dict:
+    """Give pre-application runs an explicit "no split was applied" (#2824).
+
+    v47 records what an accepted decomposition proposal did to the tracker. A
+    v46 record predates the ``accept`` action entirely, so no proposal it
+    carried was ever applied — the explicit null says that, where an absent key
+    would leave a reader unable to tell "not applied" from "this record is too
+    old to say".
+    """
+    gate = record.get("preflight_complexity_gate")
+    if not isinstance(gate, dict) or "assessment_application" in gate:
+        return record
+    return {
+        **record,
+        "preflight_complexity_gate": {**gate, "assessment_application": None},
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2878,6 +2896,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     43: _migrate_v43_to_v44,
     44: _migrate_v44_to_v45,
     45: _migrate_v45_to_v46,
+    46: _migrate_v46_to_v47,
 }
 
 

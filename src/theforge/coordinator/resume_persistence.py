@@ -224,6 +224,17 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
             if state.preflight_complexity_gate_assessment_invoked
             else state.preflight_complexity_gate_assessment_prior_cost_usd
         ),
+        # What an accepted proposal did to the tracker (#2824). Restored so a
+        # resumed attempt re-enters an interrupted application into the slices
+        # it already created instead of filing a second set of them.
+        "decomposition_application_status": state.preflight_decomposition_application_status,
+        "decomposition_created": _jsonable(list(state.preflight_decomposition_created or [])),
+        "decomposition_source_issue": state.preflight_decomposition_source_issue,
+        "decomposition_source_issue_closed": bool(
+            state.preflight_decomposition_source_issue_closed
+        ),
+        "decomposition_application_error": state.preflight_decomposition_application_error,
+        "decomposition_applied_at": state.preflight_decomposition_applied_at,
         "sufficiency": state.preflight_sufficiency,
         "work_type": state.preflight_work_type,
         "domains": list(state.preflight_domains or []),
@@ -1043,6 +1054,21 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
             "preflight_complexity_gate_assessment_prior_cost_usd",
             "complexity_gate_assessment_cost_usd",
         ),
+        (
+            "preflight_decomposition_application_status",
+            "decomposition_application_status",
+        ),
+        ("preflight_decomposition_created", "decomposition_created"),
+        ("preflight_decomposition_source_issue", "decomposition_source_issue"),
+        (
+            "preflight_decomposition_source_issue_closed",
+            "decomposition_source_issue_closed",
+        ),
+        (
+            "preflight_decomposition_application_error",
+            "decomposition_application_error",
+        ),
+        ("preflight_decomposition_applied_at", "decomposition_applied_at"),
         ("preflight_sufficiency", "sufficiency"),
         ("preflight_work_type", "work_type"),
         ("preflight_domains", "domains"),
