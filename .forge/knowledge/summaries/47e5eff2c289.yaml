@@ -1,0 +1,120 @@
+schema_version: 2
+run_id: 47e5eff2c289
+authoritative_run_record: .forge/audits/runs/47e5eff2c289.json
+generated_at: '2026-09-07T19:04:36.322405+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011295
+story:
+  slug: issue-2964
+  name: Fix reproduced baseline gate failure in tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error
+    (+1 more)
+  github_issue: 2964
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- testing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/plans/2603-criterion-symptom-gaming.md
+- scripts/measure_criterion_gaming.py
+- tests/test_measure_criterion_gaming.py
+what_changed:
+  description: This run corrected the criterion-gaming measurement path so the regenerated
+    checked-in report remains reproducible against the intended audit cohort and no
+    longer drifts because of newly created local audits or live integration-ref history.
+    It also updated the corresponding test expectations around report regeneration
+    behavior.
+  approach: The change tightened cohort selection and report derivation in the measurement
+    script to use stable inputs and tolerant parsing, then verified the byte-for-byte
+    regeneration path through focused test updates and review-driven fixes.
+  files_modified: *id002
+what_was_learned:
+- claim: When a reproducibility test compares against a checked-in report, the generator
+    must derive its cohort from stable historical inputs rather than whatever audit
+    files happen to exist locally during the run.
+  evidence:
+  - type: review_finding
+    finding_id: c3bd0e24e6812372
+    description: The review found that counting every diagnose audit under the live
+      .forge/audits corpus made today's newly written audits alter the regenerated
+      report, which demonstrates that local ambient audit state can break byte-for-byte
+      reproducibility unless cohort selection excludes those transient records.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 recorded that the report was corrected to exclude only pre-window
+      audits from the dated historical count and that the reproduction target then
+      passed, showing that stabilizing the audit cohort was the mechanism that restored
+      reproducibility.
+- claim: Measurement/report pipelines that scan historical audits need to treat malformed
+    or empty timestamps as non-fatal and classify those records out of scope instead
+    of aborting the whole run.
+  evidence:
+  - type: review_finding
+    finding_id: 76986613e8d10e7c
+    description: The review identified that unguarded ISO-8601 parsing raised ValueError
+      and stopped the measurement run, while the prior behavior classified such records
+      as out-of-window, showing that tolerant timestamp handling is necessary for
+      robust corpus scans.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 notes that unreadable timestamps were again treated as out-of-window
+      and the earlier issue stayed fixed, confirming that graceful exclusion rather
+      than hard failure was the effective handling strategy.
+- claim: Reports intended to be reproducible from checked-in data should not re-derive
+    comparison fields from live git state when those fields can drift as unrelated
+    commits land later.
+  evidence:
+  - type: review_finding
+    finding_id: aec32b54345bdcb3
+    description: The review found that landed_commit facts were recomputed from a
+      live integration-ref git log and then compared as drift fields, so later matching
+      commits changed the output for issues already recorded, demonstrating that live
+      repository history is an unstable source for reproducible report fields.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 states that the cycle-2 drift issue was resolved while the
+      reproducibility path remained fixed, showing that removing dependence on live
+      commit-history drift was part of restoring stable regeneration.
+learned_patterns:
+- stable-historical-cohort
+- graceful-invalid-timestamp-handling
+- avoid-live-history-in-repro-reports
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: c3bd0e24e6812372
+    severity: P1
+    file: docs/plans/2603-criterion-symptom-gaming.md
+    description: The checked-in measurement report's 'outside the window' count was
+      raised from 130 to 132 to match the current audit corpus, but that count is
+      re-derived at test time from every diagnose audit under the live .forge/audits
+      corpus, so the two audits written today (diagnose-issue-2947 and diagnose-issue-2948,
+      both stamped 2026-09-07T08:39:52Z, after the report's fixed 'until' bound) are
+      what moved it, and the next diagnose run moves it again and re-fails the baseline
+      gate.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly surfaced hidden nondeterminism from live local state: newly
+    created audits, malformed audit metadata, and evolving integration-ref history
+    all changed report output until the generator was constrained to stable inputs.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 7.112598199999999
+  dominant_difficulty: Preserving byte-for-byte reproducibility in a report generator
+    that reads mutable local audit and repository state.
