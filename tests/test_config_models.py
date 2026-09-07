@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from theforge.assignment import REASON_DEV_INCAPABLE, assign_models
 from theforge.config import (
     MODEL_REGISTRY,
     SUPPORTED_CLIS,
@@ -243,6 +244,81 @@ class TestModelsKeyConfig:
         assert "strong" in tiers
         models = {a.model for a in config.agents}
         assert models == {"sonnet", "opus", "gpt-5.4"}
+
+    def test_models_enabled_inline_overlay_preserves_dev_capability_on_agents(self, tmp_path):
+        """An inline routing overlay reaches the adaptive AgentDef pool intact."""
+        config_path = _write_config(
+            {
+                "models": {
+                    "enabled": [
+                        "google/gemini-3.1-pro-preview/api",
+                        {
+                            "provider": "google",
+                            "model": "gemini-3-flash-preview",
+                            "transport": {"kind": "api"},
+                            "routing": {"dev_capable": False},
+                        },
+                    ]
+                },
+                "budget_usd": 50.0,
+                "assignment": {"enabled": True},
+            },
+            tmp_path,
+        )
+
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
+
+        flash = next(agent for agent in config.agents if agent.model == "gemini-3-flash-preview")
+        assert flash.dev_capable is False
+
+    @pytest.mark.parametrize("pinned", [False, True], ids=["project", "sprint-pinned"])
+    def test_inline_dev_incapability_survives_load_to_adaptive_assignment(
+        self, tmp_path, pinned: bool
+    ):
+        """Project and sprint-pinned configs admit the same adaptive dev pool."""
+        config_data = {
+            "models": {
+                "enabled": [
+                    "google/gemini-3.1-pro-preview/api",
+                    {
+                        "provider": "google",
+                        "model": "gemini-3-flash-preview",
+                        "transport": {"kind": "api"},
+                        "routing": {"dev_capable": False},
+                    },
+                ]
+            },
+            "budget_usd": 50.0,
+            "assignment": {"enabled": True},
+        }
+        config_path = tmp_path / "forge.yaml"
+        if pinned:
+            config_path = tmp_path / ".forge" / "sprints" / "sprint-a" / "forge.yaml"
+            config_path.parent.mkdir(parents=True)
+        config_path.write_text(yaml.safe_dump(config_data), encoding="utf-8")
+
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
+        decision = assign_models(
+            config.agents,
+            config.assignment,
+            complexity="LOW",
+            complexity_score=2,
+            secrets={"GOOGLE_API_KEY": "test-key"},
+        )
+
+        flash_name = "google-gemini-3-flash-preview-api"
+        pool = {
+            entry["name"]: entry for entry in decision.routing_decision["dev"]["candidate_pool"]
+        }
+        assert decision.dev.model == "gemini-3.1-pro-preview"
+        assert pool[flash_name] == {
+            "name": flash_name,
+            "tier": "cheap",
+            "included": False,
+            "reason": REASON_DEV_INCAPABLE,
+        }
 
     def test_models_key_supports_deepseek_api_models(self, tmp_path):
         """DeepSeek entries in models: derive API-backed profiles, not CLI profiles."""

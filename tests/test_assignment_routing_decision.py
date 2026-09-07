@@ -15,13 +15,14 @@ from theforge.assignment import (
     EXCLUSION_REASONS,
     REASON_ANTI_SELF_REVIEW,
     REASON_AUTH_MISSING,
+    REASON_DEV_INCAPABLE,
     REASON_NONE,
     REASON_TRANSPORT_UNAVAILABLE,
     AssignmentConfig,
     _build_routing_decision,
     assign_models,
 )
-from theforge.config import AgentDef
+from theforge.config import AgentDef, ModelProfile
 from theforge.routing_evidence import RoutingEvidence, RoutingInputs
 
 
@@ -112,6 +113,90 @@ def test_selected_candidates_use_reason_none(_keys_except_deepseek):
         for entry in role_block.get("candidate_pool", []):
             if entry["included"]:
                 assert entry["reason"] == REASON_NONE
+
+
+def test_dev_incapable_candidate_is_excluded_before_tier_or_auth(_keys_except_deepseek):
+    """Declared dev incapability is a hard rule and a visible audit reason."""
+    agents = [
+        AgentDef(
+            name="incapable",
+            provider="openai",
+            model="gpt-5.4-mini",
+            budget_usd=1.0,
+            timeout_seconds=600,
+            tier="mid",
+            dev_capable=False,
+        ),
+        AgentDef(
+            name="eligible",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=3.0,
+            timeout_seconds=600,
+            tier="mid",
+        ),
+        AgentDef(
+            name="strong",
+            provider="anthropic",
+            model="opus",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="strong",
+        ),
+    ]
+
+    decision = assign_models(agents, _cfg(), complexity="MEDIUM", complexity_score=5)
+    pool = {entry["name"]: entry for entry in decision.routing_decision["dev"]["candidate_pool"]}
+
+    assert decision.dev.name == "eligible"
+    assert pool["incapable"] == {
+        "name": "incapable",
+        "tier": "mid",
+        "included": False,
+        "reason": REASON_DEV_INCAPABLE,
+    }
+
+
+def test_explicit_dev_pin_to_incapable_agent_is_honored_with_warning(_keys_except_deepseek):
+    """Explicit operator intent remains authoritative but cannot look unremarkable."""
+    agents = [
+        AgentDef(
+            name="incapable",
+            provider="openai",
+            model="gpt-5.4-mini",
+            budget_usd=1.0,
+            timeout_seconds=600,
+            tier="mid",
+            dev_capable=False,
+        ),
+        AgentDef(
+            name="eligible",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=3.0,
+            timeout_seconds=600,
+            tier="mid",
+        ),
+    ]
+    pinned = ModelProfile(
+        name="incapable",
+        provider="openai",
+        model="gpt-5.4-mini",
+        budget_usd=1.0,
+        timeout_seconds=600,
+        allowed_tools=("Read",),
+    )
+
+    decision = assign_models(
+        agents,
+        _cfg(),
+        complexity="MEDIUM",
+        complexity_score=5,
+        explicit_profiles={"dev": pinned},
+    )
+
+    assert decision.dev == pinned
+    assert "declared dev_capable=false" in decision.rationale["dev"]
 
 
 def test_anti_self_review_and_auth_missing_reasons_are_attributed(_keys_except_deepseek):

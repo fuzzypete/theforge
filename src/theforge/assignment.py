@@ -69,6 +69,9 @@ REASON_TIER_MISMATCH = "tier_mismatch"
 REASON_ANTI_SELF_REVIEW = "anti_self_review"
 REASON_PHASE_ELIGIBILITY = "phase_eligibility"
 REASON_EXPLICIT_OVERRIDE_LOCKED = "explicit_override_locked"
+# Declared routing policy says this identity must not own the dev role. Unlike
+# demonstrated capability absence, this is an operator-set hard constraint.
+REASON_DEV_INCAPABLE = "dev_incapable"
 # The capability the role requires is recorded as demonstrated ABSENT for this
 # candidate's identity (#2466). Never-established and stale records do not
 # produce this reason — only a current, demonstrated absence does.
@@ -83,6 +86,7 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
         REASON_ANTI_SELF_REVIEW,
         REASON_PHASE_ELIGIBILITY,
         REASON_EXPLICIT_OVERRIDE_LOCKED,
+        REASON_DEV_INCAPABLE,
         REASON_CAPABILITY_ABSENT,
         REASON_NONE,
     }
@@ -491,6 +495,18 @@ def _capability_pool(
     return [a for a in agents if a.name not in excluded]
 
 
+def _dev_capability_pool(agents: list[AgentDef], role: str) -> list[AgentDef]:
+    """Apply the declared dev-role eligibility constraint to a role pool.
+
+    ``dev_capable`` is an operator declaration, not a ranking signal. Keep the
+    pool unchanged for every other role, but fail closed at every dev selection
+    boundary by removing identities the configuration prohibits from owning dev.
+    """
+    if role != "dev":
+        return agents
+    return [agent for agent in agents if agent.dev_capable]
+
+
 def _capability_exclusion_note(excluded: dict[str, dict[str, object]]) -> str:
     """Operator-facing rationale fragment for a role's capability exclusions."""
     if not excluded:
@@ -529,6 +545,24 @@ def _explicit_capability_warning(
     return (
         f"; WARNING: {capability} demonstrated absent for {profile.model} "
         f"(established {result.established_at}) — honored as an explicit override"
+    )
+
+
+def _explicit_dev_capability_warning(profile: ModelProfile, agents: list[AgentDef]) -> str:
+    """Warn when an explicit dev pin contradicts its declared routing policy.
+
+    Explicit profiles are operator intent and retain their established override
+    contract. The warning keeps the audit truthful when the same configured
+    identity is declared ``dev_capable: false`` in the adaptive pool.
+    """
+    profile_identity = identity_for_profile(profile)
+    if not any(
+        not agent.dev_capable and identity_for_agent(agent) == profile_identity for agent in agents
+    ):
+        return ""
+    return (
+        f"; WARNING: {profile.model} is declared dev_capable=false "
+        "— honored as an explicit override"
     )
 
 
@@ -946,7 +980,11 @@ def _pick_agent(
     of the budget/tier ordering as a pure sort-after; a cold-start role falls
     through unchanged.
     """
-    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
+    candidates = [
+        a
+        for a in _agents_by_tier(_dev_capability_pool(agents, role), tier)
+        if _has_auth(a, secrets)
+    ]
     candidates = _rerank_by_profiles(
         candidates,
         model_profiles,
@@ -1661,9 +1699,10 @@ def _enforce_budget(
 
     ``role_pools`` maps a role class (``planner`` / ``dev`` / ``plan_review`` /
     ``code_review``) to the candidates that role may draw from, already filtered
-    by the demonstrated-capability gate (#2466). A cost downgrade is a routing
-    decision like any other, so it must not reach past that filter and seat a
-    model the record rules out. Roles absent from the map use the full pool.
+    by hard eligibility constraints. A cost downgrade is a routing decision like
+    any other, so it must not reach past those filters and seat a model the
+    records or declared routing policy rule out. Roles absent from the map use
+    the full pool, with the dev declaration reapplied locally.
     """
     from dataclasses import replace as _dc_replace
 
@@ -1698,7 +1737,7 @@ def _enforce_budget(
     agent_by_name = {a.name: a for a in agents}
 
     def _next_cheaper_profile(profile: ModelProfile, role_class: str) -> ModelProfile | None:
-        pool = role_pools.get(role_class, agents)
+        pool = _dev_capability_pool(role_pools.get(role_class, agents), role_class)
         agent = agent_by_name.get(profile.name)
         if agent is not None:
             current_tier = agent.tier
@@ -1999,14 +2038,15 @@ def _single_model_pool(
     locked: bool,
     secrets: dict[str, str] | None,
     capability_excluded: dict[str, dict[str, object]] | None = None,
+    role: str = "",
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a single-model role (preflight/planner/dev).
 
     Every agent is listed with ``included`` and, when excluded, a canonical
     ``reason``. Priority of exclusion reasons is deterministic: the selected
-    model is always included; an explicit override locks out the rest; then
-    tier mismatch; then a demonstrated-absent capability; then auth/transport
-    unavailability.
+    model is always included; an explicit override locks out the rest; then a
+    declared dev incapability; then tier mismatch; then a demonstrated-absent
+    capability; then auth/transport unavailability.
     """
     capability_excluded = capability_excluded or {}
     pool: list[dict[str, object]] = []
@@ -2018,6 +2058,9 @@ def _single_model_pool(
         elif locked:
             entry["included"] = False
             entry["reason"] = REASON_EXPLICIT_OVERRIDE_LOCKED
+        elif role == "dev" and not a.dev_capable:
+            entry["included"] = False
+            entry["reason"] = REASON_DEV_INCAPABLE
         elif target_tier is not None and a.tier != target_tier:
             entry["included"] = False
             entry["reason"] = REASON_TIER_MISMATCH
@@ -2677,6 +2720,7 @@ def _build_routing_decision(
         "dev" in explicit_roles,
         secrets,
         capability_excluded=capability_exclusions.get("dev"),
+        role="dev",
     )
     dev_domain_signals = evidence.dev_domain_signals
     dev_cost_signals = evidence.dev_cost_signals
@@ -3227,7 +3271,10 @@ def apply_post_plan_checkpoint(
     # needs no refusal here: this checkpoint is an optional *demotion*, so no
     # capable cheaper candidate simply preserves the already-seated dev
     # ("no_reduced_tier_candidate") rather than failing the run.
-    dev_pool = _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records))
+    dev_pool = _dev_capability_pool(
+        _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records)),
+        "dev",
+    )
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
     target_agent = (
         _pick_agent(
@@ -3683,6 +3730,17 @@ def assign_models(
         if excluded and not role_pools[role] and role not in explicit_profiles:
             raise NoCapableCandidateError(role, ROLE_REQUIRED_CAPABILITY[role], excluded)
 
+    # A declared dev incapability is an independent hard eligibility boundary,
+    # applied after demonstrated-capability exclusions so every downstream dev
+    # mechanism consumes the same pool. Do not restore the raw pool when it is
+    # empty: there is no permitted adaptive dev candidate.
+    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
+    if not role_pools["dev"] and "dev" not in explicit_profiles:
+        raise ValueError(
+            "no candidate can serve role 'dev': every remaining agent is declared "
+            "dev_capable=false; configure a dev-capable model or explicitly override dev."
+        )
+
     # ── Dev tier with promotion ────────────────────────────────────────
     dev_base_tier = (
         _dev_tier_for_score(norm_complexity, score)
@@ -3696,6 +3754,7 @@ def assign_models(
         dev_selected_tier: str | None = None
         rationale["dev"] = f"explicit override: {dev_profile.model}"
         rationale["dev"] += _explicit_capability_warning(dev_profile, "dev", capability_records)
+        rationale["dev"] += _explicit_dev_capability_warning(dev_profile, agents)
     else:
         # Check promotion
         dev_pool = role_pools["dev"]

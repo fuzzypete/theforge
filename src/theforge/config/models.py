@@ -160,6 +160,11 @@ class AgentDef(AttributablePricing):
     # Carried so ``to_model_profile`` can hand the adapter the mode the entry was
     # banded for — the pool is the only path a routed profile takes to a runner.
     reasoning_mode: str | None = None
+    # A declared routing constraint: this model may remain eligible for other
+    # roles, but must never be seated as the adaptive dev owner when false.
+    # Kept last and defaulted so existing positional AgentDef construction stays
+    # source-compatible.
+    dev_capable: bool = True
 
     @property
     def effective_provider(self) -> str | None:
