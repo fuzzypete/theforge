@@ -1,0 +1,118 @@
+schema_version: 2
+run_id: 00a1d6d31295
+authoritative_run_record: .forge/audits/runs/00a1d6d31295.json
+generated_at: '2026-09-07T04:14:34.507716+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01128875
+story:
+  slug: issue-2663
+  name: forge status reports an orphaned agent process group for a record whose group
+    holds no processes
+  github_issue: 2663
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/status.py
+- src/theforge/process_group.py
+- tests/test_cli_status_integration.py
+- tests/test_process_group.py
+what_changed:
+  description: "The run changed orphan-agent status reporting so the read-only listing\
+    \ no longer treats every dead-owner sidecar as a leaked process group, and aligned\
+    \ that reporting path with the reaper\u2019s process-identity logic. It also covered\
+    \ the retained-sidecar cases that review surfaced, including unverifiable records,\
+    \ escapee-bearing records, and test-origin records."
+  approach: The implementation centralized listing on the same per-record identity
+    and escapee checks used by the mutating sweep, then adjusted status output to
+    reflect the resulting classification instead of blindly printing every dead-owner
+    record as an orphaned process group.
+  files_modified: *id002
+what_was_learned:
+- claim: When a read-only diagnostic and a mutating cleanup operate on the same persisted
+    process record, they need to share the same per-record identity classification;
+    otherwise one path can describe a record as a live leak while the other treats
+    it as stale bookkeeping and deletes it unsignalled.
+  evidence:
+  - type: review_finding
+    finding_id: b56b023eee8edfdf
+    description: This finding showed that when listing did not apply the same identity
+      logic as reaping, status and cleanup diverged on records whose ownership was
+      dead but whose surviving processes still needed classification, demonstrating
+      that shared per-record verdicts are necessary to keep the two surfaces consistent.
+  - type: file
+    path: src/theforge/process_group.py
+    description: This file contains both the orphan-listing and orphan-reaping logic,
+      so its coordinated changes demonstrate that the run resolved the disagreement
+      by making both paths depend on the same underlying process-group verification
+      mechanism rather than separate heuristics.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approved the state where stale sidecars were no longer reported
+      as live process groups, confirming that reviewer focus remained on agreement
+      between status classification and reaper behavior until the two matched.
+- claim: "Orphan-process reporting has multiple distinct record classes that must\
+    \ be preserved during classification\u2014verified live groups, unverifiable retained\
+    \ sidecars, and special-origin records\u2014because collapsing them into a single\
+    \ dead-owner check causes different kinds of false positives or false negatives."
+  evidence:
+  - type: review_finding
+    finding_id: 5717ef9b049165b1
+    description: This finding showed that even after adding identity filtering, discarding
+      the reason string erased the distinction between a retained-but-unverifiable
+      record and no record at all, demonstrating that classification must keep separate
+      states rather than reducing everything to present/absent.
+  - type: review_finding
+    finding_id: 0dcd59afc7e5b585
+    description: This finding identified test-origin sidecars as another separate
+      class whose treatment differed between listing and sweeping, showing that dead-owner
+      records are not a single homogeneous category and must be classified with origin-aware
+      logic.
+  - type: file
+    path: src/theforge/cli/status.py
+    description: Changes in the status reporting layer demonstrate that the output
+      surface had to reflect the underlying record class instead of mapping every
+      returned item to the same 'orphaned process group' message.
+learned_patterns:
+- shared-identity-verdict
+- orphan-record-classification
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b56b023eee8edfdf
+    severity: P1
+    file: src/theforge/process_group.py
+    description: A sidecar whose owner sprint is dead and whose process group cannot
+      be identified, but which carries a lease token or an observed-descendant snapshot
+      matching processes that are still running, is now omitted entirely from the
+      read-only orphan listing, so forge status prints nothing while the mutating
+      sweep for that same record kills those live escapees and counts the record as
+      reaped.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases where dead-owner sidecars required
+    finer classification than a single orphan/non-orphan check, especially around
+    unverifiable, escapee-bearing, and test-origin records.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 5.3869982
+  dominant_difficulty: Keeping read-only status reporting and mutating orphan cleanup
+    behaviorally aligned across edge-case sidecar states.
