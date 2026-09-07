@@ -244,9 +244,10 @@ def test_display_sprint_status_renders_bootstrap_window(tmp_path: Path) -> None:
     assert "base: main" in output
     assert "budget: $50.00" in output
     assert "parallel: 3" in output
-    # Per-issue rows appear with placeholder waiting status.
-    assert "Issue #1461" in output
-    assert "Issue #1462" in output
+    # Per-issue rows appear with placeholder waiting status, each named by the
+    # title the sprint query fetched alongside the number (#2664).
+    assert "first" in output
+    assert "second" in output
     assert "waiting" in output
 
 

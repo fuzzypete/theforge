@@ -45,6 +45,55 @@ RUN_SCOPED_DETAIL_KEYS: frozenset[str] = frozenset(
 )
 
 
+def issue_reference_label(canonical_ref: str | None = None, slug: str | None = None) -> str | None:
+    """``Issue #<number>`` when the story is issue-backed, else ``None``.
+
+    ``None`` means the story addresses itself some other way — a file-backed
+    story's ``path`` is its story file, which downstream consumers key on — and
+    so must be left exactly as it is.
+    """
+    ref = str(canonical_ref or "").strip()
+    if ref.startswith("issue:"):
+        number = ref.split(":", 1)[1].strip()
+        if number:
+            return f"Issue #{number}"
+        return None
+    if ref:
+        return None
+    number = str(slug or "").strip().removeprefix("issue-")
+    return f"Issue #{number}" if number.isdigit() else None
+
+
+def story_title(
+    title: str | None,
+    *,
+    canonical_ref: str | None = None,
+    slug: str | None = None,
+) -> str:
+    """The identifying label for a story's ``path`` field.
+
+    ``path`` is the title column of every operator-facing story row (the sprint
+    digest, ``forge status``, sprint-summary.yaml). An issue-backed story has a
+    real title in hand at intake — the sprint query fetches number and title
+    together — so it is what belongs here; without it the column can only
+    restate the ``#NNNN`` reference printed beside it (#2664). When no title
+    survived, the label falls back to that reference.
+
+    A *title* that is already the reference label is treated as absent: it
+    carries no information the reference beside it does not.
+
+    For anything that is NOT issue-backed this returns the canonical ref (or
+    slug) unchanged. A file-backed story's ``path`` is a real repository path
+    that the sprint audit and every resume path key on — it is not a display
+    string to be improved.
+    """
+    reference = issue_reference_label(canonical_ref, slug)
+    if reference is None:
+        return str(canonical_ref or "").strip() or str(slug or "")
+    cleaned = " ".join(str(title or "").split())
+    return cleaned if cleaned and cleaned != reference else reference
+
+
 class StoryOutcome(str, Enum):
     """Sprint story lifecycle outcome.
 

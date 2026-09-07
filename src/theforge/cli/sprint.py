@@ -790,7 +790,7 @@ def _emit_all_skipped_audit(
     from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
     from theforge.sprint.manifest import ResolvedSprint, SprintResult
     from theforge.sprint.shape_gate import skipped_issue_state_fields
-    from theforge.sprint.story_state import SprintStoryState, StoryOutcome
+    from theforge.sprint.story_state import SprintStoryState, StoryOutcome, story_title
 
     # Build a canonical SprintStoryState containing every shape-gate-skipped
     # issue so the all-skipped audit/summary projects from the same SoT
@@ -849,7 +849,7 @@ def _emit_all_skipped_audit(
                     sk_cost = 0.0
         story_state.register(
             sk_slug,
-            f"Issue #{sk_num}",
+            story_title(sk_dict.get("title"), canonical_ref=f"issue:{sk_num}"),
             outcome=sk_outcome,
             reason=sk_reason,
             canonical_ref=f"issue:{sk_num}",

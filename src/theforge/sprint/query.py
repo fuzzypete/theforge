@@ -353,6 +353,7 @@ def build_resolved_sprint(
     source = GitHubIssueSource()
     stories: list[tuple[TaskStory, StorySource, str]] = []
     closed_dependency_slugs: set[str] = set()
+    closed_dependency_titles: dict[str, str] = {}
     reconciled_prior_slugs: set[str] = set()
     for issue in issues:
         number = issue["number"]
@@ -375,6 +376,12 @@ def build_resolved_sprint(
                 continue
             _log(f"WARNING: skipping issue #{number} — {exc}")
             closed_dependency_slugs.add(slug)
+            # The listing that produced this issue carried its title; the
+            # closed issue's body never will, so this is the only chance to
+            # keep its ALREADY-LANDED row from naming only a number (#2664).
+            closed_title = " ".join(str(issue.get("title") or "").split())
+            if closed_title:
+                closed_dependency_titles[slug] = closed_title
             continue
         stories.append((task, source, canonical_ref))
 
@@ -384,5 +391,6 @@ def build_resolved_sprint(
         stories=stories,
         max_parallel=max_parallel,
         closed_dependency_slugs=closed_dependency_slugs,
+        closed_dependency_titles=closed_dependency_titles,
         reconciled_prior_slugs=reconciled_prior_slugs,
     )

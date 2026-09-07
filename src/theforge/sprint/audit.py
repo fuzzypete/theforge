@@ -19,6 +19,7 @@ from .abnormal import accumulate_failure_history, carry_failure_cause
 from .budget import budget_overrun_usd, budget_status
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
+from .story_state import story_title
 
 
 def _optional_cost(value: object) -> float | None:
@@ -1088,13 +1089,14 @@ def _write_sprint_audit(
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
     for canonical_ref in canonical_refs:
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
-        )
         slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
         task = tasks_by_slug.get(slug)
+        # The row's identifying label is the issue's own title where one was
+        # resolved — a row that restates the reference names no work (#2664).
+        # A file-backed story keeps its story path, which this file is keyed on.
+        display_key = story_title(
+            getattr(task, "name", None), canonical_ref=canonical_ref, slug=slug
+        )
         if canonical_ref in results_by_spec:
             res = results_by_spec[canonical_ref]
             preflight = (
@@ -1539,12 +1541,14 @@ def _write_sprint_summary(
     seen_refs: set[str] = set()
     for canonical_ref in canonical_refs:
         seen_refs.add(canonical_ref)
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
-        )
         slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
+        # Same label the audit's ``specs:`` rows carry, for the same reason:
+        # this is the story column every postmortem digest renders (#2664).
+        display_key = story_title(
+            getattr(tasks_by_slug.get(slug), "name", None),
+            canonical_ref=canonical_ref,
+            slug=slug,
+        )
         if canonical_ref in results_by_spec:
             res = results_by_spec[canonical_ref]
             preflight = (

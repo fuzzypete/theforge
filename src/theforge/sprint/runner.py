@@ -181,6 +181,7 @@ from .story_state import (
     StoryOutcome,
     coerce_outcome,
     landing_failure_outcome,
+    story_title,
 )
 from .unmeasured import AcceptedUnmeasuredSpend
 
@@ -4085,7 +4086,7 @@ def _set_outcome(
         ctx = state.context.slug_to_context.get(slug)
         if ctx is not None:
             _t, _src, _ref = ctx
-            _key = f"Issue #{_ref.split(':')[1]}" if _ref.startswith("issue:") else _ref
+            _key = story_title(getattr(_t, "name", None), canonical_ref=_ref, slug=slug)
             state.stories.register(slug, _key, canonical_ref=_ref)
         else:
             state.stories.register(slug, slug)
@@ -4306,11 +4307,7 @@ def _persist_current_story_result(
     # which ones had a seeded prior cost overwritten by transition().
     state.ran_this_generation.add(slug)
     task, _source, canonical_ref = task_ctx
-    display_key = (
-        f"Issue #{canonical_ref.split(':')[1]}"
-        if canonical_ref.startswith("issue:")
-        else canonical_ref
-    )
+    display_key = story_title(getattr(task, "name", None), canonical_ref=canonical_ref, slug=slug)
     preflight = (
         "cached"
         if getattr(result.state, "preflight_cached", False)
@@ -6126,10 +6123,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         if task_ctx is None:
             return
         task, _source, canonical_ref = task_ctx
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
+        display_key = story_title(
+            getattr(task, "name", None), canonical_ref=canonical_ref, slug=slug
         )
         entry: dict = {
             "path": display_key,
@@ -6971,10 +6966,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             # though its branch now reads as merged (#2150) — see
             # ``_skip_merged_outcome``.
             entry_outcome, entry_outcome_source = _skip_merged_outcome(slug, canonical_ref)
-            display_key = (
-                f"Issue #{canonical_ref.split(':')[1]}"
-                if canonical_ref.startswith("issue:")
-                else canonical_ref
+            # A story completed by an earlier generation is not in this run's
+            # task context, so its title comes from the record that generation
+            # wrote; only a run that never resolved one falls back to the
+            # reference (#2664).
+            _prior_task = _ctx.slug_to_context.get(slug, (None, None, None))[0]
+            display_key = story_title(
+                getattr(_prior_task, "name", None)
+                or _ctx.resolved.closed_dependency_titles.get(slug)
+                or prior_entry.get("path"),
+                canonical_ref=canonical_ref,
+                slug=slug,
             )
             return {
                 "canonical_ref": canonical_ref,
@@ -7056,10 +7058,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         _initial_stories: list[dict] = []
         _initial_story_slugs: set[str] = set()
         for _slug, (_task, _src, _canonical_ref) in _ctx.slug_to_context.items():
-            _display_key = (
-                f"Issue #{_canonical_ref.split(':')[1]}"
-                if _canonical_ref.startswith("issue:")
-                else _canonical_ref
+            _display_key = story_title(
+                getattr(_task, "name", None), canonical_ref=_canonical_ref, slug=_slug
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
@@ -7194,7 +7194,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _initial_stories.append(
                 {
                     "slug": _closed_slug,
-                    "path": f"Issue #{_issue_number}" if _issue_number.isdigit() else _closed_slug,
+                    "path": story_title(
+                        _ctx.resolved.closed_dependency_titles.get(_closed_slug),
+                        canonical_ref=(
+                            f"issue:{_issue_number}" if _issue_number.isdigit() else None
+                        ),
+                        slug=_closed_slug,
+                    ),
                     "status": "done",
                     "phase": None,
                     "cost_usd": 0.0,
@@ -7255,7 +7261,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _sprint_state.state_writer.register(
                 _sk_slug,
-                f"Issue #{_sk_num}",
+                story_title(_sk_dict.get("title"), canonical_ref=f"issue:{_sk_num}"),
                 outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
@@ -7290,7 +7296,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _sprint_state.stories.register(
                 _sk_slug,
-                f"Issue #{_sk_num}",
+                story_title(_sk_dict.get("title"), canonical_ref=f"issue:{_sk_num}"),
                 outcome=_sk_outcome,
                 reason=_sk_reason,
                 detail=_sk_detail,
