@@ -105,23 +105,46 @@ def _fail(stderr: str) -> subprocess.CompletedProcess[str]:
 class FakeGh:
     """A ``gh`` stand-in that hands out issue numbers and records every call."""
 
-    def __init__(self, *, labels=("enhancement",), milestone="v0.16.0", fail_on_slice=None):
+    def __init__(
+        self,
+        *,
+        labels=("enhancement",),
+        milestone="v0.16.0",
+        fail_on_slice=None,
+        state="OPEN",
+        state_reason=None,
+    ):
         self.calls: list[list[str]] = []
         self.labels = list(labels)
         self.milestone = milestone
         self.fail_on_slice = fail_on_slice
+        # The original's live state, which `gh issue close` moves the way the
+        # real command does — closing an already-closed issue leaves its reason
+        # alone, which is the whole reason the close is verified by reading back.
+        self.state = state
+        self.state_reason = state_reason
         self.next_number = 2900
 
     def __call__(self, args: list[str], project_root: Path):
         self.calls.append(list(args))
         if args[:3] == ["gh", "issue", "view"]:
-            milestone = (
-                f'"milestone": {{"title": "{self.milestone}"}}'
-                if self.milestone
-                else '"milestone": null'
-            )
-            labels = ", ".join(f'{{"name": "{name}"}}' for name in self.labels)
-            return _ok(f'{{"labels": [{labels}], {milestone}}}')
+            fields = args[args.index("--json") + 1].split(",")
+            payload: list[str] = []
+            if "state" in fields:
+                payload.append(f'"state": "{self.state}"')
+            if "stateReason" in fields:
+                reason = f'"{self.state_reason}"' if self.state_reason else "null"
+                payload.append(f'"stateReason": {reason}')
+            if "labels" in fields:
+                labels = ", ".join(f'{{"name": "{name}"}}' for name in self.labels)
+                payload.append(f'"labels": [{labels}]')
+            if "milestone" in fields:
+                payload.append(
+                    f'"milestone": {{"title": "{self.milestone}"}}'
+                    if self.milestone
+                    else '"milestone": null'
+                )
+            return _ok("{" + ", ".join(payload) + "}")
         if args[:3] == ["gh", "issue", "create"]:
             title = args[args.index("--title") + 1]
             if self.fail_on_slice is not None and title.startswith(self.fail_on_slice):
@@ -130,6 +153,9 @@ class FakeGh:
             self.next_number += 1
             return _ok(f"https://github.com/acme/theforge/issues/{number}")
         if args[:3] == ["gh", "issue", "close"]:
+            if self.state == "OPEN":
+                self.state = "CLOSED"
+                self.state_reason = "NOT_PLANNED"
             return _ok("")
         raise AssertionError(f"unexpected gh call: {args}")
 
@@ -262,7 +288,12 @@ def test_original_closes_last_and_as_decomposed_not_completed(tmp_path):
     for number in (2900, 2901, 2902, 2903):
         assert f"#{number}" in comment
     # Ordering: every create precedes the close.
-    assert gh.calls.index(close) == len(gh.calls) - 1
+    assert gh.calls.index(close) > max(gh.calls.index(c) for c in gh.creates())
+    # And the close is verified by reading the issue back — a `gh issue close`
+    # against an already-closed issue exits zero without changing its reason,
+    # so the exit code is not evidence the original reads as decomposed.
+    assert gh.calls[-1][:3] == ["gh", "issue", "view"]
+    assert "stateReason" in gh.calls[-1][gh.calls[-1].index("--json") + 1]
 
 
 def test_a_spike_original_closes_with_a_recorded_outcome(tmp_path):
@@ -302,7 +333,7 @@ def test_a_refused_spike_close_leaves_the_original_open_and_reports_it(tmp_path)
     assert outcome.source_issue_closed is False
     assert gh.closes() == []
     assert len(outcome.created) == 4
-    assert "could not be closed" in outcome.error
+    assert "was not durably closed as decomposed" in outcome.error
 
 
 # ── Partial failure ───────────────────────────────────────────────────────────
@@ -597,3 +628,104 @@ def test_a_first_attempt_never_pays_for_the_reconciliation_search(tmp_path):
     _apply(tmp_path, gh)
 
     assert not [c for c in gh.calls if c[:3] == ["gh", "issue", "list"]]
+
+
+# ── The original can change under an open pause ───────────────────────────────
+
+
+def test_an_original_closed_as_completed_during_the_pause_refuses(tmp_path):
+    """Someone closed #2541 while the operator was deciding.
+
+    The story this proposal splits is over. Creating its slices would file work
+    nobody asked for, and `gh issue close` against an already-closed issue exits
+    zero without touching its reason — so the split would be reported and
+    audited as decomposed while the original still reads completed.
+    """
+    gh = FakeGh(state="CLOSED", state_reason="COMPLETED")
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert "closed while the pause was open" in outcome.error
+    assert "closed as completed" in outcome.error
+    assert outcome.source_issue_closed is False
+    assert gh.creates() == []
+    assert gh.closes() == []
+
+
+def test_an_original_reopened_state_is_read_from_the_tracker_not_assumed(tmp_path):
+    """A closed-as-not-planned original that this application did not close.
+
+    Indistinguishable from its own earlier close, and treated the same way:
+    finish the split rather than closing an issue that already reads decomposed.
+    """
+    gh = FakeGh(state="CLOSED", state_reason="NOT_PLANNED")
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_APPLIED
+    assert outcome.source_issue_closed is True
+    assert len(gh.creates()) == 4
+    assert gh.closes() == []
+
+
+def test_a_close_that_leaves_the_original_completed_is_not_reported_as_applied(tmp_path):
+    """The read-back is the assertion: exit zero is not evidence of a reason."""
+
+    class _CloseChangesNothingGh(FakeGh):
+        def __call__(self, args, project_root):
+            if args[:3] == ["gh", "issue", "close"]:
+                self.calls.append(list(args))
+                # Succeeds, changes nothing — what GitHub does when the issue
+                # was closed between the state read and the close.
+                self.state = "CLOSED"
+                self.state_reason = "COMPLETED"
+                return _ok("")
+            return super().__call__(args, project_root)
+
+    gh = _CloseChangesNothingGh()
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert outcome.source_issue_closed is False
+    assert "not durably closed as decomposed" in outcome.error
+    assert "completed" in outcome.error
+    # The slices exist and are reported, which is what the operator acts on.
+    assert [item.issue_number for item in outcome.created] == [2900, 2901, 2902, 2903]
+
+
+def test_a_verification_read_that_fails_does_not_report_a_decomposed_close(tmp_path):
+    class _UnverifiableGh(FakeGh):
+        def __call__(self, args, project_root):
+            if args[:3] == ["gh", "issue", "view"] and self.closes():
+                self.calls.append(list(args))
+                return _fail("gh: API unavailable")
+            return super().__call__(args, project_root)
+
+    gh = _UnverifiableGh()
+    outcome = _apply(tmp_path, gh)
+
+    assert outcome.status == APPLY_STATUS_FAILED
+    assert outcome.source_issue_closed is False
+    assert "not durably closed as decomposed" in outcome.error
+
+
+def test_an_original_reopened_after_an_earlier_close_is_closed_again(tmp_path):
+    """The record says this application closed it; the tracker says it is open.
+
+    The live read wins: finishing the split closes it again rather than
+    reporting a closure that is no longer true.
+    """
+    gh = FakeGh()
+    outcome = _apply(
+        tmp_path,
+        gh,
+        prior_created=[
+            {"slice_id": 1, "title": "extract", "issue": 2800, "depends_on_issues": []},
+        ],
+        source_issue_already_closed=True,
+    )
+
+    assert outcome.status == APPLY_STATUS_APPLIED
+    assert outcome.source_issue_closed is True
+    assert len(gh.closes()) == 1
+    assert gh.state == "CLOSED"
+    assert gh.state_reason == "NOT_PLANNED"

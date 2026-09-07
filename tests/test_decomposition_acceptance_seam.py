@@ -166,15 +166,30 @@ def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
 class FakeGh:
     """A ``gh`` stand-in for the whole gate path."""
 
-    def __init__(self, *, fail_on_slice: str | None = None):
+    def __init__(
+        self,
+        *,
+        fail_on_slice: str | None = None,
+        state: str = "OPEN",
+        state_reason: str | None = None,
+    ):
         self.calls: list[list[str]] = []
         self.fail_on_slice = fail_on_slice
+        # The original's live state. `gh issue close` moves it the way the real
+        # command does: an already-closed issue keeps the reason it was closed
+        # with, which is why the close is verified by reading it back.
+        self.state = state
+        self.state_reason = state_reason
         self.next_number = 2900
 
     def __call__(self, args: list[str], project_root: Path):
         self.calls.append(list(args))
         if args[:3] == ["gh", "issue", "view"]:
-            return _ok('{"labels": [{"name": "enhancement"}], "milestone": {"title": "v0.16.0"}}')
+            reason = f'"{self.state_reason}"' if self.state_reason else "null"
+            return _ok(
+                f'{{"state": "{self.state}", "stateReason": {reason}, '
+                '"labels": [{"name": "enhancement"}], "milestone": {"title": "v0.16.0"}}'
+            )
         if args[:3] == ["gh", "issue", "create"]:
             title = args[args.index("--title") + 1]
             if self.fail_on_slice and title.startswith(self.fail_on_slice):
@@ -185,6 +200,9 @@ class FakeGh:
             self.next_number += 1
             return _ok(f"https://github.com/acme/theforge/issues/{number}")
         if args[:3] == ["gh", "issue", "close"]:
+            if self.state == "OPEN":
+                self.state = "CLOSED"
+                self.state_reason = "NOT_PLANNED"
             return _ok("")
         raise AssertionError(f"unexpected gh call: {args}")
 
@@ -291,7 +309,9 @@ class TestOnlyAnOperatorAcceptanceMutates:
         assert [r["issue"] for r in state.preflight_decomposition_created] == [2900, 2901, 2902]
         assert state.preflight_decomposition_source_issue_closed is True
         assert gh.kinds().count("issue create") == 3
-        assert gh.kinds()[-1] == "issue close"
+        # Close after every create, then the read-back that verifies the close
+        # actually left the original closed as decomposed.
+        assert gh.kinds()[-2:] == ["issue close", "issue view"]
         assert "created #2900, #2901, #2902" in result.message
 
     def test_decline_creates_nothing_and_leaves_the_original_intact(self, tmp_path: Path):
@@ -1048,3 +1068,51 @@ class TestARefusalKeepsWhatExists:
         # The refusal reports what exists rather than replacing it with nothing.
         assert [entry["issue"] for entry in state.preflight_decomposition_created] == [2900]
         assert result is not None and "#2900" in result.message
+
+
+class TestTheOriginalCanChangeUnderAnOpenPause:
+    """The pause can stand for hours; the tracker does not hold still for it."""
+
+    def test_an_original_closed_as_completed_during_the_pause_creates_nothing(
+        self, tmp_path: Path
+    ):
+        config = _config(tmp_path)
+        state = _gated_state()
+        gh = FakeGh(state="CLOSED", state_reason="COMPLETED")
+
+        result = _run_gate(state, config, _issue_task(), gh, answer="accept")
+
+        # The state read happens, and stops there.
+        assert gh.kinds() == ["issue view"]
+        assert state.preflight_decomposition_application_status == APPLY_STATUS_FAILED
+        assert state.preflight_decomposition_created == []
+        assert state.preflight_decomposition_source_issue_closed is False
+        assert "closed while the pause was open" in (
+            state.preflight_decomposition_application_error or ""
+        )
+        # Not a decomposition: the original is closed as completed, and the run
+        # says so rather than reporting a split that did not happen.
+        assert returned_for_decomposition(state) is False
+        assert result is not None and result.success is False
+
+    def test_the_audit_separates_it_from_an_applied_split(self, tmp_path: Path):
+        config = _config(tmp_path)
+        state = _gated_state()
+        state.started_at = "2026-01-01T00:00:00+00:00"
+        gh = FakeGh(state="CLOSED", state_reason="COMPLETED")
+
+        _run_gate(state, config, _issue_task(), gh, answer="accept")
+        record = generate_audit_log(
+            config,
+            _issue_task(),
+            CoordinatorResult(
+                success=False, phase=Phase.PREFLIGHT, state=state, message="not applied"
+            ),
+        )
+
+        gate = record["preflight_complexity_gate"]
+        assert gate["assessment_disposition"] == "operator_accept"
+        assert gate["assessment_application"]["status"] == APPLY_STATUS_FAILED
+        assert gate["assessment_application"]["created"] == []
+        assert gate["assessment_application"]["source_issue_closed"] is False
+        assert record["outcome"]["returned_for_decomposition"] is False

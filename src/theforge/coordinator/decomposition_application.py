@@ -161,6 +161,12 @@ class _Context:
     milestone: str | None = None
     extra_labels: tuple[str, ...] = ()
     acceptance_criteria: list[str] = field(default_factory=list)
+    #: The original's live state at the moment the application started —
+    #: ``OPEN`` / ``CLOSED`` and GitHub's close reason. The operator answered a
+    #: pause that may have been open for hours, and the issue can have been
+    #: closed by hand in the meantime.
+    state: str = "OPEN"
+    state_reason: str | None = None
 
 
 def _now_iso() -> str:
@@ -508,13 +514,17 @@ def _closing_comment(*, source_issue: int, created: list[CreatedSlice], is_spike
 
 
 def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) -> _Context:
-    """Read what the created issues must inherit: type label and milestone.
+    """Read what the created issues must inherit, and what the original is now.
 
     A created slice with no recognized type label is filtered out by intake and
     skipped by the sprint shape gate — it would exist and never be schedulable,
     which is precisely the failure "runnable at creation" names. The label is
     therefore a precondition of applying, not a nicety, and it is read from the
     tracker rather than assumed.
+
+    The issue's own state comes back in the same read, because the pause the
+    operator answered may have been open for hours: an original closed by hand
+    in the meantime is not a story this can split (#2824).
     """
     from theforge.task.story import extract_acceptance_criteria  # noqa: PLC0415
 
@@ -522,9 +532,11 @@ def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) ->
     assert number is not None  # guarded by proposal_is_appliable
     labels: list[str] = []
     milestone: str | None = None
+    issue_state = "OPEN"
+    state_reason: str | None = None
     raw = _gh_or_raise(
         runner,
-        ["gh", "issue", "view", str(number), "--json", "labels,milestone"],
+        ["gh", "issue", "view", str(number), "--json", "state,stateReason,labels,milestone"],
         project_root,
         f"gh issue view #{number}",
     )
@@ -535,6 +547,8 @@ def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) ->
             f"gh issue view #{number} returned malformed JSON: {exc}"
         ) from exc
     if isinstance(data, dict):
+        issue_state = str(data.get("state") or "OPEN").strip().upper()
+        state_reason = str(data.get("stateReason") or "").strip().upper() or None
         for entry in data.get("labels") or []:
             if isinstance(entry, dict) and str(entry.get("name") or "").strip():
                 labels.append(str(entry["name"]).strip())
@@ -591,6 +605,42 @@ def _read_context(*, task: "TaskStory", runner: GhRunner, project_root: Path) ->
         type_label=type_labels[0],
         milestone=milestone,
         acceptance_criteria=extract_acceptance_criteria(task.story_text or ""),
+        state=issue_state,
+        state_reason=state_reason,
+    )
+
+
+#: GitHub's close reason for a ``not planned`` close — what a decomposed close
+#: reads as, and what distinguishes it from one closed as completed.
+CLOSE_REASON_NOT_PLANNED = "NOT_PLANNED"
+
+
+def _is_closed_as_decomposed(state: str, reason: str | None) -> bool:
+    """Whether an issue is closed the way this module closes one."""
+    return state.strip().upper() == "CLOSED" and (reason or "").strip().upper() == (
+        CLOSE_REASON_NOT_PLANNED
+    )
+
+
+def _read_close_state(
+    *, number: int, runner: GhRunner, project_root: Path
+) -> tuple[str, str | None]:
+    """The issue's state and close reason, read back after closing it."""
+    raw = _gh_or_raise(
+        runner,
+        ["gh", "issue", "view", str(number), "--json", "state,stateReason"],
+        project_root,
+        f"gh issue view #{number} after closing it",
+    )
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"gh issue view #{number} returned malformed JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"gh issue view #{number} returned no object")
+    return (
+        str(data.get("state") or "").strip().upper(),
+        str(data.get("stateReason") or "").strip().upper() or None,
     )
 
 
@@ -822,6 +872,31 @@ def apply_decomposition(
                 applied_at=_now_iso(),
             )
         context = _read_context(task=task, runner=runner, project_root=project_root)
+        # The pause the operator answered may have been open for hours. If the
+        # original was closed by hand in the meantime, the story this proposal
+        # splits is over — creating its slices and reporting a decomposition
+        # would file work nobody asked for and audit a close that never
+        # happened. Checked here, before the first create, so the refusal costs
+        # nothing (#2824).
+        # The live read outranks the record: if this application closed the
+        # original on an earlier attempt and someone has since reopened it,
+        # finishing the split has to close it again rather than report a
+        # closure that is no longer true.
+        already_closed = False
+        if context.state != "OPEN":
+            if _is_closed_as_decomposed(context.state, context.state_reason):
+                # Closed as not-planned already: this is what an earlier attempt
+                # of *this* application leaves behind, including one whose close
+                # succeeded but could not be verified. Finish the split rather
+                # than closing an issue that is already closed the right way.
+                already_closed = True
+            else:
+                raise ApplicationRefused(
+                    f"#{source_issue} is {context.state.lower()}"
+                    + (f" as {context.state_reason.lower()}" if context.state_reason else "")
+                    + " — it was closed while the pause was open, so the story this "
+                    "proposal splits no longer exists to be split; nothing was created"
+                )
     except ApplicationRefused as exc:
         return ApplicationOutcome(
             status=APPLY_STATUS_FAILED,
@@ -925,7 +1000,10 @@ def apply_decomposition(
             applied_at=_now_iso(),
         )
 
-    if source_issue_already_closed:
+    if already_closed:
+        # Either this application closed it on an earlier attempt, or the live
+        # read found it already closed as not-planned. Nothing to close, and
+        # nothing to verify that the read above did not already establish.
         return ApplicationOutcome(
             status=APPLY_STATUS_APPLIED,
             created=tuple(created),
@@ -963,13 +1041,31 @@ def apply_decomposition(
             project_root,
             f"gh issue close #{source_issue}",
         )
+        # Read the closure back rather than trusting the command's exit code.
+        # ``gh issue close`` succeeds against an issue that is *already* closed
+        # without changing its reason, so a zero exit is not evidence that the
+        # original now reads as decomposed — which is the one thing this
+        # acceptance criterion is about.
+        final_state, final_reason = _read_close_state(
+            number=source_issue, runner=runner, project_root=project_root
+        )
+        if not _is_closed_as_decomposed(final_state, final_reason):
+            raise RuntimeError(
+                f"the close reported success but #{source_issue} reads "
+                f"{final_state.lower() or 'unknown'}"
+                + (f"/{final_reason.lower()}" if final_reason else "")
+                + f", not closed as {CLOSE_REASON_NOT_PLANNED.lower()}"
+            )
     except Exception as exc:  # noqa: BLE001
         return ApplicationOutcome(
             status=APPLY_STATUS_FAILED,
             created=tuple(created),
             source_issue=source_issue,
             source_issue_closed=False,
-            error=(f"every slice was created but #{source_issue} could not be closed: {exc}"),
+            error=(
+                f"every slice was created but #{source_issue} was not durably closed as "
+                f"decomposed: {exc}"
+            ),
             applied_at=_now_iso(),
         )
 

@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point, including the instant between an issue being created and its record
   being written.
 
+  **The original has to still be the story that was proposed.** Its live state
+  is read before the first create, so an issue closed by hand while the pause
+  stood open refuses with nothing created; and the close is verified by reading
+  the issue back rather than by trusting the command's exit code, because
+  `gh issue close` succeeds against an already-closed issue without changing its
+  reason. A split whose original does not end up closed as `not planned` is
+  reported as a failure, not audited as decomposed.
+
   **The acceptance has to be a live operator acceptance.** An answer whose
   `decided_at` is after the pause's `timeout_at` is not honoured however the
   gate came by it — the poller returning it as a live decision, or the record

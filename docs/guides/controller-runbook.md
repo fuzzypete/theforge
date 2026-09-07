@@ -419,6 +419,17 @@ APPLIED   → created #2900  extract the portable diagnosis record
   rather than as a clean split, and the message names the issues that were
   created. Re-running the story re-enters the application from the persisted
   slice map and creates only what is missing — it never files a second copy.
+  The close is **verified by reading the issue back**, not by trusting the
+  command's exit code: `gh issue close` against an already-closed issue exits
+  zero without touching its reason, so a split whose original does not end up
+  closed as `not planned` is reported as a failure rather than as decomposed.
+- **An original that changed under the pause is not split.** The pause can stand
+  for hours. The live issue state is read before the first create, and a story
+  someone closed in the meantime — as completed, or by any route other than a
+  `not planned` close — refuses with nothing created: the story the proposal
+  splits no longer exists to be split. (An original already closed as
+  `not planned` is this application's own earlier close, so a re-entry finishes
+  the split rather than closing it twice.)
 - **An interrupted application is recoverable.** Three things are durable, in
   this order: the *intent* (`status: in_progress`, written before the first
   `gh` call, so a resumed run knows an application started even if nothing was
