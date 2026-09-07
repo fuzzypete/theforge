@@ -89,6 +89,14 @@ MEMORY_PUBLISH_PUSHED_NO_PR = "pushed_without_pr"  # branch pushed, no PR carrie
 MEMORY_PUBLISH_STAGED_ONLY = "staged_only"  # staged and retained; publish failed
 MEMORY_PUBLISH_NO_REMOTE = "no_remote"  # no origin to publish to
 
+# Refinements of ``MEMORY_PUBLISH_PUBLISHED``, recorded by the publisher that
+# arms the carrier (``sprint.audit_publish``) rather than returned from here:
+# arming is a fact about the carrier, not about whether the transport worked.
+# They exist so an operator reading the recorded end state can tell a carrier
+# that will land on its own from one that is waiting on them (#2818).
+MEMORY_PUBLISH_PUBLISHED_ARMED = "published_armed"  # PR open and armed for auto-merge
+MEMORY_PUBLISH_PUBLISHED_UNARMED = "published_unarmed"  # PR open; arming did not take effect
+
 
 def _log(msg: str) -> None:
     _log_line("[sprint]", msg)

@@ -510,6 +510,30 @@ of the failure modes you hit — the `state` field says which:
 A *stale* file (state `published`/`clean`) next to unpushed audit commits means
 the run ended before it ever reached the publish step.
 
+### The memory-branch transport (issues #2598, #2818)
+
+A run that reaches the base branch only through pull requests does not commit
+its project memory directly. It publishes from the `forge/project-memory` branch
+and opens a carrier into the base branch, then **arms that carrier for
+auto-merge with the configured `workspace.merge_strategy`** — the same mechanism
+and the same strategy as the story carriers the run landed. Arming asserts
+nothing over the base branch: GitHub merges only once that branch's own
+requirements are satisfied, so a base branch that refuses stays refused.
+
+Those runs record `memory_branch_*` states in the same file:
+
+| `state` | Meaning | Remedy |
+| --- | --- | --- |
+| `memory_branch_published_armed` | Carrier open and armed; it merges when the base branch's requirements are met. | none |
+| `memory_branch_published_unarmed` | Carrier open but **not** armed; `detail` carries `arming_failed=` and the raw error. `arming_failed=True` is a policy refusal (auto-merge disabled on the repository or the branch); `False` is a host failure (`gh` auth, mergeability). | enable auto-merge on the repository, or merge the carrier yourself |
+| `memory_branch_pushed_without_pr` | Branch pushed, no carrier — `gh` is absent or `gh pr create` failed. | open a PR from `forge/project-memory` into `<base>` |
+| `memory_branch_staged_only` | Publish failed; memory is retained under `.forge/memory-staging/` and the next publish carries it forward. | usually none — check the run log for the transport error |
+| `memory_branch_no_remote` | Nothing to publish to. | none |
+
+A run with **no pending memory** publishes no carrier, arms nothing, and records
+nothing on this path — so the state you read is always the last run that actually
+published, not the last run that finished.
+
 ## 6. Dogfood substrate model
 
 - Two runtimes that must stay **disjoint**: the *orchestrator* is the released

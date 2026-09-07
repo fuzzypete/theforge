@@ -10,7 +10,7 @@ from theforge.coordinator.completion import (
     _step_await_merge_state,
     _step_fetch_rebase,
     _step_force_push,
-    _step_merge,
+    _step_merge,  # re-exported from coordinator.pr_auto_merge, where it now lives (#2818)
 )
 from theforge.coordinator.run_setup import (
     delete_merge_state,
@@ -167,21 +167,21 @@ class TestStepForcePush:
 
 class TestStepMerge:
     def test_success(self, tmp_path: Path) -> None:
-        with patch("theforge.coordinator.completion.subprocess.run", return_value=_ok()):
+        with patch("theforge.coordinator.pr_auto_merge.subprocess.run", return_value=_ok()):
             result = _step_merge(tmp_path, "https://github.com/o/r/pull/1", "squash")
         assert result["success"] is True
         assert "retryable" not in result
 
     def test_retryable_error(self, tmp_path: Path) -> None:
         err = _ok(1, stderr="GraphQL: Base branch was modified. Review and try the merge again.")
-        with patch("theforge.coordinator.completion.subprocess.run", return_value=err):
+        with patch("theforge.coordinator.pr_auto_merge.subprocess.run", return_value=err):
             result = _step_merge(tmp_path, "https://github.com/o/r/pull/1", "squash")
         assert result["success"] is False
         assert result["retryable"] is True
 
     def test_non_retryable_error(self, tmp_path: Path) -> None:
         err = _ok(1, stderr="some other unrelated merge error")
-        with patch("theforge.coordinator.completion.subprocess.run", return_value=err):
+        with patch("theforge.coordinator.pr_auto_merge.subprocess.run", return_value=err):
             result = _step_merge(tmp_path, "https://github.com/o/r/pull/1", "squash")
         assert result["success"] is False
         assert result["retryable"] is False
