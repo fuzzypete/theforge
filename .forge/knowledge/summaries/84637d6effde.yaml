@@ -1,0 +1,76 @@
+schema_version: 2
+run_id: 84637d6effde
+authoritative_run_record: .forge/audits/runs/84637d6effde.json
+generated_at: '2026-09-07T19:33:00.576862+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00551875
+story:
+  slug: issue-2907
+  name: A document that policy requires a semantic review for is left unevaluated
+    until an operator runs the evaluator by hand, so the gate withholds admission
+    for work nothing has been scheduled to do
+  github_issue: 2907
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- docs/reference/semantic-readiness.md
+- src/theforge/cli/sprint.py
+- src/theforge/eval/semantic_auto.py
+- src/theforge/eval/semantic_readiness.py
+- src/theforge/eval/semantic_runner.py
+- src/theforge/eval/semantic_storage.py
+- src/theforge/ready_queue.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/sources.py
+- src/theforge/task/story.py
+- tests/conftest.py
+- tests/test_semantic_auto_scheduling.py
+what_changed:
+  description: This run introduced automatic semantic-evaluation scheduling for documents
+    whose policy requires review but whose current revision has no evaluation record,
+    while preserving the existing admission meaning of findings and ratification.
+    It also documented the automatic path and kept manual invocation available on
+    the same recording terms.
+  approach: The change was implemented by adding a dedicated automatic-evaluation
+    path tied to readiness/admission flow, keying evaluation reuse to revision and
+    prompt-contract version, routing failure and unknown outcomes into unevaluated
+    failure states, and verifying the behavior across revision changes, policy-required
+    versus not-required cases, ratification, and bounded invocation.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- revision-scoped-evaluation
+- admission-triggered-auto-producer
+- failure-defaults-to-unevaluated
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the first pass and emphasized that the key risk area was preserving
+    existing ratification semantics while wiring automatic invocation into admission.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 16.1222386
+  dominant_difficulty: Separating scheduling from policy meaning so evaluation could
+    run automatically without changing ratification, revision binding, or failure
+    semantics.
