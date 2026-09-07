@@ -351,8 +351,9 @@ It is an artifact, not a recommendation: it does not tell you which action to
 pick, and it changes nothing. **No issue is created, edited, or closed** — the
 invocation runs with a read-only tool surface that has no shell, in a read-only
 sandbox, against a clean baseline checkout, holding inference credentials only.
-The original story is left intact and runnable whichever way you answer. Acting
-on a split is your call and is tracked separately (#2824).
+The original story is left intact and runnable whichever way you answer.
+Producing it changes nothing; **applying** it is a separate action you take
+(below).
 
 - **No assessment is a normal outcome.** A story the step judges genuinely
   atomic — and every failure: the agent could not launch, returned failure, or
@@ -376,9 +377,103 @@ Where to look afterwards: the same `preflight_complexity_gate` audit block now
 also carries `assessment` (the slices, edges, coverage, and unsettled items),
 `assessment_generated`, `none_produced_reason`, `assessment_cost_usd`,
 `assessment_duration_s`, `assessment_model`/`assessment_profile`, and
-`assessment_disposition` (`operator_approve`, `operator_decompose`, or the
-`no_decision_*` forms) — the last being what makes assessment quality measurable
-later against whether a split that was acted on actually landed.
+`assessment_disposition` (`operator_approve`, `operator_decompose`,
+`operator_accept`, `operator_decline`, or the `no_decision_*` forms) — the last
+being what makes assessment quality measurable later against whether a split
+that was acted on actually landed.
+
+### Accepting a proposal applies it (issue #2824)
+
+Where the pause carries a proposal forge could actually apply, it offers two
+more actions beside `approve` and `decompose`:
+
+```
+  forge decide 7c1e04b9d3af accept     apply the proposal: create the slices, close this one
+  forge decide 7c1e04b9d3af decline    return it unsplit; apply nothing
+```
+
+`accept` is the only action anywhere in this gate that mutates the tracker:
+
+```
+APPLIED   → created #2900  extract the portable diagnosis record
+            created #2901  route diagnosis through the record   depends_on #2900
+            created #2902  port the CLI surface                 depends_on #2900
+            created #2903  cross-project acceptance             depends_on #2901, #2902
+            closed  #2541  decomposed
+```
+
+- **Each slice is runnable at creation.** It carries the slice title, the scope
+  boundary, the original acceptance criteria the proposal mapped onto it, and
+  the original's type label and milestone — an issue without a recognized type
+  label is skipped by intake, so the label is a precondition of applying rather
+  than a nicety.
+- **The edges are written where the scheduler reads them.** `depends_on`
+  frontmatter in the created body, at creation time. Slices are created in
+  dependency order so an edge always names an issue that already exists; a
+  cyclic proposal refuses before anything is created. An edge added later by
+  comment is invisible to the scheduler, which is why none is.
+- **The original closes last, or not at all.** It is closed with `not planned`
+  (distinguishable from a completed close) and a comment naming every slice,
+  routed through the spike closure guard like every other close path. If any
+  create fails, the original stays open, the story is reported as a **failure**
+  rather than as a clean split, and the message names the issues that were
+  created. Re-running the story re-enters the application from the persisted
+  slice map and creates only what is missing — it never files a second copy.
+  The close is **verified by reading the issue back**, not by trusting the
+  command's exit code: `gh issue close` against an already-closed issue exits
+  zero without touching its reason, so a split whose original does not end up
+  closed as `not planned` is reported as a failure rather than as decomposed.
+- **An original that changed under the pause is not split.** The pause can stand
+  for hours. The live issue state is read before the first create, and a story
+  someone closed in the meantime — as completed, or by any route other than a
+  `not planned` close — refuses with nothing created: the story the proposal
+  splits no longer exists to be split. (An original already closed as
+  `not planned` is this application's own earlier close, so a re-entry finishes
+  the split rather than closing it twice.)
+- **An interrupted application is recoverable.** Three things are durable, in
+  this order: the *intent* (`status: in_progress`, written before the first
+  `gh` call, so a resumed run knows an application started even if nothing was
+  created yet); each slice, written to the resume record *as it is created*
+  rather than once the application finishes; and the marker in each created
+  body (`<!-- forge-decomposition-v1 source=#N slice=M -->`), which a re-entry
+  searches the tracker for to recover an issue created in the instant before
+  the record was written. So `forge run` on the same story after a kill —
+  wherever it landed — finishes the split rather than restarting it.
+- **Nothing else can apply a split.** `decline`, `decompose`, `approve`, a
+  timeout, and `retry.preflight_complexity_gate_no_decision` all create nothing;
+  that key still accepts only `approve` or `decompose`. `accept` is offered only
+  for a GitHub-issue-backed story whose type a rendered slice can satisfy
+  (`enhancement`, `task`, `spike` — not `bug`, whose shape needs an
+  observed/expected/diagnosis body forge has no evidence to write), so an
+  action that could not succeed is never on the menu.
+- **An expired pause cannot be answered late, by any route.** The deadline is
+  checked against the answer's own `decided_at` whenever the answer came off the
+  pending record — whether the poller handed it back as a live decision or the
+  gate re-read the record after an expiry. An answer written after `timeout_at`
+  is not honoured (the story resolves by the no-decision route), and that holds
+  for every action, not only `accept`. An answer written *before* the deadline
+  that the poller simply did not see in time still counts, which is the race the
+  post-expiry record read exists for.
+- **A recorded acceptance is re-checked before it mutates anything.** Both routes
+  into the mutation — a live answer and one restored from a resume record —
+  require the recorded decision source to be `operator` and an assessment to
+  exist. A record that says `accept` while saying nobody decided it (a
+  hand-edited resume file, a state assembled without the pause) creates nothing
+  and is reported as a refusal with the reason, not as a clean split.
+
+If the original's *type label was removed* after intake read it, the created
+slices inherit the type intake derived — the type the pause offered `accept`
+for, since a removal does not say what they should be instead. Two label cases
+refuse instead: two appliable type labels (which type the slices inherit is not
+forge's to guess), and a **relabelling** — an issue read as an `enhancement` and
+since relabelled `bug` or `epic` is now a different story from the one the
+proposal was produced for, and the relabelling outranks it.
+
+An applied `accept` is reported the same way `decompose` is — `outcome:
+decomposed`, `⤺` on the sprint row, not a failure. Where to look afterwards:
+`preflight_complexity_gate.assessment_application` on the audit record
+(`status`, `created`, `source_issue`, `source_issue_closed`, `error`,
+`applied_at`).
 
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 

@@ -783,6 +783,30 @@ PREFLIGHT_GATE_ACTIONS: tuple[str, ...] = (
     PREFLIGHT_GATE_DECOMPOSE,
 )
 
+#: The two dispositions of an attached decomposition *proposal* (#2824).
+#: ``accept`` applies the proposal — it creates one issue per slice, writes the
+#: declared edges, and closes the original as decomposed; ``decline`` is its
+#: non-mutating counterpart, which creates nothing and leaves the original
+#: intact and runnable.
+PREFLIGHT_GATE_ACCEPT = "accept"
+PREFLIGHT_GATE_DECLINE = "decline"
+PREFLIGHT_GATE_PROPOSAL_ACTIONS: tuple[str, ...] = (
+    PREFLIGHT_GATE_ACCEPT,
+    PREFLIGHT_GATE_DECLINE,
+)
+
+#: Every action the gate can *offer*, as distinct from the ones an expiry may
+#: apply. The split is load-bearing: :func:`normalize_preflight_gate_no_decision`
+#: validates against :data:`PREFLIGHT_GATE_ACTIONS` only, so no timeout, typo, or
+#: configured fallback can ever resolve to ``accept`` and mutate the tracker
+#: without an operator having said so (#2824). ``accept``/``decline`` are offered
+#: only on a pause that actually carries an appliable proposal, which is narrower
+#: still and decided by the gate, not by this tuple.
+PREFLIGHT_GATE_ALL_ACTIONS: tuple[str, ...] = (
+    *PREFLIGHT_GATE_ACTIONS,
+    *PREFLIGHT_GATE_PROPOSAL_ACTIONS,
+)
+
 #: Shipped threshold for the preflight complexity gate. One below the ceiling
 #: (``COMPLEXITY_SCORE_MAX`` = 10) that #2680's ``scope_exceeded`` signal already
 #: flags, so the two signals do not collapse onto the same set of stories: 10

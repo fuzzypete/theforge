@@ -16,6 +16,17 @@ offers the operator two actions:
 * ``decompose`` — return it to be split. The run ends before any later phase is
   charged, reported as *returned for decomposition* rather than as a failure.
 
+Where the pause carries a decomposition assessment that could actually be
+applied (#2824), it offers two more:
+
+* ``accept``  — apply that proposal: create one issue per slice with the
+  declared edges written into their bodies at creation time, then close the
+  original as decomposed. The only mutating action here, and reachable only
+  from an operator answer on a pause that offered it.
+* ``decline`` — the non-mutating disposition of the proposal. Nothing is
+  created, the original stays open and runnable, and the story ends the same
+  way ``decompose`` does: declining a *split* is not approving the *scope*.
+
 Three properties, one per acceptance criterion:
 
 * **Anchored to the phase boundary, not to a phase.** The gate is called from
@@ -56,9 +67,13 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from theforge.config.types import (
+    PREFLIGHT_GATE_ACCEPT,
     PREFLIGHT_GATE_ACTIONS,
+    PREFLIGHT_GATE_ALL_ACTIONS,
     PREFLIGHT_GATE_APPROVE,
+    PREFLIGHT_GATE_DECLINE,
     PREFLIGHT_GATE_DECOMPOSE,
+    PREFLIGHT_GATE_PROPOSAL_ACTIONS,
     normalize_preflight_gate_no_decision,
 )
 
@@ -70,6 +85,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from theforge.config import ForgeConfig
     from theforge.task import TaskStory
 
+    from . import decomposition_application as _da
     from . import preflight_decomposition_flow as _pdf
     from . import state as _cs
     from .logging import StructuredLogger
@@ -87,9 +103,68 @@ PREFLIGHT_GATE_EXTRA_KEY = "preflight_complexity_gate"
 DECISION_SOURCE_OPERATOR = "operator"
 DECISION_SOURCE_NO_DECISION = "no_decision"
 
+#: ``error_type`` for an accepted proposal whose application did not complete.
+#: Distinct from every other terminal path here because it is the one that
+#: leaves tracker state an operator has to look at.
+DECOMPOSITION_APPLICATION_FAILED = "decomposition_application_failed"
+
+
+def offered_actions(state: "_cs.CoordinatorState", task: "TaskStory") -> tuple[str, ...]:
+    """The actions this particular pause accepts as an answer.
+
+    ``approve`` and ``decompose`` are always offered — they are the scope
+    decision, and they mutate nothing. ``accept`` and ``decline`` are the
+    disposition of an attached *proposal*, so they are offered only when there
+    is a proposal that could actually be applied: an assessment was generated,
+    it describes a split, and the story is a tracker-backed issue of a type
+    whose slices would be runnable at creation (#2824).
+
+    Offering ``accept`` where it could not succeed would be worse than not
+    offering it: the operator would commit to a mutation that fails after they
+    have already decided.
+    """
+    from .decomposition_application import proposal_is_appliable  # noqa: PLC0415
+
+    if not state.preflight_complexity_gate_assessment_generated:
+        return PREFLIGHT_GATE_ACTIONS
+    if not proposal_is_appliable(state.preflight_complexity_gate_assessment, task):
+        return PREFLIGHT_GATE_ACTIONS
+    return (*PREFLIGHT_GATE_ACTIONS, *PREFLIGHT_GATE_PROPOSAL_ACTIONS)
+
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _parse_iso(value: object) -> datetime.datetime | None:
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _answered_within_the_window(record: dict, answer_at: object) -> bool:
+    """Whether a recorded answer was given before the deadline it was shown.
+
+    Applies to every answer read off the pending record, whichever way the gate
+    came by it — the poller returning it, or the record being re-read after the
+    poller reported an expiry. Both read the same file, so both can see a
+    decision written after the window closed, and a pause that has already
+    resolved by the configured no-decision route must not be answerable
+    afterwards — least of all with ``accept``, which mutates the tracker.
+
+    Unreadable or absent timestamps count as outside the window. A record whose
+    own deadline or decision time cannot be read cannot establish that it was
+    answered in time, and the action this guards is the irreversible one.
+    """
+    deadline = _parse_iso(record.get("timeout_at"))
+    decided = _parse_iso(answer_at)
+    if deadline is None or decided is None:
+        return False
+    return decided <= deadline
 
 
 def gate_threshold(config: "ForgeConfig") -> int:
@@ -130,6 +205,17 @@ def should_gate(state: "_cs.CoordinatorState", config: "ForgeConfig", verdict: s
     if gate_is_disabled(threshold):
         return False
     return score >= threshold
+
+
+#: What each action does, in one clause. Shared by the pause text and
+#: ``forge status`` so the two surfaces cannot describe the same action
+#: differently.
+ACTION_GLOSSES: dict[str, str] = {
+    PREFLIGHT_GATE_APPROVE: "plan and implement it as scoped",
+    PREFLIGHT_GATE_DECOMPOSE: "return it to be split",
+    PREFLIGHT_GATE_ACCEPT: "apply the proposal: create the slices, close this one",
+    PREFLIGHT_GATE_DECLINE: "return it unsplit; apply nothing",
+}
 
 
 def _score_provenance_note(state: "_cs.CoordinatorState") -> str | None:
@@ -195,6 +281,7 @@ def _render_reason(
     timeout_seconds: int,
     no_decision_action: str,
     no_decision_fallback: str | None,
+    actions: tuple[str, ...] = PREFLIGHT_GATE_ACTIONS,
 ) -> str:
     """Operator-facing text for the pending file.
 
@@ -220,12 +307,11 @@ def _render_reason(
     note = _score_provenance_note(state)
     if note is not None:
         lines.extend(["", f"Score provenance: {note}."])
+    lines.append("")
+    for action in actions:
+        lines.append(f"  forge decide {run_id} {action:<10} {ACTION_GLOSSES[action]}")
     lines.extend(
         [
-            "",
-            f"  forge decide {run_id} {PREFLIGHT_GATE_APPROVE}"
-            "      plan and implement it as scoped",
-            f"  forge decide {run_id} {PREFLIGHT_GATE_DECOMPOSE}    return it to be split",
             "",
             f"No decision within {_cu._fmt_duration(timeout_seconds)}: {no_decision_action}"
             f"{' (default)' if no_decision_fallback is None else ''}."
@@ -256,9 +342,15 @@ def _gate_payload(
     threshold: int,
     no_decision_action: str,
     no_decision_fallback: str | None,
+    actions: tuple[str, ...] = PREFLIGHT_GATE_ACTIONS,
 ) -> dict[str, Any]:
     """Machine-readable gate context carried on the pending record."""
     return {
+        # What this pause offers, next to the same list in ``options``. Read by
+        # the status surface so it glosses exactly the actions that exist here:
+        # ``accept`` appears only where there is a proposal to apply (#2824).
+        "actions": list(actions),
+        "proposal_appliable": PREFLIGHT_GATE_ACCEPT in actions,
         "complexity_score": state.preflight_complexity_score,
         "implementation_complexity_score": state.preflight_implementation_complexity_score,
         "validation_complexity_score": state.preflight_validation_complexity_score,
@@ -372,11 +464,36 @@ def _record(
     state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
 
 
+def returned_for_decomposition(state: "_cs.CoordinatorState") -> bool:
+    """True when the gate ended this run by returning the story to be split.
+
+    Read off the recorded decision rather than off ``success``: both terminal
+    gate paths report ``success=False`` because the story's work was not
+    delivered, and every *other* non-success path a caller sees means something
+    went wrong. ``accept`` counts only once its application actually completed —
+    an accepted proposal that failed partway through did not return the story,
+    it left tracker state the operator has to act on, and reporting it as a
+    clean decomposition would hide exactly that (#2824).
+    """
+    decision = getattr(state, "preflight_complexity_gate_decision", None)
+    if decision in (PREFLIGHT_GATE_DECOMPOSE, PREFLIGHT_GATE_DECLINE):
+        return True
+    if decision == PREFLIGHT_GATE_ACCEPT:
+        from .decomposition_application import APPLY_STATUS_APPLIED  # noqa: PLC0415
+
+        return (
+            getattr(state, "preflight_decomposition_application_status", None)
+            == APPLY_STATUS_APPLIED
+        )
+    return False
+
+
 def _decompose_result(
     state: "_cs.CoordinatorState",
     task: "TaskStory",
     *,
     source: str,
+    decision: str = PREFLIGHT_GATE_DECOMPOSE,
 ) -> CoordinatorResult:
     """The terminal result for a story returned to be split.
 
@@ -387,7 +504,9 @@ def _decompose_result(
     to work.
     """
     state.phase = Phase.PREFLIGHT
-    if source == DECISION_SOURCE_OPERATOR:
+    if decision == PREFLIGHT_GATE_DECLINE:
+        how = "the operator declined the attached proposal, so nothing was created or closed"
+    elif source == DECISION_SOURCE_OPERATOR:
         how = "the operator returned it to be split"
     else:
         how = "no operator decision was recorded, so the configured no-decision action was applied"
@@ -404,6 +523,220 @@ def _decompose_result(
     )
 
 
+def _record_application(state: "_cs.CoordinatorState", outcome: "_da.ApplicationOutcome") -> None:
+    """Write what the application did onto the run state."""
+    state.preflight_decomposition_application_status = outcome.status
+    state.preflight_decomposition_created = [item.to_dict() for item in outcome.created]
+    state.preflight_decomposition_source_issue = outcome.source_issue
+    state.preflight_decomposition_source_issue_closed = outcome.source_issue_closed
+    state.preflight_decomposition_application_error = outcome.error
+    state.preflight_decomposition_applied_at = outcome.applied_at
+
+
+def _applied_result(
+    state: "_cs.CoordinatorState",
+    task: "TaskStory",
+    outcome: "_da.ApplicationOutcome",
+) -> CoordinatorResult:
+    """The terminal result for a proposal that was applied in full."""
+    state.phase = Phase.PREFLIGHT
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.PREFLIGHT,
+        state=state,
+        message=(
+            f"Applied the accepted decomposition proposal: {outcome.summary()}. "
+            f"Nothing was spent past PREFLIGHT on {task.slug}."
+        ),
+    )
+
+
+def _application_failed_result(
+    state: "_cs.CoordinatorState",
+    task: "TaskStory",
+    outcome: "_da.ApplicationOutcome",
+) -> CoordinatorResult:
+    """The terminal result for an acceptance that did not complete.
+
+    Deliberately *not* reported as returned for decomposition: the split did not
+    land, the original is still open and runnable, and the operator has tracker
+    state to look at. The message names what exists so acting on it does not
+    require reading the audit first.
+    """
+    state.phase = Phase.PREFLIGHT
+    detail = outcome.error or "the application did not complete"
+    state.error = detail
+    state.error_type = DECOMPOSITION_APPLICATION_FAILED
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.PREFLIGHT,
+        state=state,
+        message=(
+            f"Accepted decomposition proposal for {task.slug} was NOT fully applied: "
+            f"{detail}. State now: {outcome.summary()}. Re-running this story re-enters "
+            "the application and creates only the slices that are still missing."
+        ),
+    )
+
+
+def _refuse_application(
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    task: "TaskStory",
+    *,
+    reason: str,
+    logger: "StructuredLogger | None",
+) -> CoordinatorResult:
+    """Record that an ``accept`` was not acted on, and end the run.
+
+    The one thing this must not do is quietly continue or quietly return the
+    story: a recorded acceptance forge refused to honour is a fact about the
+    run's provenance, and the operator has to be able to see that their split
+    did not happen and why.
+    """
+    from .decomposition_application import (  # noqa: PLC0415
+        APPLY_STATUS_FAILED,
+        ApplicationOutcome,
+        created_slices_from_records,
+    )
+
+    outcome = ApplicationOutcome(
+        status=APPLY_STATUS_FAILED,
+        # Whatever an earlier attempt created is carried forward rather than
+        # replaced by an empty list: refusing to continue an application does
+        # not un-create its issues, and the record of them is the operator's
+        # handle on the partial split.
+        created=created_slices_from_records(state.preflight_decomposition_created),
+        source_issue=getattr(task, "github_issue", None),
+        source_issue_closed=bool(state.preflight_decomposition_source_issue_closed),
+        error=reason,
+        applied_at=_now_iso(),
+    )
+    _record_application(state, outcome)
+    _persist_gate_state(state, config, task, logger=logger)
+    if logger:
+        logger._safe_emit(
+            "preflight_decomposition_application",
+            phase=PREFLIGHT_GATE_PHASE,
+            status=outcome.status,
+            created=[item.issue_number for item in outcome.created],
+            source_issue=outcome.source_issue,
+            source_issue_closed=outcome.source_issue_closed,
+            error=reason,
+        )
+    _cu._log(f"  ✗ PREFLIGHT gate  refusing to apply the recorded acceptance: {reason}")
+    return _application_failed_result(state, task, outcome)
+
+
+def _acceptance_is_actionable(state: "_cs.CoordinatorState") -> str | None:
+    """Why a recorded ``accept`` may not be acted on, or None when it may.
+
+    Applying a split is the only thing this gate does that an operator cannot
+    undo cheaply, so the provenance of the acceptance is re-checked at the point
+    of mutation rather than trusted because it is written down. A record that
+    says ``accept`` while saying no operator decided it, or while carrying no
+    assessment to apply, describes something that cannot have happened — a
+    hand-edited resume record, a state assembled by a caller that skipped the
+    pause — and the safe reading of an impossible record is to mutate nothing.
+    """
+    if state.preflight_complexity_gate_decision_source != DECISION_SOURCE_OPERATOR:
+        return (
+            "the recorded acceptance names no operator decision "
+            f"(source: {state.preflight_complexity_gate_decision_source or 'none'}), "
+            "and only an operator may apply a split"
+        )
+    if not state.preflight_complexity_gate_assessment_generated:
+        return (
+            "no decomposition assessment was generated for this story, so there is none to apply"
+        )
+    return None
+
+
+def _apply_accepted_proposal(
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    task: "TaskStory",
+    *,
+    logger: "StructuredLogger | None",
+) -> CoordinatorResult:
+    """Apply the recorded proposal, record what happened, and end the run.
+
+    Idempotent by construction, in three layers, because the process can die
+    between any two of these steps:
+
+    1. The *intent* is durable before the first ``gh`` call. A state carrying
+       ``accept`` with no application status used to mean "nothing was tried",
+       so a kill after the first create returned but before its record was
+       written re-entered as a first attempt and filed that slice again.
+    2. Each created slice is written to the state and saved as it is created,
+       not once the application returns, so a kill between two creates leaves
+       every issue already filed on the resume record.
+    3. A re-entry — any state that arrived here already carrying an application
+       status — asks the tracker which slices already carry this proposal's
+       marker, which covers a kill in the gap between ``gh`` returning and the
+       recorder running.
+    """
+    from .decomposition_application import (  # noqa: PLC0415
+        APPLY_STATUS_IN_PROGRESS,
+        apply_decomposition,
+    )
+
+    # Read before the intent is written, or every application would look like a
+    # re-entry and pay for a reconciliation search it does not need.
+    reentry = bool(state.preflight_decomposition_application_status)
+
+    if not reentry:
+        # Nothing has been created yet, and this says so — what it establishes
+        # is that an application *started*, which is what a later re-entry needs
+        # in order to know it must reconcile before creating anything.
+        state.preflight_decomposition_application_status = APPLY_STATUS_IN_PROGRESS
+        state.preflight_decomposition_source_issue = task.github_issue
+        state.preflight_decomposition_application_error = None
+        _persist_gate_state(state, config, task, logger=logger)
+
+    def _record_one_created(record: "_da.CreatedSlice") -> None:
+        """Persist one created slice the moment it exists."""
+        entries = list(state.preflight_decomposition_created or [])
+        if any(entry.get("slice_id") == record.slice_id for entry in entries):
+            return
+        entries.append(record.to_dict())
+        state.preflight_decomposition_created = entries
+        state.preflight_decomposition_source_issue = task.github_issue
+        # An application that is still running is neither applied nor failed,
+        # and saying either would misreport an interruption caught at this
+        # moment. The terminal status overwrites this a few lines below.
+        state.preflight_decomposition_application_status = APPLY_STATUS_IN_PROGRESS
+        state.preflight_decomposition_application_error = None
+        _persist_gate_state(state, config, task, logger=logger)
+
+    outcome = apply_decomposition(
+        assessment=state.preflight_complexity_gate_assessment,
+        task=task,
+        config=config,
+        prior_created=state.preflight_decomposition_created,
+        source_issue_already_closed=bool(state.preflight_decomposition_source_issue_closed),
+        reconcile_existing=reentry,
+        on_created=_record_one_created,
+    )
+    _record_application(state, outcome)
+    _persist_gate_state(state, config, task, logger=logger)
+    if logger:
+        logger._safe_emit(
+            "preflight_decomposition_application",
+            phase=PREFLIGHT_GATE_PHASE,
+            status=outcome.status,
+            created=[item.issue_number for item in outcome.created],
+            source_issue=outcome.source_issue,
+            source_issue_closed=outcome.source_issue_closed,
+            error=outcome.error,
+        )
+    if outcome.ok:
+        _cu._log(f"  ⤺ PREFLIGHT gate  applied the accepted proposal — {outcome.summary()}")
+        return _applied_result(state, task, outcome)
+    _cu._log(f"  ✗ PREFLIGHT gate  the accepted proposal was not fully applied: {outcome.error}")
+    return _application_failed_result(state, task, outcome)
+
+
 def evaluate_preflight_complexity_gate(
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
@@ -416,7 +749,8 @@ def evaluate_preflight_complexity_gate(
 
     Returns None when the run should continue — the gate did not apply, or the
     story was approved — and a terminal :class:`CoordinatorResult` when it was
-    returned for decomposition.
+    returned for decomposition, when an accepted proposal was applied, and when
+    one was accepted but could not be applied in full.
     """
     if not should_gate(state, config, verdict):
         return None
@@ -428,17 +762,29 @@ def evaluate_preflight_complexity_gate(
     # answered this question for this story text once, and re-asking would spend
     # their attention to reach the answer already recorded.
     prior = state.preflight_complexity_gate_decision
-    if prior in PREFLIGHT_GATE_ACTIONS:
+    if prior in PREFLIGHT_GATE_ALL_ACTIONS:
         _cu._log(
             f"  ↺ PREFLIGHT gate  honouring the recorded decision {prior!r} "
             f"(complexity {state.preflight_complexity_score} ≥ {threshold})"
         )
-        if prior == PREFLIGHT_GATE_DECOMPOSE:
+        if prior == PREFLIGHT_GATE_ACCEPT:
+            # Re-entering an application, not re-deciding it. Whatever the
+            # earlier attempt created is on the state, so a fully applied split
+            # costs no gh call and a partial one is finished rather than doubled.
+            #
+            # The provenance is re-checked first: a restored decision arrives
+            # from a file, and this branch is the one that mutates the tracker.
+            refusal = _acceptance_is_actionable(state)
+            if refusal is not None:
+                return _refuse_application(state, config, task, reason=refusal, logger=logger)
+            return _apply_accepted_proposal(state, config, task, logger=logger)
+        if prior in (PREFLIGHT_GATE_DECOMPOSE, PREFLIGHT_GATE_DECLINE):
             return _decompose_result(
                 state,
                 task,
                 source=state.preflight_complexity_gate_decision_source
                 or DECISION_SOURCE_NO_DECISION,
+                decision=prior,
             )
         return None
 
@@ -483,13 +829,30 @@ def evaluate_preflight_complexity_gate(
         )
         return None
 
+    if decision == PREFLIGHT_GATE_ACCEPT:
+        # The one mutating branch, and it is reachable only from an operator
+        # answer given while the pause was open: ``accept`` is offered only
+        # where the proposal is appliable, the poller's answer is validated
+        # against exactly what was offered and against the pause's own deadline,
+        # and the no-decision vocabulary cannot name it at all. The same
+        # provenance check the restored path uses runs here too, so both routes
+        # into the mutation are guarded by one rule rather than two.
+        refusal = _acceptance_is_actionable(state)
+        if refusal is not None:
+            return _refuse_application(state, config, task, reason=refusal, logger=logger)
+        return _apply_accepted_proposal(state, config, task, logger=logger)
+
     _cu._log(
         f"  ⤺ PREFLIGHT gate  returned for decomposition at complexity "
         f"{state.preflight_complexity_score} "
         f"({'operator' if source == DECISION_SOURCE_OPERATOR else 'no decision'}) "
-        "— nothing spent past PREFLIGHT"
+        + (
+            "— the proposal was declined; nothing created"
+            if decision == PREFLIGHT_GATE_DECLINE
+            else "— nothing spent past PREFLIGHT"
+        )
     )
-    return _decompose_result(state, task, source=source)
+    return _decompose_result(state, task, source=source, decision=decision)
 
 
 def _open_gate(
@@ -572,6 +935,10 @@ def _open_gate(
         # again.
         _persist_gate_state(state, config, task, logger=logger)
 
+    # Decided after the assessment exists, because whether the proposal can be
+    # applied is a fact about the artifact that was just produced.
+    actions = offered_actions(state, task)
+
     reason = _render_reason(
         task=task,
         state=state,
@@ -580,13 +947,14 @@ def _open_gate(
         timeout_seconds=timeout_seconds,
         no_decision_action=no_decision_action,
         no_decision_fallback=no_decision_fallback,
+        actions=actions,
     )
     pending_path = _pending.write_pending(
         run_id=eff_run_id,
         story=task.slug,
         phase=PREFLIGHT_GATE_PHASE,
         reason=reason,
-        options=list(PREFLIGHT_GATE_ACTIONS),
+        options=list(actions),
         timeout_seconds=timeout_seconds,
         project_root=project_root,
         extra={
@@ -596,6 +964,7 @@ def _open_gate(
                 threshold=threshold,
                 no_decision_action=no_decision_action,
                 no_decision_fallback=no_decision_fallback,
+                actions=actions,
             ),
         },
     )
@@ -627,18 +996,41 @@ def _open_gate(
     # neither is treated as no decision rather than guessed at.
     record = _pending.read_pending(eff_run_id, project_root=project_root) or {}
     answer = _pending.decision_of(record)
-    if answer is None and not record and decision in PREFLIGHT_GATE_ACTIONS:
+    from_record = answer is not None
+    if answer is None and not record and decision in actions:
         # The record was swept between the poll and here; the poller's report is
-        # all there is, and it names one of the two actions.
+        # all there is, and it names one of the offered actions. Nothing to
+        # check it against — but the poller only reports an action it saw while
+        # it was still inside its own wait, so it was answered in time.
         answer = decision
         answer_at = decided_at
     else:
         answer_at = record.get("decided_at") or decided_at
 
+    # Every answer that came off the record is checked against the deadline that
+    # record advertised — *not* only the ones the poller missed. The poller
+    # reports whatever the file says the moment it looks, so a decision written
+    # after the window closed can be handed back as a live answer; validating
+    # only the expiry path left the tracker mutable by an answer to a pause that
+    # had already resolved. Checked before cleanup, because the deadline lives
+    # on the record this is about to remove.
+    if from_record and not _answered_within_the_window(record, answer_at):
+        _cu._log(
+            f"  ⚠ PREFLIGHT gate  {str(answer).strip().lower()!r} was recorded after the "
+            f"pause deadline (at {answer_at or 'an unknown time'}, deadline "
+            f"{record.get('timeout_at') or 'unknown'}) — applying the no-decision "
+            f"action {no_decision_action}"
+        )
+        answer = None
+
     _pending.cleanup_pending(eff_run_id, project_root)
 
+    # Validated against what THIS pause offered, not against the vocabulary at
+    # large: ``accept`` mutates the tracker, so an answer naming it on a pause
+    # that never offered it — a hand-edited record, a stale file — is not an
+    # operator acceptance of anything and must not apply a split.
     normalized = str(answer).strip().lower() if answer is not None else None
-    if normalized in PREFLIGHT_GATE_ACTIONS:
+    if normalized in actions:
         return normalized, DECISION_SOURCE_OPERATOR, waited, answer_at
     if normalized is not None:
         _cu._log(

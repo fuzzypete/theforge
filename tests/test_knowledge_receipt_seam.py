@@ -248,7 +248,7 @@ class TestAuditPersistence:
         assert audit_storage._migrate_v45_to_v46(record) is record
 
     def test_the_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 46
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 47
         assert audit_storage.MIGRATION_HELPERS[45] is audit_storage._migrate_v45_to_v46
 
 

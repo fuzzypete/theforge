@@ -262,8 +262,15 @@ def _send_terminal(title: str, body: str) -> None:
 
 
 def _send_ntfy(url: str, priority: str, title: str, body: str) -> None:
-    """Send an ntfy push notification."""
-    from .coordinator.notify import _ntfy_publish
+    """Send an ntfy push notification.
+
+    Taken from the stdlib-only client that defines it rather than from
+    ``coordinator.notify``, which merely re-exports it and imports this module
+    back for ``send_notifications``. Reaching the publisher through that
+    re-export made the two modules a cycle for the sake of one function neither
+    of them owns.
+    """
+    from .coordinator.ntfy_client import _ntfy_publish
 
     _ntfy_publish(url, title, body, priority=priority)
 
