@@ -211,32 +211,59 @@ def changed_file_coverage(conn: AuditConnection, *, since: str | None = None) ->
     minority, not the codebase. This reports the denominator so a caller can say
     so rather than presenting a partial ranking as a complete one.
 
+    The denominator is bounded to the era in which a changed-file set could
+    exist at all (#2623). A run recorded before changed-file capture began
+    cannot join one, so counting it against the coverage figure makes the ratio
+    a statement about history rather than about the population the caller can
+    analyse — and one that never converges, because nothing ages out of an
+    unbounded denominator. The bound is the earliest cost-bearing run that does
+    join, or the caller's ``since`` when that is later.
+
     Returned keys: ``measured_runs`` / ``measured_spend_usd`` (runs with a
-    positive recorded cost), ``joinable_runs`` / ``joinable_spend_usd`` (of
-    those, the ones with at least one ``audit_changed_files`` row), the two
-    derived ratios, and the ``first_joinable_at`` / ``last_joinable_at`` window
-    the joinable rows span. Ratios are 0.0 when there is nothing to divide.
+    positive recorded cost inside the bounded window), ``joinable_runs`` /
+    ``joinable_spend_usd`` (of those, the ones with at least one
+    ``audit_changed_files`` row), the two derived ratios, the
+    ``first_joinable_at`` / ``last_joinable_at`` window the joinable rows span,
+    and the bound itself: ``capture_start_at`` (first joinable run ever, before
+    ``since`` is applied), ``coverage_floor`` (the lower bound actually used),
+    plus ``archive_runs`` / ``archive_spend_usd`` and
+    ``excluded_pre_capture_runs`` / ``excluded_pre_capture_spend_usd`` so a
+    caller can report what the bound removed rather than hiding it.
     """
-    clauses = ["total_cost_usd IS NOT NULL", "total_cost_usd > 0"]
-    params: list[object] = []
-    if since is not None:
-        clauses.append("started_at >= ?")
-        params.append(since)
-    where = " WHERE " + " AND ".join(clauses)
     joinable_clause = (
         " AND EXISTS (SELECT 1 FROM audit_changed_files c WHERE c.run_id = audit_records.run_id)"
     )
-    measured = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(total_cost_usd), 0.0) FROM audit_records" + where,
-        tuple(params),
-    ).fetchone()
-    joinable = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(total_cost_usd), 0.0), "
-        "MIN(started_at), MAX(started_at) FROM audit_records" + where + joinable_clause,
-        tuple(params),
-    ).fetchone()
+    cost_clauses = ["total_cost_usd IS NOT NULL", "total_cost_usd > 0"]
+    cost_where = " WHERE " + " AND ".join(cost_clauses)
+
+    # The data-availability bound, deliberately independent of ``since``: it is
+    # a property of the substrate, not of how this call was scoped.
+    capture_start_at = conn.execute(
+        "SELECT MIN(started_at) FROM audit_records" + cost_where + joinable_clause
+    ).fetchone()[0]
+    bounds = [bound for bound in (since, capture_start_at) if bound is not None]
+    coverage_floor = max(bounds) if bounds else None
+
+    def _totals(lower_bound: str | None, *, joinable_only: bool) -> tuple:
+        clauses = list(cost_clauses)
+        params: list[object] = []
+        if lower_bound is not None:
+            clauses.append("started_at >= ?")
+            params.append(lower_bound)
+        where = " WHERE " + " AND ".join(clauses)
+        suffix = joinable_clause if joinable_only else ""
+        return conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(total_cost_usd), 0.0), "
+            "MIN(started_at), MAX(started_at) FROM audit_records" + where + suffix,
+            tuple(params),
+        ).fetchone()
+
+    measured = _totals(coverage_floor, joinable_only=False)
+    joinable = _totals(coverage_floor, joinable_only=True)
+    archive = _totals(since, joinable_only=False)
     measured_runs, measured_spend = int(measured[0]), float(measured[1] or 0.0)
     joinable_runs, joinable_spend = int(joinable[0]), float(joinable[1] or 0.0)
+    archive_runs, archive_spend = int(archive[0]), float(archive[1] or 0.0)
     return {
         "measured_runs": measured_runs,
         "measured_spend_usd": measured_spend,
@@ -246,6 +273,12 @@ def changed_file_coverage(conn: AuditConnection, *, since: str | None = None) ->
         "spend_coverage_ratio": (joinable_spend / measured_spend) if measured_spend else 0.0,
         "first_joinable_at": joinable[2],
         "last_joinable_at": joinable[3],
+        "capture_start_at": capture_start_at,
+        "coverage_floor": coverage_floor,
+        "archive_runs": archive_runs,
+        "archive_spend_usd": archive_spend,
+        "excluded_pre_capture_runs": archive_runs - measured_runs,
+        "excluded_pre_capture_spend_usd": archive_spend - measured_spend,
     }
 
 

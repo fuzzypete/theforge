@@ -249,9 +249,13 @@ would be the same error as shipping one on it.
 
 Re-run `python -m theforge.structural_decay_observer` when **all four** hold:
 
-1. `run coverage >= 0.80` — at least 80% of measured cost-bearing runs join to a
-   changed-file set. Currently 19.4%; this rises automatically as pre-#2347 runs
-   age out of the denominator.
+1. `run coverage >= 0.80` — at least 80% of the measured cost-bearing runs *in
+   the analysed window* join to a changed-file set. The 19.4% quoted above was
+   measured against every run ever recorded, most of them from before #2347 made
+   joining possible at all; that denominator never aged out on its own, so #2623
+   bounds it to the changed-file-capture era. A shortfall on the bounded figure
+   is a capture gap inside the current era — runs recording no changed files —
+   and the report now says so rather than implying that waiting resolves it.
 2. At least **30 joinable measured runs** — already met (31).
 3. At least **one path reaching 10 touching runs**. Currently 0; max is 8. This
    is the real gate, and it needs a window measured in months, not days.

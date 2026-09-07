@@ -404,7 +404,15 @@ def threshold_status(coverage: dict, candidates: Sequence[Candidate]) -> dict:
     boolean, because "which floor are we short of" is the actionable part — it
     is what says whether the answer is "wait for more runs" or "the join itself
     is broken".
+
+    Every failing check carries a ``remedy`` naming what would resolve it
+    (#2623). A refusal that reports only a shortfall against a floor asserts
+    that accumulation is the remedy; where it is not — a capture gap, a
+    mis-scoped window — that assertion sends the operator away to wait for a
+    number that is not moving.
     """
+    joinable_runs = coverage.get("joinable_runs", 0)
+    measured_runs = coverage.get("measured_runs", 0)
     checks = [
         {
             "name": "run coverage",
@@ -412,16 +420,21 @@ def threshold_status(coverage: dict, candidates: Sequence[Candidate]) -> dict:
             "required": MIN_RUN_COVERAGE,
             "met": coverage.get("run_coverage_ratio", 0.0) >= MIN_RUN_COVERAGE,
             "detail": (
-                f"{coverage.get('joinable_runs', 0)} of {coverage.get('measured_runs', 0)} "
-                "measured cost-bearing runs join to a changed-file set"
+                f"{joinable_runs} of {measured_runs} measured cost-bearing runs "
+                f"in the analysed window join to a changed-file set"
             ),
+            "remedy": _coverage_remedy(coverage),
         },
         {
             "name": "joinable sample",
-            "actual": coverage.get("joinable_runs", 0),
+            "actual": joinable_runs,
             "required": MIN_JOINABLE_RUNS,
-            "met": coverage.get("joinable_runs", 0) >= MIN_JOINABLE_RUNS,
-            "detail": f"{coverage.get('joinable_runs', 0)} joinable measured runs in window",
+            "met": joinable_runs >= MIN_JOINABLE_RUNS,
+            "detail": f"{joinable_runs} joinable measured runs in window",
+            "remedy": (
+                f"accumulation: {MIN_JOINABLE_RUNS - joinable_runs} more joinable run(s) "
+                "recorded in the current capture era"
+            ),
         },
         {
             "name": "ranked candidate floor",
@@ -431,6 +444,10 @@ def threshold_status(coverage: dict, candidates: Sequence[Candidate]) -> dict:
             "detail": (
                 f"{sum(1 for c in candidates if c.touching_runs >= MIN_TOUCHING_RUNS)} path(s) "
                 f"reach {MIN_TOUCHING_RUNS} touching runs"
+            ),
+            "remedy": (
+                "accumulation: no widening of the window helps — some path has to be "
+                f"touched {MIN_TOUCHING_RUNS} times by runs that record changed files"
             ),
         },
         {
@@ -442,9 +459,40 @@ def threshold_status(coverage: dict, candidates: Sequence[Candidate]) -> dict:
                 f"{sum(1 for c in candidates if c.controlled_comparisons > 0)} path(s) obtained "
                 f"a cohort of at least {MIN_COHORT_RUNS} comparable runs"
             ),
+            "remedy": (
+                f"accumulation: no path found {MIN_COHORT_RUNS} comparable runs, so the "
+                "controls have nothing to compare against yet"
+            ),
         },
     ]
     return {"met": all(check["met"] for check in checks), "checks": checks}
+
+
+def _coverage_remedy(coverage: dict) -> str:
+    """Say whether the coverage shortfall is waiting-shaped or capture-shaped.
+
+    The denominator is already bounded to the changed-file-capture era, so a
+    shortfall here is never "runs from before capture are dragging it down" —
+    it is runs inside the analysed window that recorded no changed-file set.
+    That is a capture defect, and it does not resolve by waiting.
+    """
+    joinable_runs = coverage.get("joinable_runs", 0)
+    measured_runs = coverage.get("measured_runs", 0)
+    if not measured_runs:
+        return "no measured cost-bearing runs in the analysed window: nothing to measure yet"
+    if not joinable_runs:
+        return (
+            "no run records a changed-file set at all: this is a capture defect, "
+            "not a sample size — investigate changed-file capture before waiting"
+        )
+    floor = coverage.get("coverage_floor")
+    shortfall = measured_runs - joinable_runs
+    scope = f" (denominator bounded to the capture era from {floor})" if floor else ""
+    return (
+        f"capture gap: {shortfall} run(s) inside the analysed window{scope} recorded "
+        "no changed-file set; waiting for more runs will not raise this unless "
+        "capture is fixed"
+    )
 
 
 def compare_to_line_counts(
