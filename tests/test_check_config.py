@@ -1334,6 +1334,27 @@ class TestAvailabilityReporting:
         assert "2026-09-06 19:41 UTC" in output
         assert "never checked against the provider's published model list" not in output
 
+    def test_direct_retired_profile_keeps_packaged_identity_evidence(self, tmp_path: Path) -> None:
+        from theforge.cli.check_config import _availability_targets
+        from theforge.config.auth import resolve_model_availability
+        from theforge.config.model_identity import MODEL_AVAILABILITY_UNAVAILABLE
+
+        config = _make_forge_config(
+            tmp_path,
+            review_pool=[_api_profile("retired", provider="deepseek", model="deepseek-chat")],
+        )
+
+        targets = _availability_targets(config)
+        retired = next(
+            target for target in targets if target.canonical_id == "deepseek/deepseek-chat/api"
+        )
+
+        assert retired.identity.retired
+        assert (
+            resolve_model_availability([retired])[retired.key or retired.canonical_id].state
+            == MODEL_AVAILABILITY_UNAVAILABLE
+        )
+
     def test_phases_keep_launcher_readiness(self, tmp_path: Path) -> None:
         output = self._format(_make_forge_config(tmp_path))
         dev_row = next(ln for ln in output.splitlines() if ln.strip().startswith("dev "))

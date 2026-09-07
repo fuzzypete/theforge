@@ -23,6 +23,7 @@ from theforge.config.auth import (
 from theforge.config.bridge import model_ref_to_profile
 from theforge.config.model_identity import ModelAvailability
 from theforge.config.models import (
+    RETIRED_MODEL_REGISTRY,
     canonical_model_id,
     model_fallback_transport,
     provider_for_transport,
@@ -445,11 +446,19 @@ def _availability_target(
     canonical_id = canonical_model_id(
         effective_provider, effective_model, effective_transport.kind
     )
-    try:
-        spec = resolve_agent_spec(canonical_id, registry=config.model_registry)
-        identity = spec.identity
-    except ValueError:
-        identity = None
+    # Retired packaged identities deliberately raise during ordinary model
+    # resolution so routing cannot select them.  Check-config still needs their
+    # maintained identity evidence to report them unavailable rather than
+    # treating the direct profile as an unknown account catalog entry.
+    retired = RETIRED_MODEL_REGISTRY.get(canonical_id)
+    if retired is not None:
+        identity = retired.identity
+    else:
+        try:
+            spec = resolve_agent_spec(canonical_id, registry=config.model_registry)
+            identity = spec.identity
+        except ValueError:
+            identity = None
     kwargs = {} if identity is None else {"identity": identity}
     return ModelAvailabilityTarget(
         canonical_id=canonical_id,

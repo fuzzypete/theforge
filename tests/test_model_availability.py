@@ -25,6 +25,7 @@ def _target(
     runner: str = "codex",
     key: str = "target",
     identity: IdentityVerification | None = None,
+    base_url: str | None = None,
 ) -> auth.ModelAvailabilityTarget:
     return auth.ModelAvailabilityTarget(
         canonical_id=f"openai/{model}/{kind}",
@@ -35,6 +36,7 @@ def _target(
             runner=runner,
             executable="codex" if kind == "cli" else None,
         ),
+        base_url=base_url,
         key=key,
         **({"identity": identity} if identity is not None else {}),
     )
@@ -108,6 +110,32 @@ def test_failed_openai_catalog_attempt_is_unverified(monkeypatch) -> None:
     assert "account catalog request failed" in (result.reason or "")
 
 
+def test_local_openai_catalog_uses_dispatch_dummy_key_without_an_api_key(monkeypatch) -> None:
+    received: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            received.update(kwargs)
+            self.models = SimpleNamespace(
+                list=lambda: SimpleNamespace(data=[SimpleNamespace(id="gpt-5.6-terra")])
+            )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    result = auth.resolve_model_availability(
+        [_target(kind="api", runner="openai", base_url="http://localhost:11434/v1")]
+    )["target"]
+
+    assert result.state == MODEL_AVAILABILITY_AVAILABLE
+    assert result.auth_mode == "local endpoint (no API key)"
+    assert received == {
+        "api_key": "local",
+        "base_url": "http://localhost:11434/v1",
+        "timeout": 10.0,
+    }
+
+
 def test_stale_codex_cache_is_not_reused(monkeypatch, tmp_path) -> None:
     _codex_account(
         monkeypatch,
@@ -121,6 +149,19 @@ def test_stale_codex_cache_is_not_reused(monkeypatch, tmp_path) -> None:
     assert result.state == MODEL_AVAILABILITY_UNVERIFIED
     assert result.freshness == AVAILABILITY_FRESHNESS_STALE
     assert result.reason == "account catalog cache is stale"
+
+
+def test_codex_cache_allows_duplicate_model_entries(monkeypatch, tmp_path) -> None:
+    _codex_account(
+        monkeypatch,
+        tmp_path,
+        [{"slug": "gpt-5.6-terra"}, {"slug": "gpt-5.6-terra"}],
+        datetime.now(timezone.utc),
+    )
+
+    result = auth.resolve_model_availability([_target()])["target"]
+
+    assert result.state == MODEL_AVAILABILITY_AVAILABLE
 
 
 def test_same_model_can_diverge_by_auth_mode(monkeypatch, tmp_path) -> None:
@@ -163,3 +204,17 @@ def test_retired_identity_overrides_catalog_evidence(monkeypatch, tmp_path) -> N
 
     assert result.state == MODEL_AVAILABILITY_UNAVAILABLE
     assert "retired upstream" in (result.reason or "")
+
+
+def test_retired_non_codex_target_reports_its_dispatch_auth_mode() -> None:
+    retired = IdentityVerification(
+        status=IDENTITY_STATUS_RETIRED,
+        retired_reason="withdrawn by provider",
+    )
+
+    result = auth.resolve_model_availability(
+        [_target(kind="api", runner="deepseek", identity=retired)]
+    )["target"]
+
+    assert result.state == MODEL_AVAILABILITY_UNAVAILABLE
+    assert result.auth_mode == "API-key auth"

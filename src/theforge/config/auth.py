@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .defaults import PROVIDER_API_KEY_MAP, SUPPORTED_CLIS
 from .model_identity import (
@@ -28,13 +29,9 @@ from .types import SUPPORTED_PROVIDERS, ModelProfile
 # CLI names that use npx rather than a direct binary
 _NPX_CLIS = frozenset({"codex", "gemini"})
 
-# Local endpoint prefixes — API key not required for these
-_LOCAL_PREFIXES = (
-    "http://localhost",
-    "http://127.0.0.1",
-    "http://0.0.0.0",
-    "http://[::1]",
-)
+# ``check-config`` must never wait indefinitely for an optional catalog probe.
+# This is intentionally much shorter than a model dispatch timeout.
+_CATALOG_REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 # CLI runners with no native sandbox flag — their write containment comes
@@ -389,6 +386,32 @@ def _parse_catalog_timestamp(raw: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def _is_local_endpoint(base_url: str | None) -> bool:
+    """Return whether *base_url* names a local OpenAI-compatible endpoint."""
+    if not base_url:
+        return False
+    try:
+        hostname = urlparse(base_url).hostname or ""
+    except ValueError:
+        return False
+    return hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _target_auth_mode(target: ModelAvailabilityTarget, merged: Mapping[str, str]) -> str:
+    """Classify the credential mode that the target's dispatch will use."""
+    if target.transport.kind == "cli" and target.transport.runner == "codex":
+        return _codex_auth_mode(merged)
+    if target.transport.kind == "api" and target.transport.runner == "openai":
+        if target.provider in {"openai", "deepseek"} and _is_local_endpoint(target.base_url):
+            return "local endpoint (no API key)"
+        return "API-key auth"
+    if target.transport.kind == "cli" and target.transport.runner == "claude":
+        return "OAuth"
+    if target.transport.kind == "cli":
+        return "CLI auth"
+    return "API-key auth"
+
+
 def _codex_cache_catalog() -> _CatalogResult:
     """Read Codex's local account-model cache; it never starts the Codex runner."""
     path = codex_models_cache_path()
@@ -425,12 +448,18 @@ def _codex_cache_catalog() -> _CatalogResult:
             "account catalog cache has no usable fetched_at/models data",
             availability_freshness(checked_at or datetime.now(timezone.utc)),
         )
-    slugs = {
-        item["slug"].strip()
-        for item in models
-        if isinstance(item, dict) and isinstance(item.get("slug"), str) and item["slug"].strip()
-    }
-    if len(slugs) != len(models):
+    slugs: set[str] = set()
+    malformed = False
+    for item in models:
+        if not isinstance(item, dict) or not isinstance(item.get("slug"), str):
+            malformed = True
+            continue
+        slug = item["slug"].strip()
+        if not slug:
+            malformed = True
+            continue
+        slugs.add(slug)
+    if malformed:
         return _CatalogResult(
             None,
             "ChatGPT-account auth",
@@ -454,14 +483,20 @@ def _openai_catalog(target: ModelAvailabilityTarget, merged: Mapping[str, str]) 
     """Retrieve an OpenAI-compatible account catalog through ``models.list`` only."""
     key_name = PROVIDER_API_KEY_MAP.get(target.provider, "OPENAI_API_KEY")
     api_key = (merged.get(key_name) or "").strip()
+    auth_mode = _target_auth_mode(target, merged)
+    if not api_key and _is_local_endpoint(target.base_url):
+        # Match the OpenAI-compatible dispatch adapter: local servers commonly
+        # require no credential but the SDK still requires a non-empty value.
+        api_key = "local"
     if not api_key:
-        return _CatalogResult(
-            None, "API-key auth", datetime.now(timezone.utc), f"{key_name} not set"
-        )
+        return _CatalogResult(None, auth_mode, datetime.now(timezone.utc), f"{key_name} not set")
     try:
         import openai
 
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": _CATALOG_REQUEST_TIMEOUT_SECONDS,
+        }
         if target.base_url:
             kwargs["base_url"] = target.base_url
         response = openai.OpenAI(**kwargs).models.list()
@@ -475,11 +510,11 @@ def _openai_catalog(target: ModelAvailabilityTarget, merged: Mapping[str, str]) 
     except Exception as exc:  # SDK/network/auth errors are unverified, never unavailable.
         return _CatalogResult(
             None,
-            "API-key auth",
+            auth_mode,
             datetime.now(timezone.utc),
             f"account catalog request failed: {exc}",
         )
-    return _CatalogResult(frozenset(ids), "API-key auth", datetime.now(timezone.utc))
+    return _CatalogResult(frozenset(ids), auth_mode, datetime.now(timezone.utc))
 
 
 def _catalog_result(
@@ -501,15 +536,9 @@ def _catalog_result(
         )
     if target.transport.kind == "api" and target.transport.runner == "openai":
         return _openai_catalog(target, merged)
-    if target.transport.kind == "cli" and target.transport.runner == "claude":
-        mode = "OAuth"
-    elif target.transport.kind == "cli":
-        mode = "CLI auth"
-    else:
-        mode = "API-key auth"
     return _CatalogResult(
         None,
-        mode,
+        _target_auth_mode(target, merged),
         datetime.now(timezone.utc),
         "provider publishes no account catalog",
     )
@@ -531,29 +560,17 @@ def resolve_model_availability(
     catalogs: dict[tuple[str, str, str, str, str | None], _CatalogResult] = {}
     for target in targets:
         result_key = target.key or target.canonical_id
+        auth_mode = _target_auth_mode(target, merged)
         # A maintained withdrawal is stronger than account evidence; avoid even
         # consulting the catalog for it so a stale account cache cannot revive it.
         if target.identity.retired:
             results[result_key] = ModelAvailability(
                 MODEL_AVAILABILITY_UNAVAILABLE,
-                _codex_auth_mode(merged)
-                if target.transport.runner == "codex"
-                else "configured auth",
+                auth_mode,
                 datetime.now(timezone.utc),
                 f"retired upstream — {target.identity.retired_reason or 'no reason recorded'}",
             )
             continue
-        auth_mode = (
-            _codex_auth_mode(merged)
-            if target.transport.kind == "cli" and target.transport.runner == "codex"
-            else "API-key auth"
-            if target.transport.kind == "api" and target.transport.runner == "openai"
-            else "OAuth"
-            if target.transport.kind == "cli" and target.transport.runner == "claude"
-            else "CLI auth"
-            if target.transport.kind == "cli"
-            else "API-key auth"
-        )
         key = (
             target.provider,
             target.transport.kind,
@@ -668,9 +685,8 @@ def check_agent_auth(
             )
 
         # Local endpoints skip the key check (openai/deepseek only — not google)
-        if profile.provider in {"openai", "deepseek"} and profile.base_url:
-            if any(profile.base_url.startswith(p) for p in _LOCAL_PREFIXES):
-                return (True, "")
+        if profile.provider in {"openai", "deepseek"} and _is_local_endpoint(profile.base_url):
+            return (True, "")
 
         # Google: check GOOGLE_API_KEY then GEMINI_API_KEY as fallback
         if profile.provider == "google":
