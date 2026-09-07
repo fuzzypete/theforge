@@ -42,6 +42,12 @@ from theforge.sprint.audit_publish import (
 )
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.manifest import ResolvedSprint, SprintResult
+from theforge.sprint.memory_publication import (
+    MEMORY_BRANCH,
+    MEMORY_PUBLISH_PUBLISHED_ARMED,
+    MEMORY_PUBLISH_PUBLISHED_UNARMED,
+    MEMORY_PUBLISH_PUSHED_NO_PR,
+)
 from theforge.sprint.runner import SprintExecutionState, SprintRunContext
 from theforge.task import TaskStory
 
@@ -377,6 +383,7 @@ def _make_state(
     *,
     base_branch: str = "main",
     auto_push: bool = True,
+    merge_strategy: str = "squash",
 ) -> SprintExecutionState:
     """The execution state a one-story sprint would hold at its terminal write."""
     import dataclasses
@@ -385,7 +392,10 @@ def _make_state(
     config = dataclasses.replace(
         config,
         workspace=dataclasses.replace(
-            config.workspace, base_branch=base_branch, auto_push=auto_push
+            config.workspace,
+            base_branch=base_branch,
+            auto_push=auto_push,
+            merge_strategy=merge_strategy,
         ),
     )
     task = TaskStory(name="Export service", slug="export-service", github_issue=42)
@@ -658,3 +668,209 @@ def test_the_module_does_not_import_the_sprint_runner() -> None:
     assert not offenders, "sprint/audit_publish.py imports the sprint runner: " + "; ".join(
         offenders
     )
+
+
+# ── the memory carrier is armed like the code carrier (#2818) ─────────────
+#
+# A run that reaches the base branch only through pull requests publishes its
+# project memory through one too. That carrier is armed by the same mechanism
+# and the same configured strategy as the story carriers landed by the same run,
+# so memory does not sit waiting on a click while the code it describes merges
+# unattended. Arming delegates: it asks GitHub to merge when the base branch's
+# own requirements are satisfied, and a branch that refuses stays refused.
+#
+# ``gh`` is not installed in the test environment, so the carrier and the arming
+# RPC are the two boundaries stubbed here; everything between them — staging,
+# the memory worktree, the branch push — is the real transport over real git.
+
+
+def _stub_memory_carrier(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    """Stand in for the ``gh pr create``/``gh pr list`` the environment lacks."""
+    from theforge.sprint import memory_publication
+
+    monkeypatch.setattr(
+        memory_publication,
+        "_open_memory_pr",
+        lambda project_root, base_branch: url,
+    )
+
+
+def _stub_gh_merge(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    returncode: int = 0,
+    stderr: str = "",
+) -> list[list[str]]:
+    """Record every ``gh pr merge`` invocation and answer it with ``returncode``.
+
+    ``_step_merge`` reaches ``subprocess.run`` through the module, which is the
+    same object everything else here shells out through — so anything that is
+    not the arming RPC is delegated to the real implementation rather than
+    answered by the stub.
+    """
+    from theforge.coordinator import pr_auto_merge
+
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def _fake_run(cmd, *args: object, **kwargs: object):
+        if list(cmd[:3]) != ["gh", "pr", "merge"]:
+            return real_run(cmd, *args, **kwargs)
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(pr_auto_merge.subprocess, "run", _fake_run)
+    return calls
+
+
+_MEMORY_PR = "https://github.com/o/r/pull/7"
+
+
+def test_a_published_memory_carrier_is_armed_with_the_configured_strategy(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same arming, the same strategy, as the code this run landed."""
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-m.json")
+    _write_summary(clone, "run-m")
+    _stub_memory_carrier(monkeypatch, _MEMORY_PR)
+    calls = _stub_gh_merge(monkeypatch)
+    state = _make_state(clone, base_branch=BASE, merge_strategy="rebase")
+
+    publish_story_run_audits(state, lands_locally=False)
+
+    assert calls == [["gh", "pr", "merge", _MEMORY_PR, "--auto", "--rebase"]]
+    recorded = _read_state(clone)
+    assert recorded["state"] == f"memory_branch_{MEMORY_PUBLISH_PUBLISHED_ARMED}"
+    assert _MEMORY_PR in recorded["detail"]
+    # Delegated, never asserted: the base branch is untouched by this path.
+    assert _git(clone, "rev-list", "--count", f"origin/{BASE}..{BASE}") == "0"
+
+
+def test_a_refused_arming_still_publishes_and_records_the_carrier_as_unarmed(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auto-merge disabled on the repository: published, unarmed, and said so."""
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-n.json")
+    _write_summary(clone, "run-n")
+    _stub_memory_carrier(monkeypatch, _MEMORY_PR)
+    _stub_gh_merge(
+        monkeypatch,
+        returncode=1,
+        stderr="GraphQL: enablePullRequestAutoMerge is not enabled for this repository",
+    )
+    state = _make_state(clone, base_branch=BASE)
+
+    # Publication does not fail because arming did not.
+    publish_story_run_audits(state, lands_locally=False)
+
+    recorded = _read_state(clone)
+    assert recorded["state"] == f"memory_branch_{MEMORY_PUBLISH_PUBLISHED_UNARMED}"
+    assert "arming_failed=True" in recorded["detail"]
+    assert "enablePullRequestAutoMerge" in recorded["detail"]
+    # The branch really was published; only the arming did not take effect.
+    published = _git(clone, "ls-tree", "-r", "--name-only", f"origin/{MEMORY_BRANCH}")
+    assert ".forge/audits/runs/run-n.json" in published
+
+
+def test_an_arming_failure_that_is_not_a_policy_refusal_is_recorded_as_such(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host failure and a policy refusal share a state but not a detail.
+
+    Both leave an unarmed carrier, which is the operator-visible fact. What
+    they do not share is the operator's next move — configure the repository,
+    or fix the host — so the raw error and the ``arming_failed`` flag travel in
+    the detail rather than being collapsed into one message.
+    """
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-o.json")
+    _write_summary(clone, "run-o")
+    _stub_memory_carrier(monkeypatch, _MEMORY_PR)
+    _stub_gh_merge(monkeypatch, returncode=1, stderr="gh: could not resolve to a Repository")
+    state = _make_state(clone, base_branch=BASE)
+
+    publish_story_run_audits(state, lands_locally=False)
+
+    recorded = _read_state(clone)
+    assert recorded["state"] == f"memory_branch_{MEMORY_PUBLISH_PUBLISHED_UNARMED}"
+    assert "arming_failed=False" in recorded["detail"]
+    assert "could not resolve to a Repository" in recorded["detail"]
+
+
+def test_a_publish_without_a_carrier_arms_nothing(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No pull request means nothing to arm — not an arming attempt with no URL."""
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-p.json")
+    _write_summary(clone, "run-p")
+    calls = _stub_gh_merge(monkeypatch)  # gh pr create is absent, so no carrier
+    state = _make_state(clone, base_branch=BASE)
+
+    publish_story_run_audits(state, lands_locally=False)
+
+    assert calls == []
+    assert _read_state(clone)["state"] == f"memory_branch_{MEMORY_PUBLISH_PUSHED_NO_PR}"
+
+
+def test_a_run_with_no_pending_memory_leaves_the_recorded_end_state_alone(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing staged: no carrier, no arming, and the armed record survives.
+
+    The second publish is the resumed/repeated case — staging still holds what
+    the memory branch already carries — so it reaches the worktree and finds
+    nothing to commit. Recording "clean" there would replace the armed carrier's
+    end state with a marker describing a run that published nothing.
+    """
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-q.json")
+    _write_summary(clone, "run-q")
+    _stub_memory_carrier(monkeypatch, _MEMORY_PR)
+    state = _make_state(clone, base_branch=BASE)
+    _stub_gh_merge(monkeypatch)
+    publish_story_run_audits(state, lands_locally=False)
+    armed = _read_state(clone)
+    assert armed["state"] == f"memory_branch_{MEMORY_PUBLISH_PUBLISHED_ARMED}"
+
+    calls = _stub_gh_merge(monkeypatch)
+    memory_head_before = _git(clone, "rev-parse", f"origin/{MEMORY_BRANCH}")
+
+    publish_story_run_audits(state, lands_locally=False)
+
+    assert calls == []
+    assert _read_state(clone) == armed
+    assert _git(clone, "rev-parse", f"origin/{MEMORY_BRANCH}") == memory_head_before
+
+
+def test_the_next_run_restarts_from_base_once_the_armed_carrier_merged(
+    origin_and_clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Arming can land the carrier inside the run's own window.
+
+    A carrier whose base-branch requirements are already satisfied merges as
+    soon as it is armed, so the following publish must restart the memory branch
+    from the base rather than reopen it carrying content the base already holds.
+    """
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-r.json")
+    _write_summary(clone, "run-r")
+    _stub_memory_carrier(monkeypatch, _MEMORY_PR)
+    _stub_gh_merge(monkeypatch)
+    state = _make_state(clone, base_branch=BASE)
+    publish_story_run_audits(state, lands_locally=False)
+
+    # What GitHub does to an armed carrier whose requirements are satisfied.
+    _git(clone, "fetch", "origin", MEMORY_BRANCH)
+    _git(clone, "merge", "--no-ff", "-m", "merge memory", f"origin/{MEMORY_BRANCH}")
+    _git(clone, "push", "origin", BASE)
+
+    _write_audit(clone, "run-s.json")
+    _write_summary(clone, "run-s")
+    publish_story_run_audits(state, lands_locally=False)
+
+    ahead = _git(clone, "rev-list", "--count", f"origin/{BASE}..origin/{MEMORY_BRANCH}")
+    assert ahead == "1", "the republished branch carries only the new run's memory"
+    assert _read_state(clone)["state"] == f"memory_branch_{MEMORY_PUBLISH_PUBLISHED_ARMED}"
