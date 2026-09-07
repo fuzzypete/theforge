@@ -56,6 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The structural-decay observer now measures its readiness over the
+  population it analyses (#2623):** its run-coverage check divided the runs it
+  could analyse by every cost-bearing run ever recorded, including runs from
+  before changed-file capture existed and which therefore could not join a
+  changed-file set at all. The numerator was fixed and only the denominator
+  moved, so the same substrate reported 12.5%, 47.4% or 87.6% depending purely
+  on how tightly `--since` was set, and the ratio never converged on its own —
+  the design record's assumption that pre-capture runs "age out of the
+  denominator" was never implemented. `changed_file_coverage()` now bounds the
+  denominator to the changed-file-capture era (the earliest joinable run, or
+  `--since` when that is later), reports the bound and the runs it excluded, and
+  every failing trust check names what would resolve it — a capture gap that
+  waiting will not fix versus accumulation that it will.
+
 - **One resolver now decides whether a branch's work has landed (#2795):** the
   worktree sweep and resume triage asked the same question and disagreed,
   because the sweep used a proxy a squash merge invalidates — are this branch's

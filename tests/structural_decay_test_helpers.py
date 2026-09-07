@@ -43,7 +43,7 @@ def touch_rows(
     ]
 
 
-def coverage(joinable: int, measured: int, *, spend: float = 100.0) -> dict:
+def coverage(joinable: int, measured: int, *, spend: float = 100.0, excluded: int = 0) -> dict:
     """Return a coverage dict shaped like ``changed_file_coverage``."""
     ratio = joinable / measured if measured else 0.0
     return {
@@ -55,6 +55,12 @@ def coverage(joinable: int, measured: int, *, spend: float = 100.0) -> dict:
         "spend_coverage_ratio": ratio,
         "first_joinable_at": "2026-07-01T00:00:00Z",
         "last_joinable_at": "2026-08-01T00:00:00Z",
+        "capture_start_at": "2026-07-01T00:00:00Z",
+        "coverage_floor": "2026-07-01T00:00:00Z",
+        "archive_runs": measured + excluded,
+        "archive_spend_usd": spend,
+        "excluded_pre_capture_runs": excluded,
+        "excluded_pre_capture_spend_usd": 0.0,
     }
 
 

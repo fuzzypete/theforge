@@ -131,13 +131,27 @@ def render(report: dict) -> str:
     out.append("COVERAGE")
     out.append(
         f"  {coverage['joinable_runs']} of {coverage['measured_runs']} measured cost-bearing runs "
-        f"join to a changed-file set ({coverage['run_coverage_ratio']:.1%})"
+        f"in the analysed window join to a changed-file set ({coverage['run_coverage_ratio']:.1%})"
     )
     out.append(
         f"  ${coverage['joinable_spend_usd']:,.2f} of ${coverage['measured_spend_usd']:,.2f} "
-        f"measured spend ({coverage['spend_coverage_ratio']:.1%})"
+        f"measured spend in the analysed window ({coverage['spend_coverage_ratio']:.1%})"
     )
     out.append(f"  window: {coverage['first_joinable_at']} .. {coverage['last_joinable_at']}")
+    # State the bound rather than leaving the denominator's scope to be inferred
+    # from a ratio (#2623).
+    excluded = coverage.get("excluded_pre_capture_runs", 0)
+    floor = coverage.get("coverage_floor")
+    if floor is not None:
+        out.append(
+            f"  denominator bounded to the changed-file-capture era (runs from {floor}); "
+            f"{excluded} earlier cost-bearing run(s) excluded as unanalysable"
+        )
+    elif coverage.get("archive_runs"):
+        out.append(
+            "  no run records a changed-file set, so there is no capture era to bound to; "
+            f"the denominator is the whole archive ({coverage['archive_runs']} run(s))"
+        )
     out.append("")
     out.append("CONTROLS")
     for control in report["controls"]:
@@ -147,6 +161,8 @@ def render(report: dict) -> str:
     for check in threshold["checks"]:
         mark = "ok  " if check["met"] else "FAIL"
         out.append(f"  [{mark}] {check['name']}: {check['detail']} (need {check['required']})")
+        if not check["met"] and check.get("remedy"):
+            out.append(f"         -> {check['remedy']}")
     if not threshold["met"]:
         out.append("")
         out.append(
