@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: d632d4a80627
 authoritative_run_record: .forge/audits/runs/d632d4a80627.json
-generated_at: '2026-09-07T03:47:31.455459+00:00'
+generated_at: '2026-09-07T04:15:17.612366+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.0113
+  cost_usd: 0.0065840000000000004
 story:
   slug: issue-2623
   name: The structural-decay observer measures its readiness over every run ever recorded
@@ -39,77 +39,55 @@ changed_files: &id002
 - tests/test_structural_decay_observer_ranking.py
 - tests/test_structural_decay_observer_report.py
 what_changed:
-  description: The run changed the structural-decay observer so its coverage readiness
-    calculation and refusal text are derived from the same bounded population as the
-    analysis window, rather than from the whole recorded archive. It also adjusted
-    reporting around the bound so the output explains when the denominator is limited
-    by changed-file capture or by a supplied since date.
-  approach: The change was made by pushing the admissible-run bound through the ranking
-    and report path, using audit-read-model data to determine the changed-file capture
-    era, and then rendering the resulting denominator bound and excluded population
-    in the CLI report. The work was completed iteratively, with a follow-up pass to
-    correct an edge case where a supplied since date existed but no runs joined a
-    changed-file set.
+  description: The run changed the structural-decay observer so its reported run-coverage
+    readiness is computed and explained against the same bounded population that can
+    actually join changed-file sets, rather than against the entire recorded archive.
+    It also updated the CLI/reporting path to describe the active denominator bound
+    and to distinguish invocation-bounded shortfalls from accumulation shortfalls.
+  approach: The change pushed the coverage-bound calculation into the ranking/read-model
+    path, threaded the resulting bound and excluded-population metadata into report
+    rendering, and iterated once more after review to correct the edge case where
+    a supplied --since existed but no joinable runs established a changed-file capture
+    era.
   files_modified: *id002
 what_was_learned:
-- claim: When readiness is computed over an admissible subset rather than the full
-    archive, report generation needs to model the denominator bound as first-class
-    data and carry it end-to-end; otherwise later rendering will recreate archive-wide
-    assumptions and misstate what population the gate actually measured.
-  evidence:
-  - type: review_cycle
-    cycle: '1'
-    description: Cycle 1 approval explicitly notes that the bounded coverage denominator
-      is implemented and consumed by the report path, showing that fixing the bug
-      required the bound to travel from calculation into presentation rather than
-      being inferred separately at render time.
-  - type: file
-    path: src/theforge/structural_decay_observer/ranking.py
-    description: This file was part of the core change, demonstrating that the admissible-population
-      logic was established where coverage is computed, which is the source of truth
-      future runs must expose instead of reconstructing from unrelated totals.
-  - type: file
-    path: src/theforge/structural_decay_observer/report.py
-    description: This file was changed alongside ranking, showing that reporting depends
-      on explicit bound metadata from the computation layer; the need to touch both
-      files is evidence that archive-wide assumptions in output are a separate failure
-      mode unless the bound is propagated.
-- claim: Edge cases at the boundary between 'analysis is bounded' and 'no admissible
-    runs exist' need dedicated verification, because the same metadata field can mean
-    different things when capture-era evidence is absent and naive rendering will
-    label the bound incorrectly.
+- claim: When a readiness metric is limited by both invocation bounds and data-admissibility
+    bounds, future work should verify the rendering logic against their degenerate
+    combinations, especially the case where a user-supplied lower bound exists but
+    the admissibility-era bound does not.
   evidence:
   - type: review_finding
     finding_id: 5754ab6fc8419ec4
-    description: The finding isolates a concrete branch where a supplied since value
-      caused the report to claim the denominator was bounded to the changed-file-capture
-      era even though no capture era existed, demonstrating that boundary states can
-      invalidate otherwise-correct bound messaging.
+    description: Review found that the report treated 'coverage_floor equals since'
+      as if that automatically meant a changed-file capture era existed, which demonstrates
+      that combining multiple bounds by value alone can mislabel the active constraint
+      when one source bound is absent.
   - type: review_finding
     finding_id: b404387fcce23cb2
-    description: "The finding identifies the missing test shape\u2014supplied since\
-      \ plus zero joinable runs\u2014as the specific path that allowed the mislabel\
-      \ to survive, showing that future runs should treat this combination as a distinct\
-      \ verification case rather than assuming generic coverage tests are enough."
+    description: Review identified the exact untested path where coverage_floor was
+      non-None while capture_start_at was None, showing that this mixed-boundary state
+      is easy to miss unless explicitly exercised in verification.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 approval states that the prior P2s were fixed by distinguishing
-      capture-era bounds from since-tighter cases, confirming that the important lesson
-      is not just to compute a bound but to preserve which mechanism created it.
+    description: The second review approved only after the report logic distinguished
+      a tighter since-bound from a capture-era bound, confirming that the subtle part
+      of this work was not the denominator math itself but correctly classifying and
+      describing which bound was actually in force.
 learned_patterns:
-- bounded-denominator-propagation
-- zero-joinable-window-edge-case
+- bounded-metric-scope
+- bound-source-misattribution
+- degenerate-window-reporting
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - Review first accepted the denominator-bounding fix, then surfaced that bound provenance
-    still needed to be rendered correctly when a since filter exists but no run is
-    joinable.
+  - The review loop repeatedly focused on whether denominator-bound messaging correctly
+    identified the source of the bound, not just whether the bounded ratio was computed.
 complexity_signal:
   actual_iterations: 2
   review_cycles: 2
   plan_regenerations: null
   cost_usd: 9.0775884
-  dominant_difficulty: Keeping readiness math, bound provenance, and refusal messaging
-    aligned across normal and empty-window cases.
+  dominant_difficulty: Keeping readiness computation, admissibility rules, and user-facing
+    refusal text aligned across edge cases where the analyzed population is bounded
+    for different reasons.

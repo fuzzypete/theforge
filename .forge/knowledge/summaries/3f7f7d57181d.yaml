@@ -1,0 +1,132 @@
+schema_version: 2
+run_id: 3f7f7d57181d
+authoritative_run_record: .forge/audits/runs/3f7f7d57181d.json
+generated_at: '2026-09-07T04:45:12.449501+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01169125
+story:
+  slug: issue-2603
+  name: Measure how often a diagnosed fix-success criterion admits a change that removes
+    the symptom without addressing the confirmed cause
+  github_issue: 2603
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- data-processing
+- backend
+- testing
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/plans/2603-criterion-symptom-gaming.adjudications.yaml
+- docs/plans/2603-criterion-symptom-gaming.md
+- scripts/measure_criterion_gaming.py
+- tests/test_measure_criterion_gaming.py
+what_changed:
+  description: 'This run produced a reproducible measurement artifact for issue #2603:
+    a generated report over a stated diagnosed-issue window, its adjudication dataset,
+    and the script that derives the report from the audit corpus. It also added focused
+    tests and README regeneration instructions around that measurement workflow.'
+  approach: The work encoded per-issue adjudications in structured data, rendered
+    the final report from those records plus audit-derived facts, and used review-driven
+    fixes to tighten cohort stability and issue-to-landed-change matching so regenerated
+    output stayed reproducible.
+  files_modified: *id002
+what_was_learned:
+- claim: For offline or cached report generation that joins issue records to landed
+    changes, every rendered field must be sourced from the same selected issue instance;
+    allowing title or SHA substitution from another cached issue can still satisfy
+    superficial consistency checks while silently pairing the wrong criterion and
+    commit.
+  evidence:
+  - type: review_finding
+    finding_id: a40b8f6fc1dbdd94
+    description: 'Review demonstrated a concrete false-positive path: replacing issue
+      #2595''s cached title and landed SHA with #2689''s values still passed drift
+      and classification checks, showing that per-field validation was insufficient
+      unless all rendered facts are bound to the same chosen issue record.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly verified the fix by noting that the landed-change
+      join now derives its title from the selected diagnose audit, confirming that
+      consistent record provenance was the mechanism needed to prevent cross-issue
+      pairing.
+- claim: In reproducible cohort measurements, a 'refresh mechanical fields' mode must
+    preserve the original time window unless the operator explicitly changes it; otherwise
+    regeneration mutates the denominator and turns a rewrite into a different measurement.
+  evidence:
+  - type: review_finding
+    finding_id: b74c86fe152845a0
+    description: Review found that running --refresh-facts without --until silently
+      replaced the stored upper bound with current UTC time, directly changing which
+      issues were in the cohort even though the option was described as only rewriting
+      mechanical fields.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states the prior reproducibility defect was fixed
+      and the measurement artifacts regenerate cleanly, showing that preserving the
+      original bound was necessary to keep reruns on the same cohort.
+- claim: Checked-in artifact tests for generated reports need field-specific assertions
+    against the semantically important cells; loose token searches or row-count checks
+    can let altered classifications and rates pass while the test suite stays green.
+  evidence:
+  - type: review_finding
+    finding_id: f92a2e38944674e9
+    description: Review showed the artifact tests still passed after editing generated
+      rates, per-issue content, or named criteria, as long as the denominator matched
+      row count and some decision token remained, demonstrating that broad shape checks
+      do not protect report meaning.
+  - type: review_finding
+    finding_id: eaea988e3037f0ea
+    description: 'A later finding exposed the same weakness at cell level: when the
+      corpus was unavailable, a changed landed-answer cell was never asserted and
+      a false admits result could pass because the test only searched for the generic
+      word ''no'' somewhere in the row.'
+learned_patterns:
+- stable-cohort-bounds
+- single-record-join-provenance
+- artifact-tests-need-cell-level-assertions
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: a40b8f6fc1dbdd94
+    severity: P1
+    file: scripts/measure_criterion_gaming.py
+    description: 'During an offline render, substituting issue #2689''s cached title
+      and landed SHA into issue #2595 passed every drift and classification check
+      and paired #2595''s criterion with #2689''s commit.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: b74c86fe152845a0
+    severity: P1
+    file: scripts/measure_criterion_gaming.py
+    description: Invoking --refresh-facts without --until replaces the stored upper
+      bound with the current UTC time, silently changing the measured cohort even
+      though the option is described as rewriting mechanical fields.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly focused on reproducibility hazards in generated artifacts:
+    cross-issue joins, drifting cohort bounds, and tests that validated report shape
+    more than report semantics.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: true
+  cost_usd: 42.6322294
+  dominant_difficulty: Keeping a generated measurement report reproducible required
+    controlling both data provenance and verification strictness, not just producing
+    the initial analysis.
