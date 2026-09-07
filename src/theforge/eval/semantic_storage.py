@@ -30,6 +30,14 @@ SEMANTIC_RATIFICATIONS_PATH = SEMANTIC_AUDIT_DIR / "ratifications.jsonl"
 SEMANTIC_RAW_OUTPUT_TAIL_CHARS = 2000
 COST_CACHE_HIT = "cache_zero"
 
+#: A baseline an operator froze: a calibration claim about which defects a
+#: revision is known to contain.
+BASELINE_PROVENANCE_HUMAN = "human"
+#: A baseline the automatic scheduling path froze so an evaluation could run
+#: without an operator present (#2907). It is always empty and asserts nothing
+#: about the document; a human freeze supersedes it.
+BASELINE_PROVENANCE_AUTOMATIC = "automatic"
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -44,6 +52,9 @@ class FrozenSemanticBaseline:
     canonical_type: str | None
     defect_ids: tuple[str, ...]
     frozen_at: str
+    #: Who froze it. Baselines written before #2907 carry no provenance field
+    #: and read back as ``human``, which is what they were.
+    provenance: str = BASELINE_PROVENANCE_HUMAN
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -52,6 +63,7 @@ class FrozenSemanticBaseline:
             "canonical_type": self.canonical_type,
             "defect_ids": list(self.defect_ids),
             "frozen_at": self.frozen_at,
+            "provenance": self.provenance,
         }
 
     @classmethod
@@ -67,6 +79,7 @@ class FrozenSemanticBaseline:
             ),
             defect_ids=tuple(sorted({str(item) for item in defect_ids if str(item)})),
             frozen_at=str(data.get("frozen_at") or ""),
+            provenance=str(data.get("provenance") or BASELINE_PROVENANCE_HUMAN),
         )
 
 
@@ -284,6 +297,15 @@ class SemanticEvaluationRecord:
         return (STATUS_FINDINGS, tuple(sorted(self.finding_digests())))
 
 
+def _supersedable_by_human(existing: FrozenSemanticBaseline, provenance: str) -> bool:
+    """True when *existing* is an automatic placeholder a human freeze may replace."""
+    return (
+        existing.provenance == BASELINE_PROVENANCE_AUTOMATIC
+        and not existing.defect_ids
+        and provenance == BASELINE_PROVENANCE_HUMAN
+    )
+
+
 class SemanticReviewStore:
     """Filesystem-backed append-only store for semantic-review audits."""
 
@@ -358,6 +380,35 @@ class SemanticReviewStore:
                 match = record
         return match
 
+    def latest_attempt_for_revision(
+        self,
+        *,
+        issue_ref: str,
+        input_digest: str,
+        prompt_contract_version: str,
+    ) -> SemanticEvaluationRecord | None:
+        """Return the last *attempt* — successful or failed — at one revision.
+
+        Distinct from :meth:`latest_record_for_identity`, which answers the
+        manual path's cache question ("is there a usable result for this exact
+        model?") and deliberately ignores failures so an operator re-running
+        ``forge review-semantic`` after a failure gets a real retry. Automatic
+        scheduling asks a different question — "has this revision been evaluated
+        at all under this prompt contract?" — where a recorded failure is an
+        answer, not a gap, and is not keyed by model: AC5 bounds spend per
+        revision per contract version, so changing the configured profile must
+        not buy a second automatic evaluation of unchanged text.
+        """
+        match = None
+        for record in self.iter_records():
+            if (
+                record.issue_ref == issue_ref
+                and record.input_digest == input_digest
+                and record.prompt_contract_version == prompt_contract_version
+            ):
+                match = record
+        return match
+
     def latest_successful_record(
         self, *, issue_ref: str, input_digest: str
     ) -> SemanticEvaluationRecord | None:
@@ -396,19 +447,27 @@ class SemanticReviewStore:
         input_digest: str,
         canonical_type: str | None,
         defect_ids: tuple[str, ...],
+        provenance: str = BASELINE_PROVENANCE_HUMAN,
     ) -> tuple[FrozenSemanticBaseline, bool]:
         normalized = tuple(sorted({item for item in defect_ids if item}))
         existing = self.frozen_baseline(input_digest)
         if existing is not None:
-            if (
-                existing.issue_ref != issue_ref
-                or existing.canonical_type != canonical_type
-                or existing.defect_ids != normalized
-            ):
+            unchanged = (
+                existing.issue_ref == issue_ref
+                and existing.canonical_type == canonical_type
+                and existing.defect_ids == normalized
+            )
+            if unchanged:
+                return existing, False
+            if not _supersedable_by_human(existing, provenance):
                 raise ValueError(
                     f"baseline for {input_digest} is already frozen and cannot be changed"
                 )
-            return existing, False
+            # An automatically frozen empty baseline is scheduling scaffolding,
+            # not a calibration claim (#2907): it exists only because the
+            # evaluator refuses to reveal output without one. Letting a human
+            # freeze supersede it keeps automatic scheduling from permanently
+            # foreclosing the operator's real baseline for that revision.
 
         baseline = FrozenSemanticBaseline(
             issue_ref=issue_ref,
@@ -416,6 +475,7 @@ class SemanticReviewStore:
             canonical_type=canonical_type,
             defect_ids=normalized,
             frozen_at=utc_now_iso(),
+            provenance=provenance,
         )
         self.append_baseline(baseline)
         return baseline, True

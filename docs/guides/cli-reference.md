@@ -433,6 +433,12 @@ single issue. Exact repeats are keyed by input digest, model identity, and
 prompt contract version; to record an independent rerun, change the prompt
 contract version.
 
+You do not need this command to get a policy-required issue evaluated: sprint
+admission performs the missing evaluation itself, once per revision per prompt
+contract version. This command remains available for any issue, including one
+policy does not require a review of, and records its result on the same terms.
+See [semantic readiness](../reference/semantic-readiness.md).
+
 **Flags:**
 
 | Flag | Description |

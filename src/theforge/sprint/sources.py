@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from ..eval.semantic_input import build_semantic_evaluation_input
 from ..shape_check.heuristics import (
     FIX_READY_STATUS_LABELS,
     RECOGNIZED_STATUS_LABELS,
@@ -419,11 +420,19 @@ class GitHubIssueSource:
             ]
 
         slug = f"issue-{number}"
+        # Revision identity of exactly this fetch, taken over the raw body
+        # (before reopen context is appended) so it names the same revision the
+        # semantic evaluator and the shape gate read. Lets sprint admission
+        # verify that the payload it is about to dispatch is the payload it
+        # evaluated, without a second ``gh`` round trip (#2907).
+        revision = build_semantic_evaluation_input(title=title, body=body, labels=label_names)
         return TaskStory(
             name=title,
             story_path=None,
             slug=slug,
             story_text=append_reopen_context(body, reopen_state),
+            source_revision_digest=revision.input_digest,
+            source_revision_type=revision.canonical_type,
             depends_on=blocker_slugs,
             inferred_dependencies=blocker_slugs,
             dependency_warnings=dependency_warnings,

@@ -154,6 +154,13 @@ def _semantic_readiness(
 ):
     """Derive semantic readiness for one listed issue, or ``None`` on failure.
 
+    Strictly read-only, deliberately: a status command must not spend agent
+    budget. Automatic evaluation of a policy-required revision is scheduled by
+    the admission paths that already commit budget — the query-mode sprint gate
+    and manifest issue admission (#2907) — and this listing reports the records
+    those produce. Listing an unevaluated issue therefore shows it withheld and
+    invokes nothing.
+
     Imported lazily so this low-dependency surface keeps its stdlib +
     ``shape_check`` import cost for the structural answer. Best-effort like the
     rest of this module: a store read failure degrades the listing to the
@@ -218,7 +225,7 @@ def build_ready_queue(
         if admissible:
             # Same overlay, same order as the sprint gate: consulted only once
             # the structural verdict admits, and reading the ratified state
-            # rather than evaluator output.
+            # rather than evaluator output. Read-only — see ``_semantic_readiness``.
             readiness = semantic_readiness(
                 issue_number=number,
                 title=title,
