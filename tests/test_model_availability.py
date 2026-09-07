@@ -136,6 +136,32 @@ def test_local_openai_catalog_uses_dispatch_dummy_key_without_an_api_key(monkeyp
     }
 
 
+def test_local_openai_catalog_with_a_configured_key_reports_api_key_auth(monkeypatch) -> None:
+    received: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            received.update(kwargs)
+            self.models = SimpleNamespace(
+                list=lambda: SimpleNamespace(data=[SimpleNamespace(id="gpt-5.6-terra")])
+            )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "configured-key")
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    result = auth.resolve_model_availability(
+        [_target(kind="api", runner="openai", base_url="http://localhost:11434/v1")]
+    )["target"]
+
+    assert result.state == MODEL_AVAILABILITY_AVAILABLE
+    assert result.auth_mode == "API-key auth"
+    assert received == {
+        "api_key": "configured-key",
+        "base_url": "http://localhost:11434/v1",
+        "timeout": 10.0,
+    }
+
+
 def test_stale_codex_cache_is_not_reused(monkeypatch, tmp_path) -> None:
     _codex_account(
         monkeypatch,

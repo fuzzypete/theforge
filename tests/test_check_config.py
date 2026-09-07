@@ -1355,6 +1355,26 @@ class TestAvailabilityReporting:
             == MODEL_AVAILABILITY_UNAVAILABLE
         )
 
+    def test_simple_models_include_a_retired_identity_in_availability(
+        self, tmp_path: Path
+    ) -> None:
+        from theforge.cli.check_config import _availability_targets, _format_availability
+        from theforge.config.auth import resolve_model_availability
+
+        config = _make_forge_config(
+            tmp_path,
+            models=["deepseek/deepseek-chat"],
+            models_budget_usd=5.0,
+        )
+
+        targets = _availability_targets(config)
+        answers = resolve_model_availability(targets)
+        output = "\n".join(_format_availability(targets, answers))
+
+        assert "deepseek/deepseek-chat/api" in output
+        assert "unavailable" in output
+        assert "retired upstream" in output
+
     def test_phases_keep_launcher_readiness(self, tmp_path: Path) -> None:
         output = self._format(_make_forge_config(tmp_path))
         dev_row = next(ln for ln in output.splitlines() if ln.strip().startswith("dev "))

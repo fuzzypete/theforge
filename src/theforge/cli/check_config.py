@@ -26,6 +26,7 @@ from theforge.config.models import (
     RETIRED_MODEL_REGISTRY,
     canonical_model_id,
     model_fallback_transport,
+    normalize_model_key,
     provider_for_transport,
     transport_from_raw_fields,
 )
@@ -545,7 +546,12 @@ def _availability_targets(config: ForgeConfig) -> list[ModelAvailabilityTarget]:
         try:
             spec = resolve_agent_spec(model_key, registry=config.model_registry)
         except ValueError:
-            continue
+            # Retired identities cannot resolve to a dispatchable AgentSpec, but
+            # check-config must still report the maintained withdrawal evidence.
+            # Normalize aliases first, matching resolve_agent_spec's lookup path.
+            spec = RETIRED_MODEL_REGISTRY.get(normalize_model_key(model_key))
+            if spec is None:
+                continue
         add(
             ModelAvailabilityTarget(
                 canonical_id=canonical_model_id(spec.provider, spec.model, spec.transport.kind),

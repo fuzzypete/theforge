@@ -402,7 +402,12 @@ def _target_auth_mode(target: ModelAvailabilityTarget, merged: Mapping[str, str]
     if target.transport.kind == "cli" and target.transport.runner == "codex":
         return _codex_auth_mode(merged)
     if target.transport.kind == "api" and target.transport.runner == "openai":
-        if target.provider in {"openai", "deepseek"} and _is_local_endpoint(target.base_url):
+        key_name = PROVIDER_API_KEY_MAP.get(target.provider, "OPENAI_API_KEY")
+        if (
+            target.provider in {"openai", "deepseek"}
+            and _is_local_endpoint(target.base_url)
+            and not (merged.get(key_name) or "").strip()
+        ):
             return "local endpoint (no API key)"
         return "API-key auth"
     if target.transport.kind == "cli" and target.transport.runner == "claude":
