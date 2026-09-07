@@ -20,6 +20,7 @@ from theforge.eval.semantic_input import (
 from theforge.eval.semantic_parser import SemanticOutputParseError, parse_semantic_review_output
 from theforge.eval.semantic_prompt import PROMPT_CONTRACT_VERSION, build_semantic_review_prompt
 from theforge.eval.semantic_storage import (
+    BASELINE_PROVENANCE_HUMAN,
     COST_CACHE_HIT,
     FrozenSemanticBaseline,
     SemanticEvaluationRecord,
@@ -248,6 +249,7 @@ def review_issue_semantically(
     profile: ModelProfile,
     prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
     baseline_defect_ids: tuple[str, ...] | None = None,
+    baseline_provenance: str = BASELINE_PROVENANCE_HUMAN,
     store: SemanticReviewStore | None = None,
     gh_issue_view: Callable[[int, Path], subprocess.CompletedProcess[str]] = _gh_issue_view,
     agent_runner: Callable[..., AgentResult] | None = None,
@@ -277,6 +279,7 @@ def review_issue_semantically(
             input_digest=evaluation_input.input_digest,
             canonical_type=evaluation_input.canonical_type,
             defect_ids=baseline_defect_ids,
+            provenance=baseline_provenance,
         )
     elif baseline_defect_ids is not None:
         baseline, baseline_created = semantic_store.freeze_baseline(
@@ -284,6 +287,7 @@ def review_issue_semantically(
             input_digest=evaluation_input.input_digest,
             canonical_type=evaluation_input.canonical_type,
             defect_ids=baseline_defect_ids,
+            provenance=baseline_provenance,
         )
 
     evaluation_profile = build_audit_only_profile(profile)

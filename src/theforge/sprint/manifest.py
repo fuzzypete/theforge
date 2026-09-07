@@ -312,17 +312,26 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
     )
 
 
-def resolve_from_manifest(manifest_path: Path, project_root: Path) -> ResolvedSprint:
+def resolve_from_manifest(
+    manifest_path: Path, project_root: Path, *, config=None
+) -> ResolvedSprint:
     """Load a sprint manifest and resolve all stories into a ResolvedSprint.
 
     Combines ``load_sprint_manifest``, ``_validate_story_paths``, and
     ``build_tasks_from_manifest`` into a single call that returns the common
     runtime object accepted by ``run_sprint``.
+
+    ``config`` is the run's configuration, carried here only so issue-entry
+    semantic admission can schedule a missing evaluation with the run's
+    configured profile and secrets; manifest resolution itself does not load or
+    consult it.
     """
     manifest = load_sprint_manifest(manifest_path)
     _validate_story_paths(manifest, project_root)
     _closed: set[str] = set()
-    task_entries = build_tasks_from_manifest(manifest, project_root, closed_slugs=_closed)
+    task_entries = build_tasks_from_manifest(
+        manifest, project_root, closed_slugs=_closed, config=config
+    )
     return ResolvedSprint(
         name=manifest.name,
         budget_usd=manifest.budget_usd,
@@ -333,7 +342,7 @@ def resolve_from_manifest(manifest_path: Path, project_root: Path) -> ResolvedSp
     )
 
 
-def semantic_manifest_admission(issue_number: int, project_root: Path):
+def semantic_manifest_admission(issue_number: int, project_root: Path, config=None):
     """Return the semantic readiness withholding a manifest issue entry, if any.
 
     Manifest mode reaches the same admission boundary query mode does
@@ -344,8 +353,16 @@ def semantic_manifest_admission(issue_number: int, project_root: Path):
     The structural verdict is the authority it always was and is not re-decided
     here: when ``classify_admissibility`` does not admit the document, the
     semantic requirement does not apply and the entry proceeds exactly as
-    before. Best-effort — an unreachable ``gh`` or store leaves the entry
-    runnable rather than becoming a new silent drop.
+    before — nothing is evaluated for a structurally refused entry, and file
+    stories never reach this function at all. Best-effort — an unreachable
+    ``gh`` or store leaves the entry runnable rather than becoming a new silent
+    drop.
+
+    With a run ``config`` (the runner always has one), an implementation-runnable
+    issue whose policy-required review is missing for its current revision has
+    that evaluation scheduled here rather than waiting on an operator command
+    (#2907). Without one the function stays read-only, which is what callers
+    resolving a manifest outside a run get.
     """
     from ..admissibility import classify_admissibility  # noqa: PLC0415
     from ..eval.semantic_readiness import (  # noqa: PLC0415
@@ -359,14 +376,28 @@ def semantic_manifest_admission(issue_number: int, project_root: Path):
         structural = classify_admissibility(issue.title, issue.body, list(issue.labels))
         if not structural.admissible:
             return None
-        readiness = semantic_readiness_for_issue(
-            issue_number=issue_number,
-            title=issue.title,
-            body=issue.body,
-            labels=issue.labels,
-            project_root=project_root,
-            lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
-        )
+        if config is not None:
+            from ..eval.semantic_auto import ensure_semantic_evaluation  # noqa: PLC0415
+
+            readiness = ensure_semantic_evaluation(
+                issue_number=issue_number,
+                title=issue.title,
+                body=issue.body,
+                labels=issue.labels,
+                project_root=project_root,
+                secrets=getattr(config, "secrets", None),
+                profile=config.preflight_profile,
+                lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+            )
+        else:
+            readiness = semantic_readiness_for_issue(
+                issue_number=issue_number,
+                title=issue.title,
+                body=issue.body,
+                labels=issue.labels,
+                project_root=project_root,
+                lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+            )
     except Exception:  # noqa: BLE001
         return None
     return readiness if readiness.withholds_admission else None
@@ -378,6 +409,7 @@ def build_tasks_from_manifest(
     *,
     closed_slugs: set[str] | None = None,
     semantic_admission=None,
+    config=None,
 ) -> list[tuple]:
     """Build (task, source, canonical_ref) tuples from a manifest.
 
@@ -400,7 +432,12 @@ def build_tasks_from_manifest(
 
     # Resolved at call time (not as a default argument) so the boundary stays a
     # patchable seam for callers exercising manifest resolution alone.
-    admit_semantically = semantic_admission or semantic_manifest_admission
+    # ``config`` is passed positionally: the boundary is patched in places that
+    # accept the historical two-argument shape, and a run that carries a config
+    # must not turn that into a TypeError.
+    admit_semantically = semantic_admission or (
+        lambda number, root: semantic_manifest_admission(number, root, config)
+    )
 
     results: list[tuple[TaskStory, StorySource, str]] = []
     for entry in manifest.stories:

@@ -565,6 +565,32 @@ def _resolve_base_branch_sha(config: object) -> str | None:
     return sha or None
 
 
+def _semantic_readiness_scheduler(config: object):
+    """Return the shape gate's ``semantic_readiness`` seam bound to this run's config.
+
+    The gate stays free of config loading (it is handed a callable and asks it
+    one question), but the callable it is handed now *schedules* the evaluation
+    a policy-required revision is missing rather than only reporting its absence
+    (#2907). The revision evaluated is the one the gate just fetched, so the
+    text that occasioned the withholding is the text that gets reviewed.
+    """
+
+    def _readiness(*, issue_number: int, title: str, body: str, labels, project_root):
+        from theforge.eval.semantic_auto import ensure_semantic_evaluation  # noqa: PLC0415
+
+        return ensure_semantic_evaluation(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            labels=tuple(labels or ()),
+            project_root=getattr(config, "project_root", None) or project_root,
+            secrets=getattr(config, "secrets", None),
+            profile=config.preflight_profile,
+        )
+
+    return _readiness
+
+
 _INTAKE_REMEDIATED_ENV = "FORGE_INTAKE_REMEDIATED"
 
 
@@ -1058,6 +1084,7 @@ def _run_query_mode(
             force=force,
             emit_verdict=_emit_shape_verdict,
             intake_remediated_numbers=carried_remediated_numbers or None,
+            semantic_readiness=_semantic_readiness_scheduler(config),
         )
         # Capture the gate's original skip/advisory partition before the
         # remediation passes below mutate ``skipped_issues`` — the shape-skip

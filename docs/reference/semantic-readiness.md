@@ -57,6 +57,51 @@ all. Giving unratified findings their own refusal would make admission react to
 raw model output, rebuilding the probabilistic second gate ADR-0009 exists to
 prevent.
 
+## Who runs the evaluation
+
+Nobody has to. When admission reaches a document policy marks `required` and no
+evaluation is recorded for its current revision, the evaluation is performed
+there and then — no `forge review-semantic` keystroke, one issue at a time,
+stands between grooming and a recorded review.
+
+The rules that bound it:
+
+- **Only where policy requires it.** A `not_required` document has no
+  evaluation performed for it, and neither the presence nor the absence of a
+  record changes its admission.
+- **Only once per revision, per prompt contract version.** A recurring
+  transition against unchanged text reuses the record it already has. A
+  recorded *failure* counts as that revision's attempt, so a broken evaluator
+  is not retried on every sprint entry; the document reports the failure and
+  stays withheld. Changing the configured model does not buy a second
+  evaluation of the same text.
+- **Against the revision that occasioned it.** The text evaluated is the text
+  the gate just read, so an edit landing mid-run cannot produce a record of a
+  revision no admission decision was made against.
+- **Never a ratification.** Automatic invocation changes *whether an evaluation
+  happens*, never what a result means. A raised finding still withholds
+  admission until an operator ratifies it, exactly as when the evaluator is
+  invoked by hand.
+- **Fail-closed.** An evaluation that fails, times out, is refused, produces
+  unrecognised output, or cannot be attempted at all is recorded as
+  `evaluation_failed`. No failure mode leaves a document reading as
+  evaluated-clean.
+
+`forge review-semantic` is unchanged and still works for any document,
+including one policy does not require a review of, recording its result on the
+same terms.
+
+Automatic evaluation runs where budget is already being committed — sprint
+query-mode admission and manifest issue admission. `forge status --ready` is a
+status command and spends nothing: it reports the records those paths produce,
+so an unevaluated issue is listed as withheld rather than evaluated on the spot.
+
+The evaluator refuses to reveal output for a revision with no frozen baseline.
+Where an operator has frozen one it is used untouched; where none exists the
+automatic path freezes an empty baseline marked `automatic`, which asserts
+nothing about the document and which a later human `--baseline-defect-id`
+freeze supersedes.
+
 ## Ratification
 
 A clean evaluation does not produce `REVIEWED_READY` by itself. Readiness
