@@ -611,6 +611,11 @@ def _story_row(story: dict, project_root: Path | None = None) -> str:
     beside it — the run figure alone reads as the cost of landing the issue when
     it is a fraction of it (#2365). A single-run issue gains nothing, because
     there the two figures are the same number.
+
+    The title column names the work. When the record carries no title — an
+    issue closed before this sprint could fetch it, a story record written
+    before titles were persisted — the column is left off entirely rather than
+    reprinting the reference the row already opens with (#2664).
     """
     ref = _story_ref(story)
     cost = story.get("cost_usd")
@@ -624,8 +629,20 @@ def _story_row(story: dict, project_root: Path | None = None) -> str:
     )
     elapsed = _elapsed_seconds_from_bounds(story.get("started_at"), story.get("finished_at"))
     elapsed_str = f"{int(elapsed // 60)}m" if isinstance(elapsed, (int, float)) else "—"
-    title = str(story.get("path") or story.get("slug") or "")
-    return f"{ref}  {cost_str}  {elapsed_str}  {title}{_issue_total_suffix(story, project_root)}"
+    title = _story_title_column(story)
+    row = f"{ref}  {cost_str}  {elapsed_str}"
+    if title:
+        row = f"{row}  {title}"
+    return f"{row}{_issue_total_suffix(story, project_root)}"
+
+
+def _story_title_column(story: dict) -> str:
+    """The row's title, or `""` when it would only repeat the row's reference."""
+    title = str(story.get("path") or story.get("slug") or "").strip()
+    num = _issue_number(story)
+    if num and title in {f"Issue #{num}", f"#{num}", f"issue-{num}"}:
+        return ""
+    return title
 
 
 def _issue_total_suffix(story: dict, project_root: Path | None) -> str:

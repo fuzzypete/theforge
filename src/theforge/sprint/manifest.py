@@ -36,6 +36,12 @@ class ResolvedSprint:
     max_parallel: int | None = None
     worker_timeout_seconds: int | None = None
     closed_dependency_slugs: set[str] = field(default_factory=set)
+    # Titles for ``closed_dependency_slugs``, where intake resolved one. A
+    # closed dependency's body is never fetched, so it has no ``TaskStory`` to
+    # read a name off; without this its ALREADY-LANDED row can only name the
+    # issue number it already prints (#2664). Absent for manifest mode, which
+    # never sees an issue listing.
+    closed_dependency_titles: dict[str, str] = field(default_factory=dict)
     # Slugs whose GitHub issue was already closed at fetch time but which this
     # sprint's own earlier generation ran and paid for, so they were kept as
     # stories rather than reclassified as external closed dependencies (#2847).

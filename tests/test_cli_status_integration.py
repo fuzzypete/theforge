@@ -288,9 +288,24 @@ def test_status_shows_completed_sprint_from_summary_with_all_rows(
         "completed-sprint",
         "run-123",
         [
-            {"slug": "issue-1", "path": "Issue #1", "outcome": "DONE", "cost_usd": 0.42},
-            {"slug": "issue-2", "path": "Issue #2", "outcome": "ESCALATE", "cost_usd": 0.10},
-            {"slug": "issue-3", "path": "Issue #3", "outcome": "SKIPPED", "cost_usd": 0.0},
+            {
+                "slug": "issue-1",
+                "path": "Cache the model catalog",
+                "outcome": "DONE",
+                "cost_usd": 0.42,
+            },
+            {
+                "slug": "issue-2",
+                "path": "Retry the flaky merge",
+                "outcome": "ESCALATE",
+                "cost_usd": 0.10,
+            },
+            {
+                "slug": "issue-3",
+                "path": "Drop the dead branch",
+                "outcome": "SKIPPED",
+                "cost_usd": 0.0,
+            },
         ],
     )
     # A completed sprint with non-DONE stories renders the postmortem digest,
@@ -327,11 +342,12 @@ def test_status_shows_completed_sprint_from_summary_with_all_rows(
     # Postmortem digest, not the live telemetry table.
     assert "SPRINT completed-sprint  ·  completed" in out
     assert "LANDED (1 of 3)" in out
-    assert "Issue #1" in out
+    # Each row names the work, not the reference it already opens with (#2664).
+    assert "#1  $0.42  —  Cache the model catalog" in out
     assert "FAILED — worker_timeout" in out
-    assert "Issue #2" in out
+    assert "Retry the flaky merge" in out
     assert "SKIPPED / INTAKE" in out
-    assert "Issue #3" in out
+    assert "Drop the dead branch" in out
 
 
 def test_status_preserves_prior_story_run_ids_in_completed_sprint_view(
@@ -344,14 +360,14 @@ def test_status_preserves_prior_story_run_ids_in_completed_sprint_view(
         [
             {
                 "slug": "issue-959",
-                "path": "Issue #959",
+                "path": "Rotate the audit substrate",
                 "outcome": "DONE",
                 "cost_usd": 10.31,
                 "story_run_id": "run-old",
             },
             {
                 "slug": "issue-960",
-                "path": "Issue #960",
+                "path": "Reap the orphaned worktrees",
                 "outcome": "DONE",
                 "cost_usd": 1.00,
                 "story_run_id": "run-new",
@@ -365,8 +381,8 @@ def test_status_preserves_prior_story_run_ids_in_completed_sprint_view(
     # All-DONE completed sprint renders the tighter LANDED-only digest.
     assert "SPRINT rollover-sprint  ·  completed" in out
     assert "LANDED (2 of 2)" in out
-    assert "Issue #959" in out
-    assert "Issue #960" in out
+    assert "Rotate the audit substrate" in out
+    assert "Reap the orphaned worktrees" in out
 
 
 def test_status_preserves_already_done_story_across_later_sprint_reruns(
