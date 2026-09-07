@@ -10,6 +10,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- v0.11.0 development (main) -->
 ### Added
 
+- **An accepted decomposition proposal is now applied for you (#2824):** the
+  preflight complexity gate has shown a candidate split since #2686, but acting
+  on one was hand work. Where the pause carries a proposal that could actually
+  be applied, it now offers two more actions beside `approve` and `decompose`:
+
+  ```
+  PAUSE     → #2541 scored 10, scope exceeded. Proposal (4 slices) attached.
+  OPERATOR  → forge decide 7c1e04b9d3af accept
+
+  APPLIED   → created #2900  extract the portable diagnosis record
+              created #2901  route diagnosis through the record   depends_on #2900
+              created #2902  port the CLI surface                 depends_on #2900
+              created #2903  cross-project acceptance             depends_on #2901, #2902
+              closed  #2541  decomposed
+  ```
+
+  Each slice is created with its title, its scope boundary, the original
+  acceptance criteria the proposal mapped onto it, and the original's type label
+  and milestone — so a created slice is runnable at creation rather than
+  something intake skips. Declared edges are written as `depends_on` frontmatter
+  in the body **at creation time**, which is the one form the sprint scheduler
+  reads; slices are created in dependency order so an edge always names an issue
+  that already exists.
+
+  `decline` is the non-mutating answer: nothing is created, the original stays
+  open and runnable, and the story is returned to be split by hand. Nothing else
+  can apply a split — a timeout, a typo, and a configured
+  `retry.preflight_complexity_gate_no_decision` still resolve only to `approve`
+  or `decompose`, and `accept` is offered only for a tracker-backed issue whose
+  type a rendered slice can satisfy.
+
+  **The original closes last, or not at all.** A failure partway through leaves
+  the original open, reports the issues that *were* created, and re-running the
+  story finishes the split from the persisted slice map instead of filing a
+  second copy of it. The close is routed through the repository's spike closure
+  guard and uses a `not planned` reason, so a decomposed issue is
+  distinguishable from a completed one. The audit's
+  `preflight_complexity_gate.assessment_application` block (record schema v47)
+  records the status, the created issue numbers, whether the original closed,
+  and any error — which is what lets a later measurement ask whether accepted
+  splits actually land.
+
 - **A run can now show whether an agent acted on the knowledge it was given
   (#2866):** the loop recorded what was injected and recorded the negative case
   — a reviewer restating a claim the developer already had — but nothing

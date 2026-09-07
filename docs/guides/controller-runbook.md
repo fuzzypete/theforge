@@ -351,8 +351,9 @@ It is an artifact, not a recommendation: it does not tell you which action to
 pick, and it changes nothing. **No issue is created, edited, or closed** — the
 invocation runs with a read-only tool surface that has no shell, in a read-only
 sandbox, against a clean baseline checkout, holding inference credentials only.
-The original story is left intact and runnable whichever way you answer. Acting
-on a split is your call and is tracked separately (#2824).
+The original story is left intact and runnable whichever way you answer.
+Producing it changes nothing; **applying** it is a separate action you take
+(below).
 
 - **No assessment is a normal outcome.** A story the step judges genuinely
   atomic — and every failure: the agent could not launch, returned failure, or
@@ -376,9 +377,61 @@ Where to look afterwards: the same `preflight_complexity_gate` audit block now
 also carries `assessment` (the slices, edges, coverage, and unsettled items),
 `assessment_generated`, `none_produced_reason`, `assessment_cost_usd`,
 `assessment_duration_s`, `assessment_model`/`assessment_profile`, and
-`assessment_disposition` (`operator_approve`, `operator_decompose`, or the
-`no_decision_*` forms) — the last being what makes assessment quality measurable
-later against whether a split that was acted on actually landed.
+`assessment_disposition` (`operator_approve`, `operator_decompose`,
+`operator_accept`, `operator_decline`, or the `no_decision_*` forms) — the last
+being what makes assessment quality measurable later against whether a split
+that was acted on actually landed.
+
+### Accepting a proposal applies it (issue #2824)
+
+Where the pause carries a proposal forge could actually apply, it offers two
+more actions beside `approve` and `decompose`:
+
+```
+  forge decide 7c1e04b9d3af accept     apply the proposal: create the slices, close this one
+  forge decide 7c1e04b9d3af decline    return it unsplit; apply nothing
+```
+
+`accept` is the only action anywhere in this gate that mutates the tracker:
+
+```
+APPLIED   → created #2900  extract the portable diagnosis record
+            created #2901  route diagnosis through the record   depends_on #2900
+            created #2902  port the CLI surface                 depends_on #2900
+            created #2903  cross-project acceptance             depends_on #2901, #2902
+            closed  #2541  decomposed
+```
+
+- **Each slice is runnable at creation.** It carries the slice title, the scope
+  boundary, the original acceptance criteria the proposal mapped onto it, and
+  the original's type label and milestone — an issue without a recognized type
+  label is skipped by intake, so the label is a precondition of applying rather
+  than a nicety.
+- **The edges are written where the scheduler reads them.** `depends_on`
+  frontmatter in the created body, at creation time. Slices are created in
+  dependency order so an edge always names an issue that already exists; a
+  cyclic proposal refuses before anything is created. An edge added later by
+  comment is invisible to the scheduler, which is why none is.
+- **The original closes last, or not at all.** It is closed with `not planned`
+  (distinguishable from a completed close) and a comment naming every slice,
+  routed through the spike closure guard like every other close path. If any
+  create fails, the original stays open, the story is reported as a **failure**
+  rather than as a clean split, and the message names the issues that were
+  created. Re-running the story re-enters the application from the persisted
+  slice map and creates only what is missing — it never files a second copy.
+- **Nothing else can apply a split.** `decline`, `decompose`, `approve`, a
+  timeout, and `retry.preflight_complexity_gate_no_decision` all create nothing;
+  that key still accepts only `approve` or `decompose`. `accept` is offered only
+  for a GitHub-issue-backed story whose type a rendered slice can satisfy
+  (`enhancement`, `task`, `spike` — not `bug`, whose shape needs an
+  observed/expected/diagnosis body forge has no evidence to write), so an
+  action that could not succeed is never on the menu.
+
+An applied `accept` is reported the same way `decompose` is — `outcome:
+decomposed`, `⤺` on the sprint row, not a failure. Where to look afterwards:
+`preflight_complexity_gate.assessment_application` on the audit record
+(`status`, `created`, `source_issue`, `source_issue_closed`, `error`,
+`applied_at`).
 
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 

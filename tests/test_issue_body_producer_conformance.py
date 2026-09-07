@@ -201,6 +201,9 @@ SEAM_GUARDS: dict[tuple[str, str], dict[str, str]] = {
     ("src/theforge/cli/shape.py", "_apply_to_github"): {"forge-shape": "cmd_shape"},
     ("src/theforge/cli/todo.py", "_create_todo"): {"forge-todo-create": "_create_todo"},
     ("src/theforge/cli/todo.py", "_triage_todo"): {"forge-todo-triage": "_triage_todo"},
+    ("src/theforge/coordinator/decomposition_application.py", "apply_decomposition"): {
+        "forge-decomposition-apply": "_validate_body"
+    },
     ("src/theforge/coordinator/diagnose_flow.py", "_gh_edit_body"): {
         "forge-diagnose": "_land_artifact"
     },

@@ -23,7 +23,7 @@ import yaml
 
 from .. import worker_budget
 from ..advisory_conventions import AdvisoryArtifactError
-from ..config import PREFLIGHT_GATE_DECOMPOSE, ForgeConfig, ModelProfile
+from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
 from ..config.model_identity import PHASE_PREFLIGHT
 from ..coordinator import config_snapshot as config_snapshot_mod
@@ -3389,11 +3389,18 @@ def _returned_for_decomposition(result: CoordinatorResult) -> bool:
     Read off the coordinator's recorded decision rather than off ``success`` or
     the phase: the gate is the only thing that writes it, and every other
     non-success path this runner sees means something went wrong (#2681).
+
+    An operator ``accept`` whose application completed counts here too — the
+    story was split, its slices exist as issues, and the original is closed as
+    decomposed. One that did not complete does not: that is a failed story with
+    tracker state to act on, and reporting it as a clean split would hide the
+    half-applied state the operator needs to see (#2824).
     """
-    return (
-        getattr(result.state, "preflight_complexity_gate_decision", None)
-        == PREFLIGHT_GATE_DECOMPOSE
+    from ..coordinator.preflight_complexity_gate import (  # noqa: PLC0415
+        returned_for_decomposition,
     )
+
+    return returned_for_decomposition(result.state)
 
 
 def _classify_and_record(
