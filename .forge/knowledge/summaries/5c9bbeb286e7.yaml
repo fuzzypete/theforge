@@ -1,0 +1,125 @@
+schema_version: 2
+run_id: 5c9bbeb286e7
+authoritative_run_record: .forge/audits/runs/5c9bbeb286e7.json
+generated_at: '2026-09-07T04:48:56.900857+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011143750000000001
+story:
+  slug: issue-2664
+  name: Sprint digest story rows print the issue reference in place of the story title
+  github_issue: 2664
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint.py
+- src/theforge/cli/sprint_digest.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/query.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/state_writer.py
+- src/theforge/sprint/story_state.py
+- tests/test_cli_status_integration.py
+- tests/test_sprint_status_bootstrap_window.py
+- tests/test_sprint_story_title.py
+what_changed:
+  description: Sprint story state was updated to carry issue titles through bootstrap,
+    persistence, and resumed-run reconstruction so digest rows can render a real title
+    instead of repeating the issue reference. The run also corrected carried-story
+    audit reconstruction paths that could still drop or blank the title for resumed
+    stories.
+  approach: The change threaded title-bearing story metadata through the sprint state
+    pipeline and then made digest/audit consumers derive display and issue identity
+    from structured story state rather than from the older path/reference string alone.
+  files_modified: *id002
+what_was_learned:
+- claim: For issue-backed sprint stories, any operator-facing field needed after bootstrap
+    must be preserved as structured story state rather than reconstructed later from
+    the display path string.
+  evidence:
+  - type: review_finding
+    finding_id: b079c3d423dafe4e
+    description: Review found that resumed-story synthesis recovered issue identity
+      only from an entry shape tied to the old path/reference convention, which broke
+      once path started carrying the human title; this shows downstream logic cannot
+      safely infer durable metadata from a display-oriented path field.
+  - type: review_finding
+    finding_id: abc8239bb52b24f6
+    description: Review also found a separate reconstruction path that rebuilt path
+      as the literal issue reference, causing the digest title column to come back
+      empty for carried stories even though the real title had been known earlier;
+      the repeated failure mode shows that deferred reconstruction from path loses
+      information across codepaths.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly notes the P1 was fixed by deriving issue
+      identity via story_state.issue_number_for, demonstrating that centralized structured
+      accessors were the durable mechanism that resolved the reconstruction bug.
+  - type: file
+    path: src/theforge/sprint/story_state.py
+    description: This file was introduced as the place for story-state helpers, and
+      review later referenced those helpers as the fix mechanism, showing the run
+      consolidated metadata access away from ad hoc path parsing.
+- claim: When sprint state is consumed both live and via carried/resumed audit summaries,
+    verification must exercise both creation-time and reconstruction-time paths because
+    display regressions can survive in only one of them.
+  evidence:
+  - type: review_finding
+    finding_id: abc8239bb52b24f6
+    description: The net-new review finding appeared after the main digest symptom
+      was fixed, but only for carried stories reconstructed from per-story audit data,
+      showing that live-path fixes did not automatically cover resume-path rendering.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approved the core digest fix yet still surfaced resumed-story
+      defects, demonstrating that this area has multiple state-entry paths that require
+      separate verification.
+  - type: file
+    path: tests/test_sprint_story_title.py
+    description: The dedicated title-focused test file reflects that verification
+      had to cover title behavior across story states and reconstruction modes rather
+      than only a single happy-path render.
+learned_patterns:
+- structured-story-metadata
+- resume-path-parity
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b079c3d423dafe4e
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: When a resumed sprint synthesizes a run record for a story carried
+      from an earlier generation, the record's task.github_issue is written as null
+      for any issue-backed story whose accumulated path now carries its real title,
+      because _carried_story_record recovers the issue number only from an entry github_issue
+      key that no sprint entry builder populates or from a path beginning with the
+      literal Issue-number string that titled records no longer contain, so per-issue
+      cost totals and issue-keyed audi
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced resumed/carried-story reconstruction as the place where
+    title and issue identity were still being lost after the primary digest fix.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 21.5616365
+  dominant_difficulty: Keeping story title and issue identity consistent across bootstrap
+    state, persisted state, and resumed audit reconstruction paths.
