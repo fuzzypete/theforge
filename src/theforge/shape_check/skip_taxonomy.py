@@ -37,10 +37,14 @@ DEFAULT_STUCK_ISSUE_THRESHOLD = 3
 class SkipCategory(str, Enum):
     """Operator-facing recovery classes for a shape-gate skip.
 
-    The five values are the minimum grouping the sprint postmortem distinguishes
-    (issue #1453 AC2). ``REMEDIATED_PROCEEDED`` and ``DECLINED_REMEDIATION`` are
-    remediation *outcomes* layered on top of the underlying code class; the other
-    three derive from the reason code + skip source alone.
+    The first five values are the minimum grouping the sprint postmortem
+    distinguishes (issue #1453 AC2). ``REMEDIATED_PROCEEDED`` and
+    ``DECLINED_REMEDIATION`` are remediation *outcomes* layered on top of the
+    underlying code class; the others derive from the reason code + skip source
+    alone. ``GATE_UNEVALUATED`` (#2910) is not a finding about the issue at all:
+    it says the gate could not obtain what it evaluates, so no verdict exists
+    for that issue. It is its own category precisely so a reader can never
+    mistake "never examined" for "examined and refused".
     """
 
     SEMANTIC_GATE = "blocked_by_semantic_gate"
@@ -48,6 +52,7 @@ class SkipCategory(str, Enum):
     REMEDIATED_PROCEEDED = "remediated_and_proceeded"
     DECLINED_REMEDIATION = "declined_by_remediation"
     UNRUNNABLE_SHAPE = "unrunnable_by_shape"
+    GATE_UNEVALUATED = "gate_could_not_evaluate"
 
 
 class FourQuestionAxis(str, Enum):
@@ -125,6 +130,11 @@ SEMANTIC_GATE_CODES: frozenset[str] = frozenset(
     }
 )
 
+# The gate could not obtain the issue detail it evaluates (#2910). No shape
+# finding was made, so these are neither semantic nor structural refusals —
+# recovery is environmental (fix the `gh` failure), not editorial.
+GATE_UNEVALUATED_CODES: frozenset[str] = frozenset({"shape_gate_unevaluated"})
+
 # Per-code four-question axis. Codes absent from this map are structural
 # invariants → ``INVARIANT_VIOLATED``.
 AXIS_BY_CODE: dict[str, FourQuestionAxis] = {
@@ -136,6 +146,9 @@ AXIS_BY_CODE: dict[str, FourQuestionAxis] = {
     "semantic_review_not_ratified": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
     "semantic_concerns_accepted": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
     "semantic_evaluation_failed": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
+    # No invariant was violated — the check itself never ran, so the valid
+    # response (obtain the issue detail) is the one not yet attempted.
+    "shape_gate_unevaluated": FourQuestionAxis.RESPONSE_NOT_ATTEMPTED,
 }
 
 
@@ -161,6 +174,8 @@ class SkipClassification:
 
 def _base_category(reason_code: str, source: str) -> SkipCategory:
     """Category from the code + source alone, before remediation is considered."""
+    if reason_code in GATE_UNEVALUATED_CODES:
+        return SkipCategory.GATE_UNEVALUATED
     if reason_code in STALE_LABEL_CODES:
         return SkipCategory.STALE_LABEL
     if reason_code in SEMANTIC_GATE_CODES:
@@ -207,8 +222,11 @@ def classify_skip(
 
 # Deterministic display order for the postmortem — cheapest-to-recover first so
 # the operator sees "you can unblock these in seconds" above "these need a
-# producer" above "these are genuinely malformed".
+# producer" above "these are genuinely malformed". ``GATE_UNEVALUATED`` leads
+# regardless of recovery cost: every entry under it is an issue the gate never
+# examined, which changes how the whole rest of the block should be read.
 CATEGORY_DISPLAY_ORDER: tuple[SkipCategory, ...] = (
+    SkipCategory.GATE_UNEVALUATED,
     SkipCategory.STALE_LABEL,
     SkipCategory.REMEDIATED_PROCEEDED,
     SkipCategory.SEMANTIC_GATE,
