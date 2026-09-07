@@ -19,6 +19,7 @@ from theforge.assignment import (
     REASON_NONE,
     REASON_TRANSPORT_UNAVAILABLE,
     AssignmentConfig,
+    NoCapableCandidateError,
     _build_routing_decision,
     assign_models,
 )
@@ -157,8 +158,8 @@ def test_dev_incapable_candidate_is_excluded_before_tier_or_auth(_keys_except_de
     }
 
 
-def test_explicit_dev_pin_to_incapable_agent_is_honored_with_warning(_keys_except_deepseek):
-    """Explicit operator intent remains authoritative but cannot look unremarkable."""
+def test_explicit_dev_pin_to_incapable_agent_is_refused(_keys_except_deepseek):
+    """A declared dev prohibition binds the explicit-pin path too."""
     agents = [
         AgentDef(
             name="incapable",
@@ -187,16 +188,45 @@ def test_explicit_dev_pin_to_incapable_agent_is_honored_with_warning(_keys_excep
         allowed_tools=("Read",),
     )
 
-    decision = assign_models(
-        agents,
-        _cfg(),
-        complexity="MEDIUM",
-        complexity_score=5,
-        explicit_profiles={"dev": pinned},
-    )
+    with pytest.raises(NoCapableCandidateError) as excinfo:
+        assign_models(
+            agents,
+            _cfg(),
+            complexity="MEDIUM",
+            complexity_score=5,
+            explicit_profiles={"dev": pinned},
+        )
 
-    assert decision.dev == pinned
-    assert "declared dev_capable=false" in decision.rationale["dev"]
+    error = excinfo.value
+    assert error.role == "dev"
+    assert error.capability == "dev_capable"
+    assert error.exclusion_reason == REASON_DEV_INCAPABLE
+    assert set(error.excluded) == {"incapable"}
+    assert "explicit dev pin" in str(error)
+
+
+def test_all_declared_dev_incapable_candidates_raise_typed_refusal(_keys_except_deepseek):
+    """Policy-empty and demonstrated-empty dev pools share one refusal shape."""
+    agents = [
+        AgentDef(
+            name="incapable",
+            provider="openai",
+            model="gpt-5.4-mini",
+            budget_usd=1.0,
+            timeout_seconds=600,
+            tier="mid",
+            dev_capable=False,
+        )
+    ]
+
+    with pytest.raises(NoCapableCandidateError) as excinfo:
+        assign_models(agents, _cfg(), complexity="MEDIUM", complexity_score=5)
+
+    error = excinfo.value
+    assert error.role == "dev"
+    assert error.capability == "dev_capable"
+    assert error.exclusion_reason == REASON_DEV_INCAPABLE
+    assert set(error.excluded) == {"incapable"}
 
 
 def test_anti_self_review_and_auth_missing_reasons_are_attributed(_keys_except_deepseek):
