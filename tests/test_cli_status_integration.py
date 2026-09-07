@@ -620,3 +620,70 @@ def test_status_reports_orphan_agent_groups_without_signalling_them(
     finally:
         process_group.kill_agent_group(pgid)
         proc.wait(timeout=5)
+
+
+def test_status_labels_unverifiable_orphan_agent_sidecars(tmp_path: Path, capsys: object) -> None:
+    """Stale bookkeeping is visible without being reported as a surviving group."""
+    agents_dir = tmp_path / ".forge" / "runs" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = agents_dir / "999999-4242.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "owner_pid": 999_999,
+                "pgid": 4242,
+                "run_id": "run-old",
+                "sandbox_dir": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc, out = _run_cmd_status(tmp_path, capsys)
+
+    assert rc == 0
+    assert "orphaned agent process group record(s)" not in out
+    assert "unverifiable agent sidecar record(s)" in out
+    assert "will be discarded unsignalled" in out
+    assert sidecar.exists(), "forge status must not consume stale sidecars"
+
+
+def test_status_reports_observed_escapees_when_their_group_is_unverifiable(
+    tmp_path: Path, capsys: object
+) -> None:
+    """Status describes the same live descendants the reaper would kill."""
+    import subprocess
+    import sys
+
+    from theforge import process_group
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    info = process_group.process_tree.process_info(proc.pid)
+    assert info is not None
+    agents_dir = tmp_path / ".forge" / "runs" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = agents_dir / "999999-4242.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "owner_pid": 999_999,
+                "pgid": 4242,
+                "run_id": "run-old",
+                "sandbox_dir": str(tmp_path),
+                "observed": {str(proc.pid): info.fingerprint},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        rc, out = _run_cmd_status(tmp_path, capsys)
+        assert rc == 0
+        assert proc.poll() is None, "forge status killed an escapee"
+        assert sidecar.exists(), "forge status consumed the record it only reported"
+        assert "orphaned agent escapee record(s)" in out
+        assert f"pids=[{proc.pid}]" in out
+        assert "process group unverifiable" in out
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
