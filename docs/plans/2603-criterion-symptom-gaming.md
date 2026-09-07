@@ -24,7 +24,7 @@ Attempts excluded, counted per clause:
 
 | Exclusion | Attempts |
 | --- | --- |
-| outside the window | 130 |
+| outside the window | 132 |
 | `final_phase != DONE` | 9 |
 | empty `fix_success_criterion` | 0 |
 | `landing.location: null` (nothing landed) | 0 |
