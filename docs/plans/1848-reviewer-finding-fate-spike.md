@@ -162,3 +162,12 @@ production path should require:
    status, and excluded counts; and
 4. cold-start / sample-floor tests proving no reviewer is re-ranked below the
    run-level admissibility floor.
+
+## Reopening this verdict (#2601)
+
+The two smallest-missing-event items above are tracked as work in #2952, not
+only as prose in this document (#2601). Landing #2952 makes this verdict's own
+stated dependency reviewable; it does not adopt the proxy. If the four-class
+signal still needs approximation after #2952 lands, STAY OUT stands and is
+re-recorded — see the outcome comment on #1848 for the machine-readable
+record.
