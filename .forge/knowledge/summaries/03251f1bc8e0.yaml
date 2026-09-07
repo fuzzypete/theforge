@@ -1,0 +1,84 @@
+schema_version: 2
+run_id: 03251f1bc8e0
+authoritative_run_record: .forge/audits/runs/03251f1bc8e0.json
+generated_at: '2026-09-07T19:54:09.411061+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00558875
+story:
+  slug: issue-2824
+  name: Applying an accepted decomposition proposal is a separate mutation from producing
+    it
+  github_issue: 2824
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/controller-runbook.md
+- docs/guides/inputs-reference.md
+- src/theforge/cli/run.py
+- src/theforge/cli/status.py
+- src/theforge/config/__init__.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/decomposition_application.py
+- src/theforge/coordinator/preflight_complexity_gate.py
+- src/theforge/coordinator/resume_persistence.py
+- src/theforge/coordinator/state.py
+- src/theforge/notify_backends.py
+- src/theforge/shape_check/producer.py
+- src/theforge/sprint/runner.py
+- tests/fixtures/audit_record_schema_v47.json
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_decomposition_acceptance_seam.py
+- tests/test_decomposition_application.py
+- tests/test_issue_body_producer_conformance.py
+- tests/test_knowledge_receipt_seam.py
+- tests/test_notify_backends.py
+what_changed:
+  description: 'This run added the mutation path for accepted decomposition proposals:
+    creating one issue per slice with scheduler-readable dependency edges in the body
+    at creation time, closing the source story as decomposed only on full success,
+    and recording proposal disposition in audit state. It also threaded the new decomposition-application
+    state and operator-facing status/notification surfaces through the coordinator,
+    CLI, config, and persistence layers.'
+  approach: The change was implemented as a dedicated decomposition-application coordinator
+    flow, separate from proposal production, with explicit state/audit schema support
+    and failure handling that preserves operator-actionable partial results instead
+    of completing the original story unless every slice and declared edge is applied.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- separate-proposal-from-mutation
+- all-or-nothing-parent-close
+- write-dependencies-at-creation
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the design without behavioral findings; the only loop signal was
+    stale gate evidence against reviewed HEAD.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 23.285763
+  dominant_difficulty: Coordinating a multi-step issue-tracker mutation so partial
+    application is visible and recoverable while parent-story closure stays conditional
+    on complete success.
