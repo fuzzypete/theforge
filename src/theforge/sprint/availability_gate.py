@@ -30,14 +30,17 @@ a sprint.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..config.model_identity import ModelAvailability
 from ..model_availability import (
     availability_detail,
     availability_target,
+    dispatch_key,
     format_unavailable_detail,
     is_unavailable,
+    profile_dispatch_key,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -56,19 +59,40 @@ class SprintNoAvailableModel(RuntimeError):
 
 
 class PhaseUnavailable(NamedTuple):
-    """One phase whose entire candidate set the account cannot invoke."""
+    """One phase whose entire candidate set the account cannot invoke.
+
+    ``excluded`` is keyed by *dispatch identity*, never by model name. Two
+    candidates that happen to share a model string under different credentials
+    or endpoints are two candidates, and collapsing them would make a phase with
+    two unavailable models look like a phase with one unavailable model and one
+    survivor — which reads as "safe to launch". Each record carries its own
+    ``model`` for display.
+    """
 
     phase: str
     excluded: dict[str, dict[str, object]]
 
+    @property
+    def models(self) -> list[str]:
+        """Display names of the excluded candidates, in stable order."""
+        return sorted(str(record.get("model") or "?") for record in self.excluded.values())
 
-def _role_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
-    """Map each required phase to the profiles it may draw from, pins honored.
 
-    Under adaptive routing an unpinned phase draws from the whole agents pool,
-    so naming only the currently-derived role profile would refuse sprints the
-    router would have routed around. A pinned phase draws from its pin alone —
-    the same answer ``assign_models`` reaches from the same derivation.
+def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
+    """Map each required phase to the profiles it may actually dispatch.
+
+    Two different questions, and getting them the wrong way round is how an
+    unavailable model gets paid for:
+
+    - **preflight** dispatches ``config.preflight_profile`` (and its configured
+      fallback). It runs *before* routing — routing needs the complexity score
+      preflight produces — so the adaptive pool is not its candidate set, and
+      admitting the phase because some other agent in the pool is available
+      would clear a dispatch that is about to fail (#2950 review).
+    - every **later** phase is chosen by ``assign_models`` from the adaptive
+      pool, unless the operator pinned it, in which case the pin is the whole
+      candidate set — the same answer the router reaches from the same
+      derivation.
     """
     from ..coordinator.preflight import explicit_role_overrides  # noqa: PLC0415
 
@@ -87,7 +111,7 @@ def _role_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProf
         return []
 
     candidates: dict[str, list[ModelProfile]] = {
-        "preflight": pool("preflight") or [config.preflight_profile],
+        "preflight": preflight_dispatch_profiles(config),
         "dev": pool("dev", dev_only=True) or [config.dev_profile],
         "code_review": pool("code_review") or list(config.review_pool),
     }
@@ -98,6 +122,38 @@ def _role_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProf
     if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
         candidates["plan_review"] = pool("plan_review") or list(config.plan_agent_review.profiles)
     return {phase: profiles for phase, profiles in candidates.items() if profiles}
+
+
+def preflight_dispatch_profiles(config: "ForgeConfig") -> list["ModelProfile"]:
+    """The profiles a preflight invocation can actually use, in attempt order."""
+    profiles = [config.preflight_profile]
+    if config.preflight_fallback_profile is not None:
+        profiles.append(config.preflight_fallback_profile)
+    return [p for p in profiles if p is not None]
+
+
+def unavailable_candidates(
+    profiles: "Iterable[ModelProfile]",
+    config: "ForgeConfig",
+    answers: dict[str, ModelAvailability],
+) -> tuple[dict[str, dict[str, object]], int]:
+    """Return ``(excluded_by_identity, distinct_candidate_count)``.
+
+    Both sides count *identities*, so the caller's "is every candidate
+    excluded?" comparison comes from one accounting rather than two that can
+    disagree.
+    """
+    identities: dict[str, ModelProfile] = {}
+    for profile in profiles:
+        key = profile_dispatch_key(profile, config)
+        if key is not None:
+            identities.setdefault(key, profile)
+    excluded: dict[str, dict[str, object]] = {}
+    for key, profile in identities.items():
+        answer = answers.get(key)
+        if is_unavailable(answer):
+            excluded[key] = {"model": profile.model, **availability_detail(answer)}
+    return excluded, len(identities)
 
 
 def check_sprint_availability(
@@ -114,36 +170,32 @@ def check_sprint_availability(
     from ..config.auth import resolve_model_availability  # noqa: PLC0415
 
     resolver = resolve or resolve_model_availability
-    candidates = _role_candidate_profiles(config)
-    targets = []
-    keys: dict[str, list[str]] = {}
-    for phase, profiles in candidates.items():
-        phase_keys: list[str] = []
-        for index, profile in enumerate(profiles):
-            key = f"{phase}:{index}:{profile.model}"
-            target = availability_target(profile, config, key=key)
+    try:
+        candidates = phase_candidate_profiles(config)
+    except Exception:  # noqa: BLE001 - an unreadable config never stops a sprint here
+        return []
+    targets: dict[str, object] = {}
+    for profiles in candidates.values():
+        for profile in profiles:
+            try:
+                target = availability_target(profile, config, key="")
+            except Exception:  # noqa: BLE001 - a candidate with no derivable identity
+                continue
             if target is None:
                 continue
-            phase_keys.append(key)
-            targets.append(target)
-        keys[phase] = phase_keys
+            key = dispatch_key(target)
+            targets.setdefault(key, _dc_replace(target, key=key))
     if not targets:
         return []
     try:
-        answers = resolver(targets, config.secrets)
+        answers = resolver(list(targets.values()), config.secrets)
     except Exception:  # noqa: BLE001 - an unrunnable probe never stops a sprint
         return []
 
     stops: list[PhaseUnavailable] = []
-    for phase, phase_keys in keys.items():
-        if not phase_keys:
-            continue
-        excluded = {
-            key.split(":", 2)[2]: availability_detail(answers[key])
-            for key in phase_keys
-            if key in answers and is_unavailable(answers[key])
-        }
-        if len(excluded) == len(phase_keys):
+    for phase, profiles in candidates.items():
+        excluded, total = unavailable_candidates(profiles, config, answers)
+        if total and len(excluded) == total:
             stops.append(PhaseUnavailable(phase=phase, excluded=excluded))
     return stops
 
@@ -153,13 +205,17 @@ def format_availability_stop(stops: list[PhaseUnavailable]) -> str:
 
     Names every excluded model and its reason, and states the spend explicitly:
     an operator reading this must not have to work out whether the run charged
-    them for the discovery.
+    them for the discovery. This gate runs before any dispatch, so here the
+    spend genuinely is zero — the per-story stop states its own spend, which is
+    not always the same claim (#2950 review).
     """
     lines: list[str] = []
     for stop in stops:
         detail = ", ".join(
-            f"{model} excluded ({format_unavailable_detail(record)})"
-            for model, record in sorted(stop.excluded.items())
+            f"{record.get('model') or '?'} excluded ({format_unavailable_detail(record)})"
+            for _identity, record in sorted(
+                stop.excluded.items(), key=lambda item: str(item[1].get("model") or "")
+            )
         )
         lines.append(f"✗ ROUTING  no model available for phase {stop.phase}: {detail}")
     lines.append("Nothing dispatched, $0.00 spent.")
@@ -198,4 +254,7 @@ __all__ = [
     "check_sprint_availability",
     "enforce_sprint_availability",
     "format_availability_stop",
+    "phase_candidate_profiles",
+    "preflight_dispatch_profiles",
+    "unavailable_candidates",
 ]

@@ -26,10 +26,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from coord_test_helpers import _make_config  # noqa: E402
 
 from theforge.assignment import (  # noqa: E402
+    REASON_CAPABILITY_ABSENT,
+    REASON_DEV_INCAPABLE,
     REASON_MODEL_UNAVAILABLE,
     AssignmentConfig,
     NoAvailableModelError,
     assign_models,
+    routing_stop_message,
 )
 from theforge.config import AgentDef, ModelProfile  # noqa: E402
 from theforge.config.model_identity import (  # noqa: E402
@@ -41,7 +44,16 @@ from theforge.config.model_identity import (  # noqa: E402
 )
 from theforge.coordinator.preflight import _apply_preflight_config  # noqa: E402
 from theforge.coordinator.state import CoordinatorState  # noqa: E402
-from theforge.model_availability import AvailabilityWarnings  # noqa: E402
+from theforge.model_availability import (  # noqa: E402
+    AVAILABILITY_WARNINGS,
+    AvailabilityWarnings,
+    StoryAvailability,
+    profile_dispatch_key,
+)
+from theforge.model_capabilities import (  # noqa: E402
+    CAPABILITY_TOOL_STRUCTURED,
+    OUTCOME_ABSENT,
+)
 
 CHECKED_AT = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -309,7 +321,11 @@ def test_routing_refuses_when_every_candidate_is_unavailable():
     for name in ("haiku", "sonnet", "opus"):
         assert name in message, f"the stop must name {name}"
     assert "not available to this account under ChatGPT-account auth" in message
-    assert "$0.00 spent" in message
+    # The exception states the exclusions; the spend belongs to whoever caught
+    # it, because only they know what this story has already cost.
+    assert "spent" not in message
+    assert "$0.00 spent" in routing_stop_message(exc_info.value)
+    assert "$1.20 already spent" in routing_stop_message(exc_info.value, 1.2)
     assert exc_info.value.exclusion_reason == REASON_MODEL_UNAVAILABLE
     assert set(exc_info.value.excluded) == {"haiku", "sonnet", "opus"}
 
@@ -377,6 +393,32 @@ def _adaptive_config(tmp_path):
     )
 
 
+def _story_availability(config, by_model: dict) -> StoryAvailability:
+    """Build the story's answers keyed the way the resolver keys them.
+
+    Tests speak in model names; the router speaks in dispatch identities. This
+    translates once, so a test never has to hand-write a dispatch key.
+    """
+    answers: dict = {}
+    profiles = [a.to_model_profile(allowed_tools=()) for a in config.agents]
+    profiles += [config.preflight_profile, config.dev_profile, *config.review_pool]
+    if config.preflight_fallback_profile is not None:
+        profiles.append(config.preflight_fallback_profile)
+    for profile in profiles:
+        key = profile_dispatch_key(profile, config)
+        if key is not None and profile.model in by_model:
+            answers[key] = by_model[profile.model]
+    return StoryAvailability(answers)
+
+
+def _patch_availability(config, by_model: dict):
+    """Patch the coordinator's story-boundary resolution with fixed answers."""
+    return patch(
+        "theforge.coordinator.preflight.resolve_story_availability",
+        return_value=_story_availability(config, by_model),
+    )
+
+
 def _proceed_state() -> CoordinatorState:
     state = CoordinatorState()
     state.preflight_verdict = "PROCEED"
@@ -387,9 +429,8 @@ def _proceed_state() -> CoordinatorState:
 
 def test_preflight_seam_excludes_the_unavailable_model_from_the_installed_config(tmp_path):
     config = _adaptive_config(tmp_path)
-    with patch(
-        "theforge.model_availability.resolve_agent_availability",
-        return_value={"opus": _unavailable(), "sonnet": _available(), "haiku": _available()},
+    with _patch_availability(
+        config, {"opus": _unavailable(), "sonnet": _available(), "haiku": _available()}
     ):
         applied = _apply_preflight_config(config, _proceed_state(), task_slug="s1")
     seated = {applied.dev_profile.model, *[p.model for p in applied.review_pool]}
@@ -400,11 +441,15 @@ def test_availability_is_resolved_fresh_for_each_story(tmp_path):
     """An answer that changes between stories changes routing without a restart."""
     config = _adaptive_config(tmp_path)
     answers = [
-        {"opus": _available(), "sonnet": _available(), "haiku": _available()},
-        {"opus": _unavailable(), "sonnet": _available(), "haiku": _available()},
+        _story_availability(
+            config, {"opus": _available(), "sonnet": _available(), "haiku": _available()}
+        ),
+        _story_availability(
+            config, {"opus": _unavailable(), "sonnet": _available(), "haiku": _available()}
+        ),
     ]
     with patch(
-        "theforge.model_availability.resolve_agent_availability",
+        "theforge.coordinator.preflight.resolve_story_availability",
         side_effect=answers,
     ) as resolver:
         first_state, second_state = _proceed_state(), _proceed_state()
@@ -423,9 +468,8 @@ def test_availability_is_resolved_fresh_for_each_story(tmp_path):
 def test_preflight_seam_refusal_writes_no_capability_or_profile_state(tmp_path):
     """The stop is a routing outcome: nothing may be recorded against a model."""
     config = _adaptive_config(tmp_path)
-    with patch(
-        "theforge.model_availability.resolve_agent_availability",
-        return_value={name: _unavailable() for name in ("haiku", "sonnet", "opus")},
+    with _patch_availability(
+        config, {name: _unavailable() for name in ("haiku", "sonnet", "opus")}
     ):
         with pytest.raises(NoAvailableModelError):
             _apply_preflight_config(config, _proceed_state(), task_slug="s1")
@@ -434,3 +478,201 @@ def test_preflight_seam_refusal_writes_no_capability_or_profile_state(tmp_path):
     assert not (forge_dir / "model_profiles.yaml").exists()
     assert not (forge_dir / "model_capabilities.yaml").exists()
     assert not (forge_dir / "assignment_history.yaml").exists()
+
+
+def test_a_jointly_emptied_pool_names_every_cause_not_just_availability():
+    """A pool emptied by two rules must not read as one rule's fault.
+
+    The account cannot invoke one candidate and the durable record rules the
+    other out. A stop naming only the availability exclusion would send the
+    operator to fix their credentials when half the answer is the capability
+    record.
+    """
+    capability_records = {
+        "version": 1,
+        "identities": {
+            "anthropic/sonnet/api": {
+                "provider": "anthropic",
+                "model": "sonnet",
+                "transport": "api",
+                "capabilities": {
+                    CAPABILITY_TOOL_STRUCTURED: {
+                        "outcome": OUTCOME_ABSENT,
+                        "established_at": "2026-09-01T00:00:00Z",
+                        "subject_signature": "",
+                        "detail": "returned prose",
+                        "probe_role": "agent-code-review",
+                    }
+                },
+            }
+        },
+    }
+    agents = [a for a in _agents() if a.name in {"sonnet", "opus"}]
+    with pytest.raises(NoAvailableModelError) as exc_info:
+        assign_models(
+            agents,
+            _cfg(),
+            "medium",
+            complexity_score=5,
+            capability_records=capability_records,
+            model_availability={"opus": _unavailable()},
+        )
+    excluded = exc_info.value.excluded
+    assert excluded["opus"]["reason"] == REASON_MODEL_UNAVAILABLE
+    assert excluded["sonnet"]["reason"] == REASON_CAPABILITY_ABSENT
+    message = str(exc_info.value)
+    assert "not available to this account" in message
+    assert "demonstrated absent" in message
+
+
+def test_a_pool_emptied_by_availability_and_a_dev_declaration_names_both():
+    agents = [
+        replace(a, dev_capable=False) if a.name == "sonnet" else a
+        for a in _agents()
+        if a.name in {"sonnet", "opus"}
+    ]
+    with pytest.raises(NoAvailableModelError) as exc_info:
+        assign_models(
+            agents,
+            _cfg(),
+            "medium",
+            complexity_score=5,
+            model_availability={"opus": _unavailable()},
+        )
+    if exc_info.value.role == "dev":
+        assert exc_info.value.excluded["sonnet"]["reason"] == REASON_DEV_INCAPABLE
+        assert "declared dev_capable=false" in str(exc_info.value)
+
+
+# ── Explicit pools are filtered as whole pools, not just their head ────
+
+
+def _reviewer(name: str, model: str) -> ModelProfile:
+    return ModelProfile(
+        name=name,
+        provider="anthropic",
+        model=model,
+        budget_usd=2.0,
+        timeout_seconds=600,
+        allowed_tools=(),
+    )
+
+
+def _pinned_pool_config(tmp_path):
+    """A config whose reviewer pool the operator pinned to two models."""
+    return replace(
+        _adaptive_config(tmp_path),
+        review_pool=[_reviewer("r1", "sonnet"), _reviewer("r2", "opus")],
+        review_pool_is_default=False,
+    )
+
+
+def test_an_unavailable_non_leading_pinned_reviewer_is_not_dispatched(tmp_path):
+    """The pool is spliced back whole, so it must be filtered whole.
+
+    Filtering only the pool's head — the entry that reaches assign_models as the
+    role's pin — leaves every later member to be dispatched unchecked.
+    """
+    config = _pinned_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _available(), "opus": _unavailable()}):
+        state = _proceed_state()
+        applied = _apply_preflight_config(config, state, task_slug="s1")
+
+    assert [p.model for p in applied.review_pool] == ["sonnet"]
+    pool = state.routing_decision["code_review"]["candidate_pool"]
+    seated = {entry["name"] for entry in pool if entry.get("included")}
+    assert "opus" not in seated, "an unavailable pinned reviewer must not read as included"
+
+
+def test_a_pinned_pool_with_nothing_available_stops_the_run(tmp_path):
+    config = _pinned_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _unavailable(), "opus": _unavailable()}):
+        with pytest.raises(NoAvailableModelError) as exc_info:
+            _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+    assert exc_info.value.role in {"code_review", "preflight", "dev"}
+
+
+# ── Static routing (adaptive disabled) honours availability too ────────
+
+
+def _static_config(tmp_path):
+    return replace(
+        _make_config(tmp_path),
+        agents=[],
+        assignment=_cfg(enabled=False),
+        models=None,
+    )
+
+
+def test_static_routing_refuses_an_unavailable_fixed_profile(tmp_path):
+    """With no pool to narrow, the only thing availability can do is refuse."""
+    config = _static_config(tmp_path)
+    by_model = {p.model: _unavailable() for p in (config.dev_profile, config.preflight_profile)}
+    with _patch_availability(config, by_model):
+        with pytest.raises(NoAvailableModelError):
+            _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+
+
+def test_static_routing_warns_once_for_an_unverified_fixed_profile(tmp_path):
+    config = _static_config(tmp_path)
+    lines: list[str] = []
+    AVAILABILITY_WARNINGS.reset("test-static")
+    with _patch_availability(config, {config.dev_profile.model: _unverified()}):
+        _apply_preflight_config(config, _proceed_state(), log=lines.append, task_slug="s1")
+        _apply_preflight_config(config, _proceed_state(), log=lines.append, task_slug="s2")
+    warnings = [line for line in lines if "availability unconfirmed" in line]
+    assert len(warnings) == 1, f"expected one warning per model per run, got {warnings}"
+
+
+def test_static_routing_leaves_an_available_fixed_profile_alone(tmp_path):
+    config = _static_config(tmp_path)
+    with _patch_availability(config, {config.dev_profile.model: _available()}):
+        applied = _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+    assert applied.dev_profile.model == config.dev_profile.model
+
+
+# ── The warning scope is the run, not the process ──────────────────────
+
+
+def test_a_later_run_in_the_same_process_warns_again():
+    """Two sprints in one process are two runs, and each gets its warning.
+
+    Without run scoping the daemon's second sprint inherits the first one's
+    warned set and announces nothing — "once per process", not "once per run".
+    """
+    warnings = AvailabilityWarnings()
+    answers = {"opus": _unverified()}
+    first: list[str] = []
+    second: list[str] = []
+
+    warnings.emit(answers, first.append, run_key="sprint:one")
+    warnings.emit(answers, first.append, run_key="sprint:one")
+    warnings.emit(answers, second.append, run_key="sprint:two")
+
+    assert len(first) == 1, "one warning per model within a run"
+    assert len(second) == 1, "a new run announces the model again"
+
+
+def test_concurrent_stories_in_one_run_warn_exactly_once():
+    """Parallel workers share the tracker, so the check-then-mark must be atomic."""
+    import threading
+
+    warnings = AvailabilityWarnings()
+    answers = {"opus": _unverified()}
+    emitted: list[str] = []
+    lock = threading.Lock()
+    start = threading.Barrier(8)
+
+    def worker() -> None:
+        start.wait()
+        for name in warnings.pending(answers, "sprint:parallel"):
+            with lock:
+                emitted.append(name)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert emitted == ["opus"]

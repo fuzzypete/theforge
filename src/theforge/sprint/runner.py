@@ -21,6 +21,9 @@ from pathlib import Path
 
 import yaml
 
+from theforge.assignment import ROUTING_STOPPED_ERROR_TYPE
+from theforge.model_availability import AVAILABILITY_WARNINGS
+
 from .. import worker_budget
 from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig, ModelProfile
@@ -3297,6 +3300,22 @@ def _merge_visible_on_base(pr_url: str, project_root: Path, base_branch: str) ->
     return ancestor.returncode == 0
 
 
+def _routing_stop_reason(result: CoordinatorResult) -> str | None:
+    """Return the stop message when *result* is a routing refusal, else None.
+
+    A routing stop (#2950) is the account saying a phase has no invocable model.
+    Like a revoked credential, it is the whole answer for every remaining story
+    — the next story routes the same pool against the same account — so the
+    sprint stops rather than re-deriving it once per story. Unlike a revoked
+    credential it is not an agent failure at all: nothing was dispatched for the
+    refused phase, so the story is recorded as skipped and nothing is written
+    against any model.
+    """
+    if str(getattr(result.state, "error_type", "") or "") != ROUTING_STOPPED_ERROR_TYPE:
+        return None
+    return str(getattr(result, "message", "") or getattr(result.state, "error", "") or "").strip()
+
+
 def _fatal_auth_cause(result: CoordinatorResult) -> dict | None:
     """Return the structured cause when *result* died on a credential rejection.
 
@@ -5128,6 +5147,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # charged is exactly the failure this gate exists to prevent. Refuses on
     # positive catalog evidence only — an unverified answer routes normally.
     enforce_sprint_availability(_ctx.config, log=_log)
+
+    # "Warned once" is a property of THIS run. A process that runs more than one
+    # sprint — the daemon, a scripted batch — would otherwise inherit the
+    # previous run's warned set and announce nothing (#2950 review).
+    AVAILABILITY_WARNINGS.reset(f"sprint:{_ctx.resolved.name}")
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(_ctx.config)
@@ -7357,6 +7381,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # the same credential would be presented and refused identically.
     auth_circuit: dict | None = None
     auth_circuit_reason = ""
+    # Set by the first story whose routing refused for lack of an invocable
+    # model (#2950); every story after it is skipped rather than dispatched.
+    routing_stop_reason = ""
     # Slugs the breaker cancelled mid-flight. Their futures return through the
     # generic stop_event cancellation path, which is timeout-shaped and would
     # classify them FAILED; this set is how the scheduler tells "we killed it
@@ -7560,6 +7587,21 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     )
                     _log(f"SKIPPED {task.slug} ({auth_circuit_reason})")
                     _record_current_story_entry(task.slug, "SKIPPED", error=auth_circuit_reason)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(task.slug, status="skipped")
+                    continue
+
+                # Same shape for a routing stop (#2950): once the account has
+                # been shown to have no model for a phase, dispatching the next
+                # story only pays to be told again. Recorded skipped, not
+                # failed — nothing judged it.
+                if routing_stop_reason:
+                    _sprint_state.dag.mark_skipped(task.slug)
+                    _set_outcome(
+                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=routing_stop_reason
+                    )
+                    _log(f"SKIPPED {task.slug} ({routing_stop_reason})")
+                    _record_current_story_entry(task.slug, "SKIPPED", error=routing_stop_reason)
                     if _sprint_state.state_writer is not None:
                         _sprint_state.state_writer.update(task.slug, status="skipped")
                     continue
@@ -8322,6 +8364,41 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _log(
                     f"{icon} {slug}   {_fmt_cost_total(spec_cost, result.state.total_cost)}  {dur}"
                 )
+
+                # Routing stop (#2950): the account cannot invoke any model for
+                # one of this story's phases. Recorded as SKIPPED, not FAILED —
+                # nothing judged the story, so presenting it as a story failure
+                # is the same conflation #1951 exists to prevent — and the
+                # sprint stops, because the next story would route the same pool
+                # against the same account and reach the same refusal.
+                _routing_stop = _routing_stop_reason(result)
+                if _routing_stop:
+                    routing_stop_reason = routing_stop_reason or _routing_stop
+                    _end_collision_claim(_sprint_state, slug, "stopped by model availability")
+                    _log(f"SKIPPED {slug} ({_routing_stop})")
+                    _record_current_story_entry(slug, "SKIPPED", error=_routing_stop)
+                    _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_routing_stop)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
+                    _sprint_state.stop.stop_if_unset(
+                        f"Model availability stopped routing ({_routing_stop}); "
+                        "remaining stories not dispatched — they would route the "
+                        "same pool against the same account"
+                    )
+                    _log(f"HALT sprint: {_sprint_state.stop.reason}")
+                    for _pending_slug, _pending_evt in _sprint_state.stop_events.items():
+                        auth_cancelled_slugs.add(_pending_slug)
+                        _pending_evt.set()
+                    for _gate_slug, _pending_gate in _sprint_state.plan_gates.items():
+                        _log(f"Releasing plan gate for {_gate_slug} (routing stop)")
+                        _pending_gate.set()
+                    _sprint_state.plan_gates.clear()
+                    _settle_terminal_story_audit(slug, task, result)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
+                    continue
 
                 # Auth circuit breaker (#1952): the launch gate proves the
                 # credential was usable at t=0, but an interactive sign-in can

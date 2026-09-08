@@ -42,7 +42,11 @@ from theforge.artifacts import (
     PLAN_PATH,
     ensure_parent_dir,
 )
-from theforge.assignment import ROUTING_STOPPED_ERROR_TYPE, NoAvailableModelError
+from theforge.assignment import (
+    ROUTING_STOPPED_ERROR_TYPE,
+    NoAvailableModelError,
+    routing_stop_message,
+)
 from theforge.config import ForgeConfig
 from theforge.process_group import ProcessTeardown
 from theforge.task import (
@@ -1438,14 +1442,15 @@ def run_task(
                     # the live path in preflight_flow: a routing outcome, not an
                     # agent failure, with nothing dispatched and nothing recorded
                     # against any model.
-                    _log(f"  ✗ ROUTING  {_availability_stop}")
-                    state.error = str(_availability_stop)
+                    _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+                    _log(f"  ✗ ROUTING  {_stop}")
+                    state.error = _stop
                     state.error_type = ROUTING_STOPPED_ERROR_TYPE
                     return CoordinatorResult(
                         success=False,
                         phase=Phase.PREFLIGHT,
                         state=state,
-                        message=str(_availability_stop),
+                        message=_stop,
                         infrastructure_failure=True,
                     )
                 # Routing resolved from a cached verdict is still this run's
@@ -1884,14 +1889,15 @@ def _run_resume_coordinator(
                 # above: availability is resolved fresh inside
                 # _apply_preflight_config, so a resume can reach an emptied pool
                 # too, and it stops here rather than escaping as a failure (#2950).
-                _log(f"  ✗ ROUTING  {_availability_stop}")
-                state.error = str(_availability_stop)
+                _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+                _log(f"  ✗ ROUTING  {_stop}")
+                state.error = _stop
                 state.error_type = ROUTING_STOPPED_ERROR_TYPE
                 return CoordinatorResult(
                     success=False,
                     phase=Phase.PREFLIGHT,
                     state=state,
-                    message=str(_availability_stop),
+                    message=_stop,
                     infrastructure_failure=True,
                 )
             persist_routing_decision(
@@ -1970,13 +1976,30 @@ def _run_resume_coordinator(
         # the roster as a routed panel.
         from .preflight import restore_routing_decision  # noqa: PLC0415
 
-        config, _routing_recovery = restore_routing_decision(
-            config,
-            state,
-            task_slug=task.slug,
-            story_content=story_content,
-            log=_log,
-        )
+        try:
+            config, _routing_recovery = restore_routing_decision(
+                config,
+                state,
+                task_slug=task.slug,
+                story_content=story_content,
+                log=_log,
+            )
+        except NoAvailableModelError as _availability_stop:
+            # Re-deriving the recorded decision reaches the same availability
+            # gate the live path does (#2950). A resumed story whose account can
+            # no longer invoke a phase's models stops the same way rather than
+            # seating the static roster and paying to find out.
+            _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+            _log(f"  ✗ ROUTING  {_stop}")
+            state.error = _stop
+            state.error_type = ROUTING_STOPPED_ERROR_TYPE
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=_stop,
+                infrastructure_failure=True,
+            )
         logger._safe_emit("routing_recovery", phase="RESUME", **_routing_recovery)
 
     with _run_log_context(config, logger, task, state, _task_start):

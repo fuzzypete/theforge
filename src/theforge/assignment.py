@@ -511,13 +511,70 @@ def _availability_exclusion_note(excluded: dict[str, dict[str, object]]) -> str:
 ROUTING_STOPPED_ERROR_TYPE = "RoutingStopped"
 
 
-class NoAvailableModelError(ValueError):
-    """No model remains for a phase because the account cannot invoke any of them.
+def _exclusion_sentence(record: dict[str, object]) -> str:
+    """Render one excluded candidate's reason in the operator's vocabulary."""
+    reason = record.get("reason")
+    detail = record.get("detail")
+    if reason == REASON_MODEL_UNAVAILABLE and isinstance(detail, dict):
+        return format_unavailable_detail(detail)
+    if reason == REASON_CAPABILITY_ABSENT and isinstance(detail, dict):
+        capability = detail.get("capability") or "the required capability"
+        established = detail.get("established_at") or "?"
+        return f"{capability} demonstrated absent (established {established})"
+    if reason == REASON_DEV_INCAPABLE:
+        return "declared dev_capable=false"
+    return str(reason or "excluded")
 
-    Raised *before* the phase is dispatched, so the run stops having spent
-    nothing on the story. This is a routing outcome, not an agent failure:
-    nothing was asked of any model, so nothing may be recorded against any
-    model's capability history or profile.
+
+def _pool_exhaustion_payload(
+    agents: list[AgentDef],
+    availability_excluded: dict[str, dict[str, object]],
+    capability_excluded: dict[str, dict[str, object]],
+    dev_declared_excluded: dict[str, dict[str, object]] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Why each candidate is gone, for a pool that no longer has one.
+
+    A phase can be emptied by more than one hard rule at once — the account
+    cannot invoke two of the three, and the capability record rules out the
+    third. Naming only the availability exclusions would tell the operator the
+    account is the whole story and send them to fix the wrong thing, so the stop
+    reports every candidate with the rule that actually removed it (#2950
+    review). Priority matches the candidate pool's: availability first, since a
+    model the account cannot reach makes every other reason moot.
+    """
+    dev_declared_excluded = dev_declared_excluded or {}
+    payload: dict[str, dict[str, object]] = {}
+    for agent in agents:
+        if agent.name in availability_excluded:
+            payload[agent.name] = {
+                "reason": REASON_MODEL_UNAVAILABLE,
+                "detail": availability_excluded[agent.name],
+            }
+        elif agent.name in capability_excluded:
+            payload[agent.name] = {
+                "reason": REASON_CAPABILITY_ABSENT,
+                "detail": capability_excluded[agent.name],
+            }
+        elif agent.name in dev_declared_excluded:
+            payload[agent.name] = {
+                "reason": REASON_DEV_INCAPABLE,
+                "detail": dev_declared_excluded[agent.name],
+            }
+    return payload
+
+
+class NoAvailableModelError(ValueError):
+    """No model remains for a phase, at least partly because of account availability.
+
+    Raised *before* the phase is dispatched, so no model is asked to do
+    anything. This is a routing outcome, not an agent failure: nothing may be
+    recorded against any model's capability history or profile.
+
+    The message deliberately does **not** claim a spend. What the story has
+    already cost depends on where the refusal was reached — nothing at all at
+    the sprint gate and on the cached/resume paths, but a charged preflight on
+    the live coordinator path — and only the catching site knows which (#2950
+    review). Catchers append their own figure via :func:`routing_stop_message`.
 
     A ``ValueError`` subclass for the same reason
     :class:`NoCapableCandidateError` is — callers already handle an unroutable
@@ -529,17 +586,31 @@ class NoAvailableModelError(ValueError):
         self.excluded = excluded
         self.exclusion_reason = REASON_MODEL_UNAVAILABLE
         detail = ", ".join(
-            f"{name} excluded ({format_unavailable_detail(record)})"
+            f"{name} excluded ({_exclusion_sentence(record)})"
             for name, record in sorted(excluded.items())
         )
         super().__init__(
-            f"no model available for phase {role}: {detail or 'no candidate was configured'}. "
-            f"Nothing dispatched, $0.00 spent."
+            f"no model available for phase {role}: {detail or 'no candidate was configured'}"
         )
 
     def summary(self) -> str:
         """One-line operator rendering, matching the ROUTING stop the CLI prints."""
         return str(self)
+
+
+def routing_stop_message(exc: NoAvailableModelError, spent_usd: float = 0.0) -> str:
+    """The operator-facing routing stop, with the spend the caller actually knows.
+
+    ``spent_usd`` is what this story has cost by the time the stop was reached.
+    Zero is the common case and the one the acceptance criterion is about; a
+    live coordinator run that already paid for preflight says so rather than
+    printing a $0.00 the operator's bill will contradict.
+    """
+    if spent_usd > 0:
+        tail = f"Nothing further dispatched, ${spent_usd:.2f} already spent on this story."
+    else:
+        tail = "Nothing dispatched, $0.00 spent."
+    return f"{exc}. {tail}"
 
 
 class NoCapableCandidateError(ValueError):
@@ -3935,13 +4006,38 @@ def assign_models(
     # gate, an explicit override is NOT exempt — an operator pin the account
     # cannot invoke has no successful dispatch to honor, and honoring it would
     # spend the story's budget to discover that.
+    # The dev declaration is the third hard rule that can empty a pool, and it is
+    # resolved here — ahead of the refusals rather than after them — so the
+    # availability refusal below sees dev's *final* pool. Judging dev on the
+    # pre-declaration pool would let a pool emptied jointly by the account answer
+    # and ``dev_capable: false`` fall through to the declaration refusal, which
+    # names only the declared models and silently drops the unavailable ones.
+    dev_incapability_exclusions = _dev_incapability_exclusions(role_pools["dev"])
+    capability_filtered_dev_pool = role_pools["dev"]
+    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
+
     for role, pool in role_pools.items():
         if availability_excluded and not pool:
-            raise NoAvailableModelError(role, availability_excluded)
+            # Report every candidate with the rule that removed it, not only the
+            # availability ones: a pool emptied jointly by the account answer and
+            # the capability record (or the dev declaration) must not read as an
+            # account problem alone.
+            raise NoAvailableModelError(
+                role,
+                _pool_exhaustion_payload(
+                    agents,
+                    availability_excluded,
+                    capability_excluded[role],
+                    dev_incapability_exclusions if role == "dev" else None,
+                ),
+            )
     for pinned_role, profile in explicit_profiles.items():
         pinned_identity = identity_for_profile(profile)
         pinned_unavailable = {
-            agent.name: availability_excluded[agent.name]
+            agent.name: {
+                "reason": REASON_MODEL_UNAVAILABLE,
+                "detail": availability_excluded[agent.name],
+            }
             for agent in agents
             if agent.name in availability_excluded and identity_for_agent(agent) == pinned_identity
         }
@@ -3954,15 +4050,17 @@ def assign_models(
     # it never reaches candidate selection, and the operator's pin stands (it is
     # flagged in that role's rationale instead).
     for role, excluded in capability_excluded.items():
-        if excluded and not role_pools[role] and role not in explicit_profiles:
+        # dev is judged on its pre-declaration pool here, exactly as before: a
+        # dev pool the declaration alone emptied is the declaration's refusal
+        # below, not a capability one.
+        pool = capability_filtered_dev_pool if role == "dev" else role_pools[role]
+        if excluded and not pool and role not in explicit_profiles:
             raise NoCapableCandidateError(role, ROLE_REQUIRED_CAPABILITY[role], excluded)
 
     # A declared dev incapability is an independent hard eligibility boundary,
-    # applied after demonstrated-capability exclusions so every downstream dev
+    # applied above (before the availability refusal) so every downstream dev
     # mechanism consumes the same pool. Do not restore the raw pool when it is
     # empty: there is no permitted adaptive dev candidate.
-    dev_incapability_exclusions = _dev_incapability_exclusions(role_pools["dev"])
-    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
     if not role_pools["dev"] and "dev" not in explicit_profiles:
         raise NoCapableCandidateError.declared_dev_incapability(dev_incapability_exclusions)
 

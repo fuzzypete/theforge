@@ -110,20 +110,50 @@ anything:
              (not available to this account). Nothing dispatched, $0.00 spent.
 ```
 
-Read this as a routing outcome, not an agent failure. No story is marked FAILED,
-nothing was judged, and nothing is recorded against any model's capability
-history or profile — so the stop contributes nothing to adaptive memory.
+Read this as a routing outcome, not an agent failure. The story is recorded
+**SKIPPED**, not FAILED — nothing judged it — and nothing is written against any
+model's capability history or profile, so the stop contributes nothing to
+adaptive memory. In a sprint the run then halts: every remaining story would
+route the same pool against the same account and reach the same refusal, so
+dispatching them only pays to be told again.
 
-Two properties are worth knowing when diagnosing one:
+The stop names every candidate that is gone **and the rule that removed it**. A
+phase can be emptied by more than one at once, and a message that blamed the
+account for a candidate the capability record ruled out would send you to fix
+the wrong thing:
+
+```
+  ✗ ROUTING  no model available for phase code_review: gpt-5.4 excluded (not
+             available to this account under ChatGPT-account auth), sonnet
+             excluded (tool_structured demonstrated absent (established
+             2026-09-01))
+```
+
+Four properties are worth knowing when diagnosing one:
 
 - **Only positive evidence stops anything.** A provider that publishes no
   account catalog, or a catalog lookup that fails, yields *unverified* — the
   model stays fully eligible and routes exactly as before. The run warns once
-  per model that its availability is unconfirmed, not once per story.
+  per model that its availability is unconfirmed, once per **run**: a second
+  sprint in the same process gets its own warnings, and parallel stories in one
+  sprint share a single line.
 - **The answer is read per story, not once at launch.** An account catalog that
   changes mid-sprint changes routing for the stories that follow, with no
-  restart. The sprint-launch gate is the coarse, tier-independent pass; the
-  router enforces the same answer exactly when it narrows a phase's pool.
+  restart.
+- **Preflight is gated on what preflight actually dispatches.** It runs before
+  routing (routing needs the complexity score preflight produces), so the
+  candidate set for that phase is the configured `preflight` profile and its
+  fallback, not the adaptive pool. An unavailable primary with an available
+  configured fallback reseats onto the fallback and says so; with neither
+  invocable, the story stops having spent nothing.
+- **The spend in the message is the real one.** The launch gate and the
+  cached/resume paths genuinely cost nothing and say `$0.00 spent`. Where a
+  refusal is only reachable after preflight has run, the line reports what that
+  story has already cost instead of claiming zero.
+
+Static routing (`assignment.enabled: false`) is covered too. There is no pool to
+narrow there, so availability can only refuse: a configured phase profile the
+account cannot invoke stops the run rather than being dispatched.
 
 ### Broken baseline recovery
 

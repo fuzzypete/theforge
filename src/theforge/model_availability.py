@@ -28,7 +28,10 @@ capability gate that consumes it.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any
 
 from .config import ModelProfile, TransportSpec, resolve_agent_spec
@@ -54,6 +57,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "AvailabilityWarnings",
+    "StoryAvailability",
     "agent_availability_targets",
     "availability_detail",
     "availability_target",
@@ -62,7 +66,10 @@ __all__ = [
     "format_unverified_detail",
     "is_unavailable",
     "is_unverified",
+    "profile_dispatch_key",
     "resolve_agent_availability",
+    "resolve_story_availability",
+    "run_warning_key",
 ]
 
 
@@ -218,18 +225,60 @@ def config_availability_targets(config: "ForgeConfig") -> list[ModelAvailability
     return targets
 
 
+def dispatch_key(target: ModelAvailabilityTarget) -> str:
+    """The identity an account answer is actually scoped to.
+
+    Not the model name, and not the agent name. A catalog answers for a
+    *dispatch identity*: this provider family, over this transport and runner,
+    at this endpoint. Two configured candidates naming the same model under
+    different credentials or endpoints are different identities and get
+    different answers; two that agree on all four are the same identity and
+    share one answer (and one catalog lookup).
+
+    Everything that counts candidates — the launch gate's "is every candidate
+    for this phase unavailable", the router's pools — keys on this, so a phase
+    holding two profiles that happen to share a model string can never collapse
+    into one entry and read as though a candidate were still standing.
+    """
+    return "|".join(
+        str(part or "")
+        for part in (
+            target.canonical_id,
+            target.transport.kind,
+            target.transport.runner,
+            target.provider,
+            target.base_url,
+        )
+    )
+
+
+def profile_dispatch_key(profile: ModelProfile, config: "ForgeConfig") -> str | None:
+    """Dispatch key for a configured profile, or None when it names no identity.
+
+    Returns None rather than raising for a profile whose dispatch fields cannot
+    be read. A candidate whose identity is underivable has no account answer, so
+    it is simply not counted — the alternative is an availability probe taking
+    down a run it was only ever meant to inform.
+    """
+    try:
+        resolved = _apply_transport_fallback(profile, config.transport_fallbacks)
+        target = availability_target(resolved, config, key="")
+        return None if target is None else dispatch_key(target)
+    except Exception:  # noqa: BLE001 - see docstring: never fails a caller
+        return None
+
+
 def agent_availability_targets(
     agents: "Iterable[AgentDef]",
     config: "ForgeConfig",
 ) -> list[ModelAvailabilityTarget]:
     """Build one target per routing-pool agent, keyed by ``AgentDef.name``.
 
-    The key convention matters. Candidate pools, capability exclusions and the
-    ``routing_decision`` block are all keyed on the agent *name*, while a
-    catalog answer is scoped to a dispatch identity (provider, transport, auth
-    mode, endpoint). Two pool entries naming the same model under different
-    credentials are separate agents and get separate answers; keying on the
-    name is what keeps them from collapsing into one.
+    Kept keyed by name because candidate pools, capability exclusions and the
+    ``routing_decision`` block are all keyed on the agent name. The *answer*
+    behind each key is still identity-scoped — see :func:`dispatch_key` — so
+    two agents that differ only in name share one lookup, while two naming the
+    same model under different credentials get their own.
     """
     targets: list[ModelAvailabilityTarget] = []
     for agent in agents:
@@ -245,6 +294,89 @@ def agent_availability_targets(
 # ── Resolution ─────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class StoryAvailability:
+    """Every configured identity's current account answer, for one story.
+
+    Resolved once at the story's own boundary and consulted by every decision
+    that story makes: the preflight dispatch, adaptive routing, the fixed-profile
+    (non-adaptive) path, and explicit pinned pools. One resolution, so those
+    decisions cannot disagree with each other, and one set of catalog fetches.
+
+    Keyed by :func:`dispatch_key`. Lookups take a profile or an agent and derive
+    the key, so no caller has to know the convention.
+    """
+
+    answers: dict[str, ModelAvailability] = field(default_factory=dict)
+
+    def for_profile(
+        self, profile: ModelProfile | None, config: "ForgeConfig"
+    ) -> ModelAvailability | None:
+        """The answer for what *profile* would actually dispatch, if known."""
+        if profile is None:
+            return None
+        key = profile_dispatch_key(profile, config)
+        return None if key is None else self.answers.get(key)
+
+    def for_agent(self, agent: "AgentDef", config: "ForgeConfig") -> ModelAvailability | None:
+        """The answer for a routing-pool agent."""
+        return self.for_profile(agent.to_model_profile(allowed_tools=()), config)
+
+    def by_agent(
+        self, agents: "Iterable[AgentDef]", config: "ForgeConfig"
+    ) -> dict[str, ModelAvailability]:
+        """Answers keyed by ``AgentDef.name``, the shape the router consumes."""
+        resolved: dict[str, ModelAvailability] = {}
+        for agent in agents:
+            answer = self.for_agent(agent, config)
+            if answer is not None:
+                resolved[agent.name] = answer
+        return resolved
+
+    def by_profile(
+        self, profiles: "Mapping[str, ModelProfile]", config: "ForgeConfig"
+    ) -> dict[str, ModelAvailability]:
+        """Answers for named profiles, keyed by the caller's own labels."""
+        resolved: dict[str, ModelAvailability] = {}
+        for label, profile in profiles.items():
+            answer = self.for_profile(profile, config)
+            if answer is not None:
+                resolved[label] = answer
+        return resolved
+
+
+def resolve_story_availability(
+    config: "ForgeConfig",
+    *,
+    resolve: Callable[..., dict[str, ModelAvailability]] | None = None,
+) -> StoryAvailability:
+    """Resolve every configured identity's account answer for one story.
+
+    Called at the story's own boundary rather than once at sprint start: an
+    account catalog that changes mid-sprint must change routing for the stories
+    that follow, without a restart. Catalog fetches are shared by dispatch
+    identity, so the whole configured surface costs one lookup per account.
+
+    Never raises. A resolver failure yields no answers at all, which leaves
+    every candidate eligible — an availability probe that cannot run must not be
+    able to empty a pool or stop a run.
+    """
+    resolver = resolve or resolve_model_availability
+    targets: dict[str, ModelAvailabilityTarget] = {}
+    for target in config_availability_targets(config):
+        key = dispatch_key(target)
+        targets.setdefault(key, _dc_replace(target, key=key))
+    if not targets:
+        return StoryAvailability()
+    try:
+        return StoryAvailability(dict(resolver(list(targets.values()), config.secrets)))
+    except Exception as exc:  # noqa: BLE001 - see docstring: never narrows a pool
+        log.warning(
+            "model availability could not be resolved, treating all as unverified: %s", exc
+        )
+        return StoryAvailability()
+
+
 def resolve_agent_availability(
     agents: "Iterable[AgentDef]",
     config: "ForgeConfig",
@@ -253,14 +385,8 @@ def resolve_agent_availability(
 ) -> dict[str, ModelAvailability]:
     """Resolve the current account answer for each pool agent, by agent name.
 
-    Called at each selection boundary rather than once at sprint start: an
-    account catalog that changes mid-sprint must change routing for the stories
-    that follow, without a restart. Catalog fetches are shared within one call
-    by dispatch identity, so a pool of N models on one account costs one lookup.
-
-    Never raises. A resolver failure leaves every candidate *unverified*, which
-    is fully eligible — an availability probe that cannot run must not be able
-    to empty a pool.
+    A thin view over :func:`resolve_story_availability` for callers that only
+    route the adaptive pool. Never raises, for the same reason.
     """
     resolver = resolve or resolve_model_availability
     targets = agent_availability_targets(agents, config)
@@ -342,35 +468,63 @@ class AvailabilityWarnings:
     model stays quiet, a newly-configured model still gets its warning, and a
     model whose answer changes mid-sprint is announced again under its new
     state rather than silently suppressed.
+
+    **Scoped to a run, not to a process.** Callers pass the run they are warning
+    for — the sprint name, or the task's run id outside a sprint — and a new run
+    clears what the previous one warned about. Without that, a second sprint in
+    the same process (the daemon, the test suite, a scripted batch) inherits the
+    first one's warned set and announces nothing, which is the opposite of the
+    "exactly once per run" the spec asks for.
+
+    Thread-safe: the sprint runs its stories on a ``ThreadPoolExecutor``, so
+    parallel workers reach one tracker concurrently and the check-then-mark must
+    be atomic or two stories can both decide they are the first to warn.
     """
 
     def __init__(self) -> None:
         self._warned: set[tuple[str, str]] = set()
+        self._run_key: str | None = None
+        self._lock = threading.Lock()
 
-    def reset(self) -> None:
-        self._warned.clear()
+    def reset(self, run_key: str | None = None) -> None:
+        """Start a new run's warning scope."""
+        with self._lock:
+            self._warned.clear()
+            self._run_key = run_key
 
-    def pending(self, availability: Mapping[str, ModelAvailability]) -> list[str]:
+    def pending(
+        self,
+        availability: Mapping[str, ModelAvailability],
+        run_key: str | None = None,
+    ) -> list[str]:
         """Return names with a not-yet-warned answer, marking them warned."""
         fresh: list[str] = []
-        for name in sorted(availability):
-            answer = availability[name]
-            if not (is_unverified(answer) or is_unavailable(answer)):
-                continue
-            key = (name, answer.state)
-            if key in self._warned:
-                continue
-            self._warned.add(key)
-            fresh.append(name)
+        with self._lock:
+            if run_key is not None and run_key != self._run_key:
+                # A different run than the one this set describes. Its warnings
+                # say nothing about this run, so start clean rather than let an
+                # earlier run silence this one.
+                self._warned.clear()
+                self._run_key = run_key
+            for name in sorted(availability):
+                answer = availability[name]
+                if not (is_unverified(answer) or is_unavailable(answer)):
+                    continue
+                key = (name, answer.state)
+                if key in self._warned:
+                    continue
+                self._warned.add(key)
+                fresh.append(name)
         return fresh
 
     def emit(
         self,
         availability: Mapping[str, ModelAvailability],
         log_line: Callable[[str], None] | None = None,
+        run_key: str | None = None,
     ) -> list[str]:
         """Warn once per not-yet-warned answer; return the names warned about."""
-        warned = self.pending(availability)
+        warned = self.pending(availability, run_key)
         for name in warned:
             answer = availability[name]
             if is_unavailable(answer):
@@ -386,7 +540,23 @@ class AvailabilityWarnings:
         return warned
 
 
-# Process-wide tracker. "Exactly once per model" is a property of the run, and
-# the coordinator resolves availability once per story, so the counter cannot
-# live inside a single selection call.
+# The shared tracker. "Exactly once per model" is a property of the run, and the
+# coordinator resolves availability once per story, so the counter cannot live
+# inside a single selection call. Run scoping is carried by the ``run_key``
+# argument rather than by the object's lifetime — see :meth:`pending`.
 AVAILABILITY_WARNINGS = AvailabilityWarnings()
+
+
+def run_warning_key(state: object) -> str | None:
+    """The run a coordinator state belongs to, for warning suppression.
+
+    A sprint is one run spanning many stories, so its stories share a key and
+    a model is announced once for the whole sprint. A standalone task run is its
+    own run and uses its run id. Returns None when neither is known, which
+    leaves the current scope untouched rather than inventing a new one.
+    """
+    sprint_name = getattr(state, "sprint_name", None)
+    if sprint_name:
+        return f"sprint:{sprint_name}"
+    run_id = getattr(state, "run_id", None)
+    return f"run:{run_id}" if run_id else None

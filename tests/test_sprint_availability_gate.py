@@ -32,6 +32,7 @@ from theforge.sprint.availability_gate import (  # noqa: E402
     SprintNoAvailableModel,
     check_sprint_availability,
     enforce_sprint_availability,
+    preflight_dispatch_profiles,
 )
 
 CHECKED_AT = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
@@ -98,7 +99,8 @@ def test_gate_stops_when_every_candidate_is_unavailable(tmp_path):
     )
     assert stops, "a phase with no invocable model must stop the sprint"
     assert {stop.phase for stop in stops} >= {"dev"}
-    assert set(stops[0].excluded) == {"sonnet", "opus"}
+    dev_stop = next(stop for stop in stops if stop.phase == "dev")
+    assert dev_stop.models == ["opus", "sonnet"]
 
 
 def test_gate_message_names_every_model_and_the_spend(tmp_path):
@@ -159,3 +161,69 @@ def test_a_resolver_failure_never_stops_a_sprint(tmp_path):
         raise RuntimeError("catalog unreachable")
 
     assert check_sprint_availability(_config(tmp_path), resolve=explode) == []
+
+
+def test_same_model_under_two_endpoints_counts_as_two_candidates(tmp_path):
+    """Identity, not model string, is what a candidate is.
+
+    A phase holding two profiles that share a model name but dispatch to
+    different endpoints has two candidates. Counting them as one would let a
+    phase with both unavailable look like it still had a survivor, and the
+    sprint would launch into a dev phase that cannot run.
+    """
+    config = replace(
+        _config(tmp_path),
+        agents=[
+            AgentDef(
+                name="local-a",
+                provider="openai",
+                model="gpt-5",
+                budget_usd=5.0,
+                timeout_seconds=900,
+                tier="mid",
+                base_url="http://127.0.0.1:8001/v1",
+            ),
+            AgentDef(
+                name="local-b",
+                provider="openai",
+                model="gpt-5",
+                budget_usd=5.0,
+                timeout_seconds=900,
+                tier="mid",
+                base_url="http://127.0.0.1:8002/v1",
+            ),
+        ],
+    )
+
+    def resolve(targets, _secrets=None):
+        return {t.key: _answer(MODEL_AVAILABILITY_UNAVAILABLE, "not in catalog") for t in targets}
+
+    stops = check_sprint_availability(config, resolve=resolve)
+    dev_stop = next(stop for stop in stops if stop.phase == "dev")
+    assert len(dev_stop.excluded) == 2, "two endpoints are two candidates, not one"
+    assert dev_stop.models == ["gpt-5", "gpt-5"]
+
+
+def test_preflight_phase_is_gated_on_what_preflight_actually_dispatches(tmp_path):
+    """Preflight runs before routing, so the adaptive pool is not its pool.
+
+    An available dev-pool agent must not clear the preflight phase: the
+    preflight call uses the configured preflight profile, and dispatching it
+    when the account cannot invoke it is exactly the paid discovery this gate
+    exists to prevent.
+    """
+    config = _config(tmp_path)
+    preflight_models = {p.model for p in preflight_dispatch_profiles(config)}
+
+    def resolve(targets, _secrets=None):
+        return {
+            t.key: _answer(
+                MODEL_AVAILABILITY_UNAVAILABLE
+                if t.model in preflight_models
+                else MODEL_AVAILABILITY_AVAILABLE
+            )
+            for t in targets
+        }
+
+    stops = check_sprint_availability(config, resolve=resolve)
+    assert {stop.phase for stop in stops} == {"preflight"}

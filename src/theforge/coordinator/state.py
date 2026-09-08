@@ -944,6 +944,12 @@ class CoordinatorState:
     preflight_cached_from_run_id: str | None = None
     preflight_cached_original_verdict: str | None = None
     preflight_cache_snapshot: dict[str, str] = field(default_factory=dict)
+    # The account-availability answers this story resolved before dispatching
+    # its preflight (#2950), reused by routing so the phase that already ran and
+    # the router that runs next cannot be gated on two different answers. A
+    # ``theforge.model_availability.StoryAvailability``; typed loosely to keep
+    # this module's import surface flat. None until the story resolves one.
+    model_availability: Any | None = None
     preflight_cache_validation: dict[str, Any] = field(default_factory=dict)
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
