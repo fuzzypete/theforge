@@ -544,20 +544,26 @@ def _pool_exhaustion_payload(
     """
     dev_declared_excluded = dev_declared_excluded or {}
     payload: dict[str, dict[str, object]] = {}
+    # Keyed by agent name, which is unique within a pool; ``label`` carries the
+    # same name for rendering so every payload in the codebase reads the same
+    # way regardless of what its key had to be.
     for agent in agents:
         if agent.name in availability_excluded:
             payload[agent.name] = {
                 "reason": REASON_MODEL_UNAVAILABLE,
+                "label": agent.name,
                 "detail": availability_excluded[agent.name],
             }
         elif agent.name in capability_excluded:
             payload[agent.name] = {
                 "reason": REASON_CAPABILITY_ABSENT,
+                "label": agent.name,
                 "detail": capability_excluded[agent.name],
             }
         elif agent.name in dev_declared_excluded:
             payload[agent.name] = {
                 "reason": REASON_DEV_INCAPABLE,
+                "label": agent.name,
                 "detail": dev_declared_excluded[agent.name],
             }
     return payload
@@ -585,9 +591,16 @@ class NoAvailableModelError(ValueError):
         self.role = role
         self.excluded = excluded
         self.exclusion_reason = REASON_MODEL_UNAVAILABLE
+        # The map's key is whatever the caller can guarantee unique — an agent
+        # name from the pool, or a dispatch identity for configured profiles.
+        # ``label`` is what the operator reads, and two candidates may share
+        # one: the same model string under two credentials is two exclusions
+        # with one name, and both have to appear (#2950 review).
         detail = ", ".join(
-            f"{name} excluded ({_exclusion_sentence(record)})"
-            for name, record in sorted(excluded.items())
+            f"{record.get('label') or key} excluded ({_exclusion_sentence(record)})"
+            for key, record in sorted(
+                excluded.items(), key=lambda item: (str(item[1].get("label") or item[0]), item[0])
+            )
         )
         super().__init__(
             f"no model available for phase {role}: {detail or 'no candidate was configured'}"
@@ -3252,6 +3265,7 @@ def reconcile_explicit_reviewer_pools(
     code_reviewers: list[ModelProfile] | None = None,
     secrets: dict[str, str] | None = None,
     capability_records: dict | None = None,
+    availability_excluded: dict[str, dict[str, dict[str, object]]] | None = None,
 ) -> dict[str, object]:
     """Reconcile reviewer role blocks with explicit pools spliced post-assign.
 
@@ -3263,6 +3277,15 @@ def reconcile_explicit_reviewer_pools(
     rebuilds only the affected reviewer role blocks from the real post-splice
     profiles so the persisted block stays reconstructable and consistent with
     runtime (#1391 iter1). Other roles and the block ``origin`` are preserved.
+
+    ``availability_excluded`` names the pinned reviewers the coordinator dropped
+    because the account cannot invoke them, keyed role → label → availability
+    detail. They are rebuilt as *excluded* candidates carrying
+    ``model_unavailable`` and their auth mode and timestamp. Leaving them out
+    entirely would make the decision unable to explain why the operator's own
+    pool shrank, and letting a same-named adaptive agent stand in for one would
+    report the wrong reason — ``explicit_override_locked`` instead of the
+    account answer that actually removed it (#2950 review).
 
     An explicit pool is operator intent and is never filtered here — but a
     spliced reviewer whose required capability is recorded demonstrably absent
@@ -3298,11 +3321,33 @@ def reconcile_explicit_reviewer_pools(
         if not isinstance(role_block, dict):
             return
         selected = {p.name for p in reviewers}
+        dropped = (availability_excluded or {}).get(role) or {}
         # Explicit pools are operator-locked: agents outside the pool are locked
         # out; every profile that will run is an included candidate — even ones
         # not present in the adaptive ``agents`` registry.
         pool = _reviewer_candidate_pool(agents, selected, None, True, secrets)
+        # A pinned reviewer the account cannot invoke is an exclusion, not a
+        # lock-out. Overwrite any same-named adaptive entry so the recorded
+        # reason is the account answer rather than the generic override lock.
+        for entry in pool:
+            record = dropped.get(str(entry.get("name")))
+            if record is not None:
+                entry["included"] = False
+                entry["reason"] = REASON_MODEL_UNAVAILABLE
+                entry["detail"] = dict(record)
         present = {e["name"] for e in pool}
+        for label, record in sorted(dropped.items()):
+            if label not in present:
+                pool.append(
+                    {
+                        "name": label,
+                        "tier": None,
+                        "included": False,
+                        "reason": REASON_MODEL_UNAVAILABLE,
+                        "detail": dict(record),
+                    }
+                )
+                present.add(label)
         for p in reviewers:
             if p.name not in present:
                 pool.append(
@@ -4036,6 +4081,7 @@ def assign_models(
         pinned_unavailable = {
             agent.name: {
                 "reason": REASON_MODEL_UNAVAILABLE,
+                "label": agent.name,
                 "detail": availability_excluded[agent.name],
             }
             for agent in agents

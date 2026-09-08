@@ -18,7 +18,6 @@ from theforge.config import (
     apply_model_info,
     model_info_view,
 )
-from theforge.config.model_identity import ModelAvailability
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.config.role_overrides import (
     explicit_role_overrides,
@@ -27,8 +26,13 @@ from theforge.model_availability import (
     AVAILABILITY_WARNINGS as _availability_warnings,
 )
 from theforge.model_availability import (
+    AvailabilityAnnouncement,
     StoryAvailability,
+    announcements,
+    availability_detail,
+    is_unavailable,
     phase_candidate_profiles,
+    profile_dispatch_key,
     resolve_story_availability,
     run_warning_key,
     unavailable_candidates,
@@ -1306,20 +1310,24 @@ def story_availability_for(
     return resolved
 
 
-def _fixed_profile_availability(
+def _story_announcements(
     config: ForgeConfig,
     availability: "StoryAvailability",
-) -> dict[str, ModelAvailability]:
-    """Answers for the configured phase profiles, keyed for operator display.
+) -> "list[AvailabilityAnnouncement]":
+    """Every identity this story could dispatch, once, with a display label.
 
-    The warning surface for a static run: with no agents pool, the models an
-    operator needs told about are the ones their config names.
+    A run reaches its models through two vocabularies — the adaptive pool names
+    them, the fixed phase configuration names them by model — and the same
+    identity routinely appears in both. Announcing per identity rather than per
+    label is what keeps "warn once per model per run" true when a model is
+    configured as a pool agent *and* as a phase profile, and what keeps two
+    genuinely different identities that share a model string from collapsing
+    into one announcement (#2950 review).
     """
-    named: dict[str, ModelProfile] = {}
-    for profiles in phase_candidate_profiles(config).values():
-        for profile in profiles:
-            named.setdefault(profile.model, profile)
-    return availability.by_profile(named, config)
+    profiles: list[ModelProfile] = []
+    for phase_profiles in phase_candidate_profiles(config).values():
+        profiles.extend(phase_profiles)
+    return announcements(config, availability, agents=config.agents, profiles=profiles)
 
 
 def _refuse_unavailable_fixed_profiles_for(
@@ -1337,11 +1345,15 @@ def _refuse_unavailable_fixed_profiles_for(
     excluded, total = unavailable_candidates(profiles, config, availability.answers)
     if not total or len(excluded) != total:
         return
+    # Keyed by dispatch identity, never by model: two configured profiles can
+    # share a model string under different endpoints or credentials, and keying
+    # on the name would drop one of them from the stop entirely (#2950 review).
     raise NoAvailableModelError(
         phase,
         {
-            str(record.get("model") or identity): {
+            identity: {
                 "reason": REASON_MODEL_UNAVAILABLE,
+                "label": str(record.get("model") or identity),
                 "detail": record,
             }
             for identity, record in excluded.items()
@@ -1349,19 +1361,45 @@ def _refuse_unavailable_fixed_profiles_for(
     )
 
 
-def _refuse_unavailable_fixed_profiles(
+def _apply_static_availability(
     config: ForgeConfig,
     availability: "StoryAvailability",
-) -> None:
-    """Stop a static-routing run whose phase has no invocable configured model.
+    *,
+    log: Callable[[str], None],
+) -> ForgeConfig:
+    """Filter, then refuse, the configured profiles a static run would dispatch.
 
-    Static routing has no pool to narrow, so there is nothing to filter and
-    nothing to reseat: either the configured model for a phase can be invoked or
-    the phase cannot run. Refusing here is what stops an adaptive-disabled run
-    from paying to discover that (#2950 review).
+    Static routing has no adaptive pool to narrow, but it is not therefore a
+    single model per phase: a reviewer pool is a pool whether or not adaptive
+    assignment is on. So this does the same two things the adaptive path does —
+    drop the members the account cannot invoke, and refuse only when a phase has
+    nothing left. Refusing a *mixed* pool would stop a run that can proceed; and
+    the earlier shape, which only ever refused, left the unavailable member in
+    the runtime pool to be dispatched alongside the available one (#2950
+    review).
     """
+    replacements: dict[str, object] = {}
+
+    def _reachable(profile: ModelProfile) -> bool:
+        return not is_unavailable(availability.for_profile(profile, config))
+
     for phase, profiles in phase_candidate_profiles(config).items():
-        _refuse_unavailable_fixed_profiles_for(phase, profiles, config, availability)
+        surviving = [p for p in profiles if _reachable(p)]
+        if not surviving:
+            # Every candidate for the phase is gone: refuse, naming each one.
+            _refuse_unavailable_fixed_profiles_for(phase, profiles, config, availability)
+            continue
+        if len(surviving) == len(profiles):
+            continue
+        dropped = ", ".join(p.model for p in profiles if not _reachable(p))
+        log(f"  ⚠ ROUTING  {phase}: dropped unavailable model(s) {dropped}")
+        if phase == "code_review":
+            replacements["review_pool"] = surviving
+        elif phase == "plan_review":
+            replacements["plan_agent_review"] = _dc_replace(
+                config.plan_agent_review, pool=surviving
+            )
+    return _dc_replace(config, **replacements) if replacements else config
 
 
 def _available_profiles(
@@ -1376,7 +1414,6 @@ def _available_profiles(
     an unavailable second reviewer would run, and the routing record would show
     it as an included candidate with no exclusion reason (#2950 review).
     """
-    from theforge.model_availability import is_unavailable  # noqa: PLC0415
 
     return [p for p in profiles if not is_unavailable(availability.for_profile(p, config))]
 
@@ -1427,19 +1464,21 @@ def _apply_preflight_config(
     # resolved for this story when there is one, so the two decisions cannot
     # disagree and the catalog is consulted once.
     _story_availability = story_availability_for(config, state)
-    # Warn across both surfaces: the adaptive pool an agents-based run selects
-    # from, and the fixed phase profiles a static run dispatches. A run with
-    # agents configured but assignment disabled uses the second, and warning
-    # only on the first would leave the models it actually invokes unannounced.
-    _warn_targets = _fixed_profile_availability(config, _story_availability)
-    _warn_targets.update(_story_availability.by_agent(config.agents, config))
-    _availability_warnings.emit(_warn_targets, _log, run_key=run_warning_key(state))
+    # One announcement per dispatch identity across both surfaces: the adaptive
+    # pool an agents-based run selects from, and the fixed phase profiles a
+    # static run dispatches.
+    _availability_warnings.emit(
+        _story_announcements(config, _story_availability),
+        _log,
+        run_key=run_warning_key(state),
+    )
 
     if not (config.assignment.enabled and config.agents):
-        # Static routing: the configured profiles ARE the decision, so the only
-        # thing availability can do here is refuse. Checked before allocation so
-        # the run stops rather than dispatching a model the account cannot call.
-        _refuse_unavailable_fixed_profiles(config, _story_availability)
+        # Static routing: the configured profiles ARE the decision, so
+        # availability filters the pools and refuses a phase left with nothing.
+        # Applied before allocation so the run never dispatches a model the
+        # account cannot call.
+        config = _apply_static_availability(config, _story_availability, log=_log)
         config = _apply_story_allocation(config, state, log_verbose=_log_verbose)
         stamp_complexity_provenance(state)
         return config
@@ -1515,6 +1554,12 @@ def _apply_preflight_config(
     _explicit_plan_review_pool: list[_ModelProfile] = _available_profiles(
         list(_overrides.plan_review_pool), config, _story_availability
     )
+    # A dropped pinned reviewer is evidence the routing decision has to carry:
+    # keyed by the name the reviewer block renders (the profile's own name),
+    # with the account answer that removed it. Without this the reconciled block
+    # either omits the reviewer or reports a same-named adaptive agent as
+    # explicit_override_locked — the wrong reason for the right model (#2950).
+    _dropped_reviewers: dict[str, dict[str, dict[str, object]]] = {}
     for _pool_role, _configured, _remaining in (
         ("code_review", _overrides.review_pool, _explicit_review_pool),
         ("plan_review", _overrides.plan_review_pool, _explicit_plan_review_pool),
@@ -1527,7 +1572,29 @@ def _apply_preflight_config(
             )
         elif len(_remaining) != len(_configured):
             _kept = {id(p) for p in _remaining}
-            _dropped = ", ".join(p.model for p in _configured if id(p) not in _kept)
+            _gone = [p for p in _configured if id(p) not in _kept]
+            # Recorded under every name the reviewer block could render this
+            # identity by: the pinned profile's own name, and any pool agent
+            # that dispatches the same identity. Without the second, a matching
+            # adaptive agent keeps its generic explicit_override_locked entry —
+            # the wrong reason for a model the account cannot reach (#2950).
+            _role_dropped: dict[str, dict[str, object]] = {}
+            for _profile in _gone:
+                _answer = _story_availability.for_profile(_profile, config)
+                if _answer is None:
+                    continue
+                _record = {"model": _profile.model, **availability_detail(_answer)}
+                _identity = profile_dispatch_key(_profile, config)
+                for _label in {_profile.name or _profile.model} | {
+                    a.name
+                    for a in config.agents
+                    if _identity is not None
+                    and profile_dispatch_key(a.to_model_profile(allowed_tools=()), config)
+                    == _identity
+                }:
+                    _role_dropped[_label] = dict(_record)
+            _dropped_reviewers[_pool_role] = _role_dropped
+            _dropped = ", ".join(p.model for p in _gone)
             _log(f"  ⚠ ROUTING  {_pool_role}: dropped unavailable pinned reviewer(s) {_dropped}")
     # The role's pin is the surviving head of its pool, not the configured one.
     if _explicit_review_pool:
@@ -1702,7 +1769,7 @@ def _apply_preflight_config(
         # under-report the reviewers that will actually run. Reconcile the affected
         # reviewer roles from the post-splice pools so the persisted block stays
         # consistent with runtime (#1391 iter1).
-        if _explicit_review_pool or _explicit_plan_review_pool:
+        if _explicit_review_pool or _explicit_plan_review_pool or _dropped_reviewers:
             from theforge.assignment import (  # noqa: PLC0415
                 reconcile_explicit_reviewer_pools as _reconcile_reviewers,
             )
@@ -1714,6 +1781,7 @@ def _apply_preflight_config(
                 code_reviewers=(_decision.code_reviewers if _explicit_review_pool else None),
                 secrets=config.secrets,
                 capability_records=_capability_records,
+                availability_excluded=_dropped_reviewers,
             )
         state.routing_decision = _routing_block
     _existing_routing_audit = dict(state.complexity_routing_audit or {})

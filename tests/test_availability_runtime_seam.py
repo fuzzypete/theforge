@@ -37,7 +37,7 @@ from theforge.config.model_identity import (  # noqa: E402
     MODEL_AVAILABILITY_UNAVAILABLE,
     ModelAvailability,
 )
-from theforge.coordinator.engine import run_task  # noqa: E402
+from theforge.coordinator.engine import run_from_review, run_task  # noqa: E402
 from theforge.coordinator.preflight_cache import _story_content_hash  # noqa: E402
 from theforge.coordinator.state import CoordinatorState  # noqa: E402
 from theforge.model_availability import (  # noqa: E402
@@ -199,3 +199,52 @@ def test_the_cached_preflight_path_stops_with_no_spend_and_no_model_writes(
     forge_dir = tmp_path / ".forge"
     assert not (forge_dir / "model_profiles.yaml").exists()
     assert not (forge_dir / "model_capabilities.yaml").exists()
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.plan_flow.run_agent")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_the_resume_path_stops_rather_than_seating_the_static_roster(
+    mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
+):
+    """A resumed story re-derives its routing, and reaches the same refusal.
+
+    ``restore_routing_decision`` runs when the scheduler lost this story's
+    preflight state. It re-applies routing, so it reaches the availability gate
+    too — and must stop the same way rather than letting the refusal escape as a
+    generic failure or seating the configured roster unchecked.
+    """
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir(exist_ok=True)
+    mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+    from theforge.assignment import NoAvailableModelError
+
+    refusal = NoAvailableModelError(
+        "code_review",
+        {
+            "identity:opus": {
+                "reason": "model_unavailable",
+                "label": "opus",
+                "detail": {
+                    "auth_mode": "ChatGPT-account auth",
+                    "reason": "not in account catalog",
+                },
+            }
+        },
+    )
+    with patch(
+        "theforge.coordinator.preflight.restore_routing_decision", side_effect=refusal
+    ) as restore:
+        result = run_from_review(config, task, workspace)
+
+    assert restore.call_count == 1, "the resume path is the one under test"
+    assert result.success is False
+    assert result.infrastructure_failure is True
+    assert result.state.error_type == ROUTING_STOPPED_ERROR_TYPE
+    assert "no model available for phase code_review" in result.message
+    assert mock_pool.call_count == 0, "no reviewer is dispatched after the stop"

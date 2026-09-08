@@ -129,8 +129,14 @@ the wrong thing:
              2026-09-01))
 ```
 
-Four properties are worth knowing when diagnosing one:
+Five properties are worth knowing when diagnosing one:
 
+- **A candidate is a dispatch identity, not a model name.** Provider, transport,
+  runner and endpoint together decide what the account was asked about. Two
+  configured entries naming the same model under different credentials or
+  endpoints are two candidates — both are counted, both are named in a stop, and
+  both are warned about. Conversely one identity configured twice (as a pool
+  agent and as a phase profile) is one candidate and warns once.
 - **Only positive evidence stops anything.** A provider that publishes no
   account catalog, or a catalog lookup that fails, yields *unverified* — the
   model stays fully eligible and routes exactly as before. The run warns once
@@ -151,9 +157,19 @@ Four properties are worth knowing when diagnosing one:
   refusal is only reachable after preflight has run, the line reports what that
   story has already cost instead of claiming zero.
 
-Static routing (`assignment.enabled: false`) is covered too. There is no pool to
-narrow there, so availability can only refuse: a configured phase profile the
-account cannot invoke stops the run rather than being dispatched.
+Static routing (`assignment.enabled: false`) is covered too, and a reviewer pool
+is still a pool there: its unavailable members are dropped and the run proceeds
+on what is left, with the stop reserved for a phase that has nothing at all.
+
+A **pinned** reviewer pool behaves the same way. Losing its first member does not
+abort the sprint when a later configured reviewer can run, and a member dropped
+for unavailability stays in the routing decision as an excluded candidate
+carrying `model_unavailable` with its auth mode and timestamp — not omitted, and
+not relabelled as an override lock.
+
+In a parallel sprint, sibling stories cancelled by a routing stop are attributed
+to that stop, not to the credential: they are recorded SKIPPED with the routing
+reason, and never as an authentication failure.
 
 ### Broken baseline recovery
 

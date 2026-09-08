@@ -467,8 +467,12 @@ def _run_preflight_phase(
     try:
         preflight_profile = _availability_checked_preflight_profile(config, state, log=_log)
     except NoAvailableModelError as exc:
-        _log(f"  ✗ ROUTING  {routing_stop_message(exc)}")
-        state.error = str(exc)
+        # One sentence, built once: the persisted state error and the
+        # operator-facing message describe the same stop, and a reader
+        # comparing the audit against the console must not find two of them.
+        _stop_message = routing_stop_message(exc)
+        _log(f"  ✗ ROUTING  {_stop_message}")
+        state.error = _stop_message
         state.error_type = ROUTING_STOPPED_ERROR_TYPE
         return (
             config,
@@ -476,7 +480,7 @@ def _run_preflight_phase(
                 success=False,
                 phase=Phase.PREFLIGHT,
                 state=state,
-                message=routing_stop_message(exc),
+                message=_stop_message,
                 infrastructure_failure=True,
             ),
             False,

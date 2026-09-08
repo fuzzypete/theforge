@@ -227,3 +227,59 @@ def test_preflight_phase_is_gated_on_what_preflight_actually_dispatches(tmp_path
 
     stops = check_sprint_availability(config, resolve=resolve)
     assert {stop.phase for stop in stops} == {"preflight"}
+
+
+def _pinned_reviewer(name: str, model: str):
+    from theforge.config import ModelProfile
+
+    return ModelProfile(
+        name=name,
+        provider="anthropic",
+        model=model,
+        budget_usd=2.0,
+        timeout_seconds=600,
+        allowed_tools=(),
+    )
+
+
+def test_a_pinned_pool_survives_when_only_its_head_is_unavailable(tmp_path):
+    """A pinned reviewer pool is a pool, not just the entry that locks the role.
+
+    ``overrides.profiles["code_review"]`` is only the pool's head. Treating that
+    as the phase's whole candidate set aborted the launch because the *first*
+    reviewer was unavailable, while a later configured one could run perfectly
+    well (#2950 review).
+    """
+    config = replace(
+        _config(tmp_path),
+        review_pool=[_pinned_reviewer("head", "opus"), _pinned_reviewer("tail", "sonnet")],
+        review_pool_is_default=False,
+    )
+
+    def resolve(targets, _secrets=None):
+        return {
+            t.key: _answer(
+                MODEL_AVAILABILITY_UNAVAILABLE
+                if t.model == "opus"
+                else MODEL_AVAILABILITY_AVAILABLE
+            )
+            for t in targets
+        }
+
+    stops = check_sprint_availability(config, resolve=resolve)
+    assert "code_review" not in {stop.phase for stop in stops}, (
+        "an available later reviewer keeps the phase runnable"
+    )
+
+
+def test_a_pinned_pool_still_stops_when_every_member_is_unavailable(tmp_path):
+    config = replace(
+        _config(tmp_path),
+        review_pool=[_pinned_reviewer("head", "opus"), _pinned_reviewer("tail", "sonnet")],
+        review_pool_is_default=False,
+    )
+    stops = check_sprint_availability(
+        config, resolve=_resolver(MODEL_AVAILABILITY_UNAVAILABLE, "not in catalog")
+    )
+    code_review = next(stop for stop in stops if stop.phase == "code_review")
+    assert code_review.models == ["opus", "sonnet"], "the stop names every pinned member"

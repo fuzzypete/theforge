@@ -46,6 +46,7 @@ from theforge.coordinator.preflight import _apply_preflight_config  # noqa: E402
 from theforge.coordinator.state import CoordinatorState  # noqa: E402
 from theforge.model_availability import (  # noqa: E402
     AVAILABILITY_WARNINGS,
+    AvailabilityAnnouncement,
     AvailabilityWarnings,
     StoryAvailability,
     profile_dispatch_key,
@@ -139,6 +140,11 @@ def _agents() -> list[AgentDef]:
             tier="strong",
         ),
     ]
+
+
+def _announce(label: str, answer, identity: str | None = None) -> AvailabilityAnnouncement:
+    """One announcement, defaulting the identity to the label."""
+    return AvailabilityAnnouncement(identity or f"identity:{label}", label, answer)
 
 
 def _entry(decision, role: str, name: str) -> dict:
@@ -281,7 +287,7 @@ def test_unverified_routes_identically_to_no_answer_at_all():
 
 def test_unverified_model_warns_exactly_once_across_stories():
     warnings = AvailabilityWarnings()
-    answers = {"opus": _unverified(), "sonnet": _available()}
+    answers = [_announce("opus", _unverified()), _announce("sonnet", _available())]
     lines: list[str] = []
 
     first = warnings.emit(answers, lines.append)
@@ -299,8 +305,8 @@ def test_a_changed_answer_is_announced_again():
     unavailable mid-sprint must not be silenced by its earlier warning."""
     warnings = AvailabilityWarnings()
     lines: list[str] = []
-    warnings.emit({"opus": _unverified()}, lines.append)
-    warnings.emit({"opus": _unavailable()}, lines.append)
+    warnings.emit([_announce("opus", _unverified())], lines.append)
+    warnings.emit([_announce("opus", _unavailable())], lines.append)
     assert len(lines) == 2
     assert "not available to this account" in lines[1]
 
@@ -402,6 +408,7 @@ def _story_availability(config, by_model: dict) -> StoryAvailability:
     answers: dict = {}
     profiles = [a.to_model_profile(allowed_tools=()) for a in config.agents]
     profiles += [config.preflight_profile, config.dev_profile, *config.review_pool]
+    profiles += list(config.plan_agent_review.profiles or ())
     if config.preflight_fallback_profile is not None:
         profiles.append(config.preflight_fallback_profile)
     for profile in profiles:
@@ -641,7 +648,7 @@ def test_a_later_run_in_the_same_process_warns_again():
     warned set and announces nothing — "once per process", not "once per run".
     """
     warnings = AvailabilityWarnings()
-    answers = {"opus": _unverified()}
+    answers = [_announce("opus", _unverified())]
     first: list[str] = []
     second: list[str] = []
 
@@ -658,16 +665,16 @@ def test_concurrent_stories_in_one_run_warn_exactly_once():
     import threading
 
     warnings = AvailabilityWarnings()
-    answers = {"opus": _unverified()}
+    answers = [_announce("opus", _unverified())]
     emitted: list[str] = []
     lock = threading.Lock()
     start = threading.Barrier(8)
 
     def worker() -> None:
         start.wait()
-        for name in warnings.pending(answers, "sprint:parallel"):
+        for entry in warnings.pending(answers, "sprint:parallel"):
             with lock:
-                emitted.append(name)
+                emitted.append(entry.label)
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
     for thread in threads:
@@ -676,3 +683,166 @@ def test_concurrent_stories_in_one_run_warn_exactly_once():
         thread.join()
 
     assert emitted == ["opus"]
+
+
+# ── A dropped pinned reviewer stays visible in the routing decision ────
+
+
+def test_a_dropped_pinned_reviewer_is_recorded_as_model_unavailable(tmp_path):
+    """Filtering the pool is half the job; explaining it is the other half.
+
+    A pinned reviewer the account cannot invoke must not simply vanish from the
+    decision, and must not be reported under some other rule — an operator
+    reading the record has to see the account answer that removed their own
+    configured reviewer.
+    """
+    config = _pinned_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _available(), "opus": _unavailable()}):
+        state = _proceed_state()
+        _apply_preflight_config(config, state, task_slug="s1")
+
+    pool = state.routing_decision["code_review"]["candidate_pool"]
+    dropped = next(e for e in pool if e["name"] in {"r2", "opus"} and not e.get("included"))
+    assert dropped["reason"] == REASON_MODEL_UNAVAILABLE, (
+        "the pinned reviewer's exclusion must name the account answer, "
+        "not the generic override lock"
+    )
+    assert dropped["detail"]["auth_mode"] == "ChatGPT-account auth"
+    assert dropped["detail"]["checked_at"] == CHECKED_AT.isoformat()
+
+
+# ── One identity, two configuration labels, one warning ───────────────
+
+
+def test_one_identity_named_twice_in_config_warns_once(tmp_path):
+    """A model configured as a pool agent AND as a phase profile is one model.
+
+    Keying the warning on the label rather than the dispatch identity announced
+    the same unverified model twice — once under its agent name and once under
+    its model string (#2950 review).
+    """
+    shared = AgentDef(
+        name="the-pool-name",
+        provider="anthropic",
+        model="sonnet",
+        budget_usd=5.0,
+        timeout_seconds=900,
+        tier="mid",
+    )
+    config = replace(
+        _adaptive_config(tmp_path),
+        agents=[shared],
+        dev_profile=shared.to_model_profile(allowed_tools=()),
+        preflight_profile=shared.to_model_profile(allowed_tools=()),
+    )
+    lines: list[str] = []
+    AVAILABILITY_WARNINGS.reset("test-one-identity")
+    with _patch_availability(config, {"sonnet": _unverified()}):
+        _apply_preflight_config(config, _proceed_state(), log=lines.append, task_slug="s1")
+
+    warnings = [line for line in lines if "availability unconfirmed" in line]
+    assert len(warnings) == 1, f"one identity is one warning, got {warnings}"
+
+
+# ── Static routing filters mixed pools rather than dispatching them ───
+
+
+def _static_pool_config(tmp_path):
+    """Adaptive routing off, with a two-model pinned reviewer pool."""
+    return replace(
+        _static_config(tmp_path),
+        review_pool=[_reviewer("r1", "sonnet"), _reviewer("r2", "opus")],
+        review_pool_is_default=False,
+    )
+
+
+def test_static_routing_drops_the_unavailable_member_of_a_mixed_pool(tmp_path):
+    """No adaptive pool does not mean no pool: a reviewer pool is still a pool."""
+    config = _static_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _available(), "opus": _unavailable()}):
+        applied = _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+
+    assert [p.model for p in applied.review_pool] == ["sonnet"], (
+        "the unavailable member must not remain dispatchable under static routing"
+    )
+
+
+def test_static_routing_keeps_a_fully_available_pool_intact(tmp_path):
+    config = _static_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _available(), "opus": _available()}):
+        applied = _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+    assert [p.model for p in applied.review_pool] == ["sonnet", "opus"]
+
+
+def test_static_routing_refuses_only_when_the_whole_pool_is_gone(tmp_path):
+    config = _static_pool_config(tmp_path)
+    with _patch_availability(config, {"sonnet": _unavailable(), "opus": _unavailable()}):
+        with pytest.raises(NoAvailableModelError):
+            _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+
+
+# ── Same model string, two identities, both named in the stop ─────────
+
+
+def test_a_fixed_profile_stop_names_both_identities_sharing_a_model_string(tmp_path):
+    """Two endpoints are two candidates, and a stop must name both.
+
+    Keying the refusal payload on the model name collapsed them into one entry,
+    so the operator saw one exclusion where there were two — and only one of the
+    two reasons (#2950 review).
+    """
+    config = replace(
+        _static_config(tmp_path),
+        review_pool=[
+            replace(_reviewer("r1", "gpt-5"), provider="openai", base_url="http://127.0.0.1:1/v1"),
+            replace(_reviewer("r2", "gpt-5"), provider="openai", base_url="http://127.0.0.1:2/v1"),
+        ],
+        review_pool_is_default=False,
+    )
+    answers = {}
+    for profile in config.review_pool:
+        key = profile_dispatch_key(profile, config)
+        reason = f"not in account catalog for {profile.base_url}"
+        answers[key] = ModelAvailability(
+            MODEL_AVAILABILITY_UNAVAILABLE,
+            "ChatGPT-account auth",
+            CHECKED_AT,
+            reason,
+            AVAILABILITY_FRESHNESS_CURRENT,
+        )
+    with patch(
+        "theforge.coordinator.preflight.resolve_story_availability",
+        return_value=StoryAvailability(answers),
+    ):
+        with pytest.raises(NoAvailableModelError) as exc_info:
+            _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+
+    excluded = exc_info.value.excluded
+    assert len(excluded) == 2, f"two identities, two exclusions: {excluded}"
+    message = str(exc_info.value)
+    assert "http://127.0.0.1:1/v1" in message and "http://127.0.0.1:2/v1" in message
+    assert message.count("gpt-5 excluded") == 2, (
+        "both candidates are named, under one model string"
+    )
+
+
+def test_two_identities_sharing_a_model_string_announce_separately(tmp_path):
+    """The mirror of the dedup: one name, two identities, two announcements.
+
+    Deduplicating announcements on the model string silenced one of two
+    genuinely different endpoints. Identity is the key; the label is only how it
+    reads.
+    """
+    from theforge.model_availability import announcements
+
+    config = _static_config(tmp_path)
+    endpoints = [
+        replace(_reviewer("r1", "gpt-5"), provider="openai", base_url="http://127.0.0.1:1/v1"),
+        replace(_reviewer("r2", "gpt-5"), provider="openai", base_url="http://127.0.0.1:2/v1"),
+    ]
+    answers = {profile_dispatch_key(p, config): _unverified() for p in endpoints}
+    entries = announcements(config, StoryAvailability(answers), profiles=endpoints)
+
+    assert len(entries) == 2, "two endpoints are two answers, even under one model name"
+    assert {entry.label for entry in entries} == {"gpt-5"}
+    assert len({entry.identity for entry in entries}) == 2

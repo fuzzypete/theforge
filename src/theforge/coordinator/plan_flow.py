@@ -650,11 +650,21 @@ def _apply_post_plan_dev_checkpoint(
     # changed since preflight routed this story.
     from theforge.model_availability import (  # noqa: PLC0415
         AVAILABILITY_WARNINGS,
-        resolve_agent_availability,
+        announcements,
+        resolve_story_availability,
+        run_warning_key,
     )
 
-    _model_availability = resolve_agent_availability(config.agents, config)
-    AVAILABILITY_WARNINGS.emit(_model_availability, _log)
+    _story_availability = resolve_story_availability(config)
+    _model_availability = _story_availability.by_agent(config.agents, config)
+    # Announced per dispatch identity and scoped to this run, the same as the
+    # preflight boundary: a model already announced there stays quiet here
+    # rather than warning twice for one identity (#2950).
+    AVAILABILITY_WARNINGS.emit(
+        announcements(config, _story_availability, agents=config.agents),
+        _log,
+        run_key=run_warning_key(state),
+    )
     _model_profiles = None
     _observed_costs = None
     _recency = None

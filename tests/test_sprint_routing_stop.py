@@ -122,3 +122,42 @@ def test_the_launch_gate_runs_before_any_story_is_dispatched(tmp_path):
     assert calls == ["gate"]
     assert task.call_count == 0, "no story is dispatched"
     assert batch.call_count == 0, "not even batch preflight is paid for"
+
+
+def test_a_sibling_cancelled_by_a_routing_stop_is_not_blamed_on_credentials(tmp_path):
+    """A routing stop is not an auth failure, and its casualties must not read as one.
+
+    The sibling cancellation reused the auth breaker's set, so a story the
+    routing stop killed was stamped as a CATEGORY_AUTH infrastructure abort with
+    an empty authentication reason — a credential rejection that never happened
+    (#2950 review).
+    """
+    from theforge.sprint.runner import _mark_story_routing_cancelled
+
+    result = _make_coordinator_result(success=False, cost=0.0, phase=Phase.PREFLIGHT)
+    reason = "cancelled mid-flight: Model availability stopped routing (no model for dev)"
+    _mark_story_routing_cancelled(result, reason=reason)
+
+    assert result.state.error_type == ROUTING_STOPPED_ERROR_TYPE
+    assert result.state.error == reason
+    assert result.message == reason
+    # Nothing about a credential: no auth category, no infrastructure-abort
+    # stamp carrying an empty authentication detail.
+    assert getattr(result.state, "infrastructure_failure", None) is None
+    assert getattr(result.state, "agent_invocation_failures", []) == []
+
+
+def test_the_routing_cancel_reason_comes_from_the_stop_condition(tmp_path):
+    """One owner for why the sprint stopped, so the story and the run agree."""
+    from theforge.sprint.runner import SprintExecutionState, _routing_cancel_reason
+
+    state = SprintExecutionState.__new__(SprintExecutionState)
+    from theforge.sprint.runner import SprintStopCondition
+
+    state.stop = SprintStopCondition()
+    assert _routing_cancel_reason(state, "fallback text") == "cancelled mid-flight: fallback text"
+
+    state.stop.stop_if_unset("Model availability stopped routing (dev)")
+    assert _routing_cancel_reason(state, "fallback text") == (
+        "cancelled mid-flight: Model availability stopped routing (dev)"
+    )

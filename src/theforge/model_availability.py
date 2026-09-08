@@ -57,9 +57,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "AvailabilityAnnouncement",
     "AvailabilityWarnings",
     "StoryAvailability",
     "agent_availability_targets",
+    "announcements",
     "availability_detail",
     "availability_target",
     "config_availability_targets",
@@ -482,11 +484,23 @@ def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProf
       pool, unless the operator pinned it, in which case the pin is the whole
       candidate set — the same answer the router reaches from the same
       derivation.
+
+    A pinned **reviewer** role is a pool, not a single model. Its
+    ``overrides.profiles`` entry is only the pool's head, which is what locks
+    the role against budget downgrade; taking that as the phase's candidate set
+    would abort a launch because the *first* reviewer is unavailable while a
+    later configured one is perfectly able to run (#2950 review).
     """
     overrides = explicit_role_overrides(config)
     adaptive = bool(config.assignment.enabled and config.agents)
 
-    def pool(role: str, dev_only: bool = False) -> list["ModelProfile"]:
+    def pool(
+        role: str,
+        dev_only: bool = False,
+        pinned_pool: "tuple[ModelProfile, ...]" = (),
+    ) -> list["ModelProfile"]:
+        if pinned_pool:
+            return list(pinned_pool)
         pinned = overrides.profiles.get(role)
         if pinned is not None:
             return [pinned]
@@ -500,12 +514,15 @@ def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProf
     candidates: dict[str, list[ModelProfile]] = {
         "preflight": preflight_dispatch_profiles(config),
         "dev": pool("dev", dev_only=True) or [config.dev_profile],
-        "code_review": pool("code_review") or list(config.review_pool),
+        "code_review": pool("code_review", pinned_pool=overrides.review_pool)
+        or list(config.review_pool),
     }
     if config.plan.enabled:
         candidates["plan"] = pool("planner") or [model_ref_to_profile("plan", config.plan.ref)]
     if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-        candidates["plan_review"] = pool("plan_review") or list(config.plan_agent_review.profiles)
+        candidates["plan_review"] = pool(
+            "plan_review", pinned_pool=overrides.plan_review_pool
+        ) or list(config.plan_agent_review.profiles)
     return {phase: profiles for phase, profiles in candidates.items() if profiles}
 
 
@@ -537,8 +554,61 @@ def unavailable_candidates(
     for key, profile in identities.items():
         answer = answers.get(key)
         if is_unavailable(answer):
-            excluded[key] = {"model": profile.model, **availability_detail(answer)}
+            excluded[key] = {
+                "model": profile.model,
+                "label": profile.model,
+                **availability_detail(answer),
+            }
     return excluded, len(identities)
+
+
+@dataclass(frozen=True)
+class AvailabilityAnnouncement:
+    """One dispatch identity's answer, and the name to announce it under.
+
+    The identity is what the answer is *about*; the label is only how an
+    operator recognises it. Keeping them apart is what stops the same model
+    being announced twice because two configuration surfaces call it different
+    things, and stops two genuinely different identities being announced once
+    because they happen to share a model string (#2950 review).
+    """
+
+    identity: str
+    label: str
+    answer: ModelAvailability
+
+
+def announcements(
+    config: "ForgeConfig",
+    availability: "StoryAvailability",
+    *,
+    agents: "Iterable[AgentDef]" = (),
+    profiles: "Iterable[ModelProfile]" = (),
+) -> list[AvailabilityAnnouncement]:
+    """Collect one announcement per dispatch identity across both surfaces.
+
+    A run reaches its models through two vocabularies: the adaptive pool names
+    them (``AgentDef.name``) and the fixed phase configuration names them by
+    model. The same identity often appears in both. Deduplicating on the
+    identity — and preferring the pool's name as the label, since that is what
+    the routing decision and the operator's config call it — is what makes
+    "warn once per model per run" true regardless of how many surfaces mention
+    it.
+    """
+    seen: dict[str, AvailabilityAnnouncement] = {}
+    # Profiles first, so an agent name (the more recognisable label) wins the
+    # tie for an identity both surfaces carry.
+    for profile in profiles:
+        key = profile_dispatch_key(profile, config)
+        answer = availability.answers.get(key) if key else None
+        if key and answer is not None:
+            seen.setdefault(key, AvailabilityAnnouncement(key, profile.model, answer))
+    for agent in agents:
+        key = profile_dispatch_key(agent.to_model_profile(allowed_tools=()), config)
+        answer = availability.answers.get(key) if key else None
+        if key and answer is not None:
+            seen[key] = AvailabilityAnnouncement(key, agent.name, answer)
+    return sorted(seen.values(), key=lambda entry: entry.label)
 
 
 # ── One warning per model, per run ─────────────────────────────────────
@@ -549,11 +619,17 @@ class AvailabilityWarnings:
 
     A sprint routes every story through the same pool, so a per-selection
     warning would repeat the identical line once per story per phase and bury
-    the answers that actually changed. The tracker is keyed on the candidate
-    name *and* the state it was warned about, so a later story reusing the same
-    model stays quiet, a newly-configured model still gets its warning, and a
-    model whose answer changes mid-sprint is announced again under its new
+    the answers that actually changed. The tracker is keyed on the *dispatch
+    identity* and the state it was warned about, so a later story reusing the
+    same model stays quiet, a newly-configured model still gets its warning, and
+    a model whose answer changes mid-sprint is announced again under its new
     state rather than silently suppressed.
+
+    Keyed on the identity rather than the display name deliberately. One model
+    can appear in the run's configuration twice under different names — as a
+    pool agent and as a fixed phase profile — and keying on the name would
+    announce one identity twice. The label rides along on the announcement for
+    display only.
 
     **Scoped to a run, not to a process.** Callers pass the run they are warning
     for — the sprint name, or the task's run id outside a sprint — and a new run
@@ -580,11 +656,11 @@ class AvailabilityWarnings:
 
     def pending(
         self,
-        availability: Mapping[str, ModelAvailability],
+        entries: "Iterable[AvailabilityAnnouncement]",
         run_key: str | None = None,
-    ) -> list[str]:
-        """Return names with a not-yet-warned answer, marking them warned."""
-        fresh: list[str] = []
+    ) -> list[AvailabilityAnnouncement]:
+        """Return announcements not yet warned about, marking them warned."""
+        fresh: list[AvailabilityAnnouncement] = []
         with self._lock:
             if run_key is not None and run_key != self._run_key:
                 # A different run than the one this set describes. Its warnings
@@ -592,38 +668,37 @@ class AvailabilityWarnings:
                 # earlier run silence this one.
                 self._warned.clear()
                 self._run_key = run_key
-            for name in sorted(availability):
-                answer = availability[name]
+            for entry in sorted(entries, key=lambda item: item.label):
+                answer = entry.answer
                 if not (is_unverified(answer) or is_unavailable(answer)):
                     continue
-                key = (name, answer.state)
+                key = (entry.identity, answer.state)
                 if key in self._warned:
                     continue
                 self._warned.add(key)
-                fresh.append(name)
+                fresh.append(entry)
         return fresh
 
     def emit(
         self,
-        availability: Mapping[str, ModelAvailability],
+        entries: "Iterable[AvailabilityAnnouncement]",
         log_line: Callable[[str], None] | None = None,
         run_key: str | None = None,
     ) -> list[str]:
-        """Warn once per not-yet-warned answer; return the names warned about."""
-        warned = self.pending(availability, run_key)
-        for name in warned:
-            answer = availability[name]
-            if is_unavailable(answer):
-                rendered = format_unavailable_detail(availability_detail(answer))
-                body = f"{name} excluded — {rendered}"
+        """Warn once per not-yet-warned answer; return the labels warned about."""
+        warned = self.pending(entries, run_key)
+        for entry in warned:
+            if is_unavailable(entry.answer):
+                rendered = format_unavailable_detail(availability_detail(entry.answer))
+                body = f"{entry.label} excluded — {rendered}"
             else:
-                body = format_unverified_detail(name, answer)
+                body = format_unverified_detail(entry.label, entry.answer)
             message = f"⚠ ROUTING  {body}"
             if log_line is not None:
                 log_line(message)
             else:
                 log.warning(message)
-        return warned
+        return [entry.label for entry in warned]
 
 
 # The shared tracker. "Exactly once per model" is a property of the run, and the
