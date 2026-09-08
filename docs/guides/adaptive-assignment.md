@@ -46,6 +46,13 @@ Adaptive assignment never invents a candidate outside operator policy.
 - Deprioritization is sort-after, not filter-out: a weakly ranked eligible
   candidate still runs when no better-standing candidate is available.
 
+Two facts narrow that pool before preference is considered, and neither is
+history-driven: a capability the durable record says is *demonstrated absent*
+(#2466), and a model the account catalog says this credential cannot invoke at
+all (#2950). Both are hard eligibility facts about the model, so static routing
+honors them too. An availability answer of *unverified* — no catalog to ask, or
+an ask that failed — is not evidence of absence and changes nothing.
+
 This is the core ADR-0006 distinction: history affects preference, not
 eligibility. Note that the pool is bounded by operator config, not by the
 story's base tier — a cross-tier substitution backed by admissible evidence is

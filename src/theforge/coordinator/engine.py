@@ -42,6 +42,11 @@ from theforge.artifacts import (
     PLAN_PATH,
     ensure_parent_dir,
 )
+from theforge.assignment import (
+    ROUTING_STOPPED_ERROR_TYPE,
+    NoAvailableModelError,
+    routing_stop_message,
+)
 from theforge.config import ForgeConfig
 from theforge.process_group import ProcessTeardown
 from theforge.task import (
@@ -1428,7 +1433,26 @@ def run_task(
             state.preflight_cache_validation = cache_validation
             if cache_valid:
                 apply_cached_preflight_state(state, cached_preflight_state)
-                config = _apply_preflight_config(config, state, task_slug=task.slug)
+                try:
+                    config = _apply_preflight_config(config, state, task_slug=task.slug)
+                except NoAvailableModelError as _availability_stop:
+                    # Availability is resolved fresh inside
+                    # _apply_preflight_config, so a cached preflight verdict can
+                    # still route into an emptied pool (#2950). Same contract as
+                    # the live path in preflight_flow: a routing outcome, not an
+                    # agent failure, with nothing dispatched and nothing recorded
+                    # against any model.
+                    _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+                    _log(f"  ✗ ROUTING  {_stop}")
+                    state.error = _stop
+                    state.error_type = ROUTING_STOPPED_ERROR_TYPE
+                    return CoordinatorResult(
+                        success=False,
+                        phase=Phase.PREFLIGHT,
+                        state=state,
+                        message=_stop,
+                        infrastructure_failure=True,
+                    )
                 # Routing resolved from a cached verdict is still this run's
                 # decision — persist it so a later resume can recover it (#2154).
                 persist_routing_decision(
@@ -1528,19 +1552,41 @@ def run_task(
         # ── PLAN FLOW (spec validation, plan, plan review) ──────────────
         from .plan_flow import _run_plan_phase  # noqa: PLC0415
 
-        _plan_result = _run_plan_phase(
-            state,
-            config,
-            task,
-            story_content,
-            workspace_path,
-            plan_path,
-            state.preflight_result,
-            notify=notify,
-            logger=logger,
-            run_id=_run_id,
-            state_update_fn=state_update_fn,
-        )
+        try:
+            _plan_result = _run_plan_phase(
+                state,
+                config,
+                task,
+                story_content,
+                workspace_path,
+                plan_path,
+                state.preflight_result,
+                notify=notify,
+                logger=logger,
+                run_id=_run_id,
+                state_update_fn=state_update_fn,
+            )
+        except NoAvailableModelError as _availability_stop:
+            # The post-plan checkpoint refreshes availability, so the model
+            # seated at preflight can be found unreachable here — and with the
+            # whole dev pool gone there is nothing to reroute onto. Same routing
+            # outcome as the earlier boundaries: no dev dispatch happens, so
+            # nothing is recorded against any model, and the spend reported is
+            # what this story has actually cost by now (#2950 review).
+            _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+            _log(f"  ✗ ROUTING  {_stop}")
+            state.error = _stop
+            state.error_type = ROUTING_STOPPED_ERROR_TYPE
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=False,
+                    phase=Phase.PLAN,
+                    state=state,
+                    message=_stop,
+                    infrastructure_failure=True,
+                ),
+                config,
+            )
         if _plan_result is not None:
             return _attach_runtime_config(_plan_result, config)
 
@@ -1858,7 +1904,24 @@ def _run_resume_coordinator(
         state.preflight_cache_validation = cache_validation
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
-            config = _apply_preflight_config(config, state, task_slug=task.slug)
+            try:
+                config = _apply_preflight_config(config, state, task_slug=task.slug)
+            except NoAvailableModelError as _availability_stop:
+                # Same routing-stop contract as the other cached-preflight path
+                # above: availability is resolved fresh inside
+                # _apply_preflight_config, so a resume can reach an emptied pool
+                # too, and it stops here rather than escaping as a failure (#2950).
+                _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+                _log(f"  ✗ ROUTING  {_stop}")
+                state.error = _stop
+                state.error_type = ROUTING_STOPPED_ERROR_TYPE
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.PREFLIGHT,
+                    state=state,
+                    message=_stop,
+                    infrastructure_failure=True,
+                )
             persist_routing_decision(
                 config,
                 state,
@@ -1935,13 +1998,30 @@ def _run_resume_coordinator(
         # the roster as a routed panel.
         from .preflight import restore_routing_decision  # noqa: PLC0415
 
-        config, _routing_recovery = restore_routing_decision(
-            config,
-            state,
-            task_slug=task.slug,
-            story_content=story_content,
-            log=_log,
-        )
+        try:
+            config, _routing_recovery = restore_routing_decision(
+                config,
+                state,
+                task_slug=task.slug,
+                story_content=story_content,
+                log=_log,
+            )
+        except NoAvailableModelError as _availability_stop:
+            # Re-deriving the recorded decision reaches the same availability
+            # gate the live path does (#2950). A resumed story whose account can
+            # no longer invoke a phase's models stops the same way rather than
+            # seating the static roster and paying to find out.
+            _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+            _log(f"  ✗ ROUTING  {_stop}")
+            state.error = _stop
+            state.error_type = ROUTING_STOPPED_ERROR_TYPE
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=_stop,
+                infrastructure_failure=True,
+            )
         logger._safe_emit("routing_recovery", phase="RESUME", **_routing_recovery)
 
     with _run_log_context(config, logger, task, state, _task_start):

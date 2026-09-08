@@ -644,6 +644,27 @@ def _apply_post_plan_dev_checkpoint(
     from theforge.model_capabilities import capabilities_path, load_capabilities  # noqa: PLC0415
 
     _capability_records = load_capabilities(capabilities_path(config.project_root))
+    # Account availability (#2950), resolved fresh at this second selection
+    # boundary for the same reason the record above is loaded outside the
+    # adaptive guard: it is a hard eligibility fact, and the answer may have
+    # changed since preflight routed this story.
+    from theforge.model_availability import (  # noqa: PLC0415
+        AVAILABILITY_WARNINGS,
+        announcements,
+        resolve_story_availability,
+        run_warning_key,
+    )
+
+    _story_availability = resolve_story_availability(config)
+    _model_availability = _story_availability.by_agent(config.agents, config)
+    # Announced per dispatch identity and scoped to this run, the same as the
+    # preflight boundary: a model already announced there stays quiet here
+    # rather than warning twice for one identity (#2950).
+    AVAILABILITY_WARNINGS.emit(
+        announcements(config, _story_availability, agents=config.agents),
+        _log,
+        run_key=run_warning_key(state),
+    )
     _model_profiles = None
     _observed_costs = None
     _recency = None
@@ -684,6 +705,11 @@ def _apply_post_plan_dev_checkpoint(
         recency=_recency,
         transport_fallbacks=config.transport_fallbacks,
         capability_records=_capability_records,
+        model_availability=_model_availability,
+        # Resolved against the seated profile's own dispatch identity: the
+        # agent-name map has no entry for a dev pinned outside the pool, and
+        # that silence used to read as "available" (#2950 review).
+        incumbent_availability=_story_availability.for_profile(_adaptive.dev, config),
     )
     state._adaptive_decision = _updated
     if _updated.routing_decision:
