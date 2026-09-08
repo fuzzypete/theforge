@@ -67,9 +67,11 @@ __all__ = [
     "config_availability_targets",
     "format_unavailable_detail",
     "format_unverified_detail",
+    "PhaseCandidates",
     "is_unavailable",
     "is_unverified",
     "phase_candidate_profiles",
+    "phase_candidate_sets",
     "preflight_dispatch_profiles",
     "profile_dispatch_key",
     "resolve_agent_availability",
@@ -469,61 +471,105 @@ def format_unverified_detail(name: str, availability: ModelAvailability) -> str:
 # in packages that must not import each other to share it.
 
 
-def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
-    """Map each required phase to the profiles it may actually dispatch.
+@dataclass(frozen=True)
+class PhaseCandidates:
+    """What one phase may dispatch, and where the candidates came from.
 
-    Two different questions, and getting them the wrong way round is how an
-    unavailable model gets paid for:
+    ``from_pool`` is load-bearing for anything deciding whether a phase can
+    still be seated. Candidates drawn from the adaptive pool answer to the
+    *other* hard eligibility rules too — the capability record, the
+    ``dev_capable`` declaration — while a pinned or fixed profile answers to
+    availability alone, because nothing else narrows a set the operator named.
+    Judging a pinned phase against the pool (or the reverse) produced both a
+    stop for a story whose configured candidates were all reachable and a
+    charge for a pin nothing had checked (#2950 review).
+    """
 
-    - **preflight** dispatches ``config.preflight_profile`` (and its configured
-      fallback). It runs *before* routing — routing needs the complexity score
-      preflight produces — so the adaptive pool is not its candidate set, and
-      admitting the phase because some other agent in the pool is available
-      would clear a dispatch that is about to fail (#2950 review).
+    profiles: tuple[ModelProfile, ...]
+    from_pool: bool
+
+
+def phase_candidate_sets(config: "ForgeConfig") -> dict[str, PhaseCandidates]:
+    """The one derivation of what each phase dispatches, with its provenance.
+
+    Every caller that asks "can this phase still run?" reads this: the sprint
+    launch gate, the pre-spend check that runs before preflight is paid for, and
+    the static filter. They had drifted into separate derivations, and each
+    disagreement surfaced as either a false stop or a paid discovery.
+
+    Two rules decide a phase's candidate set:
+
+    - **preflight** dispatches ``config.preflight_profile`` and, when the
+      primary cannot be invoked, its configured fallback. It runs *before*
+      routing — routing needs the complexity score preflight produces — so the
+      adaptive pool is never its candidate set, and the fallback is part of it:
+      a check that saw only the primary refused a story whose fallback was
+      about to run perfectly well.
     - every **later** phase is chosen by ``assign_models`` from the adaptive
-      pool, unless the operator pinned it, in which case the pin is the whole
-      candidate set — the same answer the router reaches from the same
-      derivation.
-
-    A pinned **reviewer** role is a pool, not a single model. Its
-    ``overrides.profiles`` entry is only the pool's head, which is what locks
-    the role against budget downgrade; taking that as the phase's candidate set
-    would abort a launch because the *first* reviewer is unavailable while a
-    later configured one is perfectly able to run (#2950 review).
+      pool, unless the operator pinned it. A pinned *reviewer* role is a pool,
+      not a single model — ``overrides.profiles`` holds only the head that locks
+      the role against budget downgrade — so the whole pinned pool is the
+      candidate set.
     """
     overrides = explicit_role_overrides(config)
     adaptive = bool(config.assignment.enabled and config.agents)
 
-    def pool(
-        role: str,
-        dev_only: bool = False,
-        pinned_pool: "tuple[ModelProfile, ...]" = (),
-    ) -> list["ModelProfile"]:
-        if pinned_pool:
-            return list(pinned_pool)
-        pinned = overrides.profiles.get(role)
-        if pinned is not None:
-            return [pinned]
-        if adaptive:
-            agents: Iterable[AgentDef] = config.agents
-            if dev_only:
-                agents = [a for a in config.agents if a.dev_capable]
-            return [a.to_model_profile(allowed_tools=()) for a in agents]
-        return []
+    def pool_profiles(dev_only: bool = False) -> list[ModelProfile]:
+        agents: Iterable[AgentDef] = config.agents
+        if dev_only:
+            agents = [a for a in config.agents if a.dev_capable]
+        return [a.to_model_profile(allowed_tools=()) for a in agents]
 
-    candidates: dict[str, list[ModelProfile]] = {
-        "preflight": preflight_dispatch_profiles(config),
-        "dev": pool("dev", dev_only=True) or [config.dev_profile],
-        "code_review": pool("code_review", pinned_pool=overrides.review_pool)
-        or list(config.review_pool),
+    def candidates(
+        phase: str,
+        *,
+        pin_role: str | None = None,
+        pinned_pool: "tuple[ModelProfile, ...]" = (),
+        dev_only: bool = False,
+        fixed: "list[ModelProfile] | None" = None,
+    ) -> PhaseCandidates | None:
+        """Resolve one phase, preferring a pin, then the pool, then the fixed profile."""
+        if pinned_pool:
+            return PhaseCandidates(tuple(pinned_pool), False)
+        pinned = overrides.profiles.get(pin_role or phase)
+        if pinned is not None:
+            return PhaseCandidates((pinned,), False)
+        if adaptive:
+            return PhaseCandidates(tuple(pool_profiles(dev_only)), True)
+        configured = tuple(fixed or ())
+        return PhaseCandidates(configured, False) if configured else None
+
+    resolved: dict[str, PhaseCandidates | None] = {
+        # Not routed and not pinned-or-pooled: preflight is whatever the config
+        # says it is, plus its fallback.
+        "preflight": PhaseCandidates(tuple(preflight_dispatch_profiles(config)), False),
+        "dev": candidates("dev", dev_only=True, fixed=[config.dev_profile]),
+        "code_review": candidates(
+            "code_review", pinned_pool=overrides.review_pool, fixed=list(config.review_pool)
+        ),
     }
     if config.plan.enabled:
-        candidates["plan"] = pool("planner") or [model_ref_to_profile("plan", config.plan.ref)]
+        resolved["plan"] = candidates(
+            "plan", pin_role="planner", fixed=[model_ref_to_profile("plan", config.plan.ref)]
+        )
     if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-        candidates["plan_review"] = pool(
-            "plan_review", pinned_pool=overrides.plan_review_pool
-        ) or list(config.plan_agent_review.profiles)
-    return {phase: profiles for phase, profiles in candidates.items() if profiles}
+        resolved["plan_review"] = candidates(
+            "plan_review",
+            pinned_pool=overrides.plan_review_pool,
+            fixed=list(config.plan_agent_review.profiles),
+        )
+    return {
+        phase: entry for phase, entry in resolved.items() if entry is not None and entry.profiles
+    }
+
+
+def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
+    """Map each required phase to the profiles it may actually dispatch.
+
+    A view over :func:`phase_candidate_sets` for callers that do not need to
+    know where each phase's candidates came from.
+    """
+    return {phase: list(entry.profiles) for phase, entry in phase_candidate_sets(config).items()}
 
 
 def preflight_dispatch_profiles(config: "ForgeConfig") -> list["ModelProfile"]:

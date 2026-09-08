@@ -569,62 +569,6 @@ def _pool_exhaustion_payload(
     return payload
 
 
-#: The roles a story routes, in the order the refusals below report them.
-ROUTED_ROLES: tuple[str, ...] = ("preflight", "planner", "dev", "plan_review", "code_review")
-
-
-def unroutable_phases(
-    agents: list[AgentDef],
-    *,
-    availability_excluded: dict[str, dict[str, object]],
-    capability_records: dict | None = None,
-    explicit_profiles: dict[str, ModelProfile] | None = None,
-) -> dict[str, dict[str, dict[str, object]]]:
-    """Which phases have no candidate at all, before any tier narrowing.
-
-    The tier-independent half of the question ``assign_models`` answers exactly.
-    It exists so a caller that is about to spend — the preflight dispatch, which
-    runs before routing because routing needs the complexity score preflight
-    produces — can establish that every phase still has *something* to seat
-    without paying for the classification first.
-
-    Combines all three hard eligibility rules, which is the point: a phase whose
-    pool is emptied jointly by the account answer and the capability record was
-    previously discovered only at assignment time, after preflight had been
-    charged (#2950 review). Availability alone was not enough to see it.
-
-    Deliberately conservative. It reports a phase only when the *whole*
-    configured pool is gone, so it never refuses a story that tier narrowing
-    would have routed; ``assign_models`` remains the exact per-phase
-    enforcement. Returns ``{role: {label: {reason, label, detail}}}``, empty
-    when every phase retains a candidate.
-    """
-    explicit_profiles = explicit_profiles or {}
-    unroutable: dict[str, dict[str, dict[str, object]]] = {}
-    for role in ROUTED_ROLES:
-        capability_excluded = _capability_exclusions(agents, role, capability_records)
-        pool = _availability_pool(
-            _capability_pool(agents, capability_excluded), availability_excluded
-        )
-        declared: dict[str, dict[str, object]] | None = None
-        if role == "dev":
-            declared = _dev_incapability_exclusions(pool)
-            pool = _dev_capability_pool(pool, "dev")
-        if pool:
-            continue
-        if role in explicit_profiles:
-            # A pinned role never draws from the pool, so an empty pool says
-            # nothing about it. Its own identity is checked where the pin is
-            # resolved, against the answer for what it would actually dispatch.
-            continue
-        payload = _pool_exhaustion_payload(
-            agents, availability_excluded, capability_excluded, declared
-        )
-        if payload:
-            unroutable[role] = payload
-    return unroutable
-
-
 class NoAvailableModelError(ValueError):
     """No model remains for a phase, at least partly because of account availability.
 
@@ -643,10 +587,23 @@ class NoAvailableModelError(ValueError):
     pool as a ``ValueError`` and must not need a second failure shape.
     """
 
+    #: Reason priority when a payload carries more than one rule, matching the
+    #: candidate pool's: availability first, since a model the account cannot
+    #: reach makes every other reason moot.
+    _REASON_PRIORITY = (REASON_MODEL_UNAVAILABLE, REASON_CAPABILITY_ABSENT, REASON_DEV_INCAPABLE)
+
     def __init__(self, role: str, excluded: dict[str, dict[str, object]]) -> None:
         self.role = role
         self.excluded = excluded
-        self.exclusion_reason = REASON_MODEL_UNAVAILABLE
+        # Derived, not fixed: the pre-spend pass raises this for a phase emptied
+        # entirely by the capability record or the dev declaration, and a
+        # machine-readable field saying model_unavailable would attribute the
+        # stop to an account answer that contributed nothing (#2950 review).
+        present = {record.get("reason") for record in excluded.values()}
+        self.exclusion_reason = next(
+            (reason for reason in self._REASON_PRIORITY if reason in present),
+            REASON_MODEL_UNAVAILABLE,
+        )
         # The map's key is whatever the caller can guarantee unique — an agent
         # name from the pool, or a dispatch identity for configured profiles.
         # ``label`` is what the operator reads, and two candidates may share
@@ -3483,6 +3440,7 @@ def apply_post_plan_checkpoint(
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
     capability_records: dict | None = None,
     model_availability: dict[str, ModelAvailability] | None = None,
+    incumbent_availability: ModelAvailability | None = None,
 ) -> AssignmentDecision:
     """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
 
@@ -3552,11 +3510,34 @@ def apply_post_plan_checkpoint(
     # is disabled" and "the complexity band is wrong". Those paths all preserve
     # the incumbent, which is the correct answer for a demotion question and the
     # wrong one for a model that has become unreachable since preflight seated
-    # it (#2950 review). An explicit dev pin is exempt for the same reason it is
-    # exempt below: it never drew from the pool, and the coordinator refuses an
-    # unavailable pin against its own identity before routing gets here.
-    incumbent_answer = (model_availability or {}).get(decision.dev.name)
-    if "dev" not in explicit_roles and is_unavailable(incumbent_answer):
+    # it (#2950 review).
+    #
+    # ``incumbent_availability`` is the answer for what ``decision.dev`` would
+    # actually dispatch, resolved by the caller against its dispatch identity.
+    # The agent-name map cannot answer for a pinned dev that is not also a pool
+    # agent — the name is simply absent — and that silence read as "available"
+    # (#2950 review, the config.agents family). A pinned dev is checked here for
+    # the same reason: this is a refreshed answer, so it can find a pin
+    # unreachable that was reachable when the coordinator cleared it.
+    incumbent_answer = incumbent_availability
+    if incumbent_answer is None:
+        incumbent_answer = (model_availability or {}).get(decision.dev.name)
+    if is_unavailable(incumbent_answer):
+        if "dev" in explicit_roles:
+            # A pin has no pool behind it, so there is nothing to reroute onto.
+            raise NoAvailableModelError(
+                "dev",
+                {
+                    decision.dev.name or decision.dev.model: {
+                        "reason": REASON_MODEL_UNAVAILABLE,
+                        "label": decision.dev.model,
+                        "detail": {
+                            "model": decision.dev.model,
+                            **availability_detail(incumbent_answer),
+                        },
+                    }
+                },
+            )
         available_pool = _availability_pool(
             _dev_capability_pool(
                 _capability_pool(

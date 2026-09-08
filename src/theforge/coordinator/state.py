@@ -950,6 +950,10 @@ class CoordinatorState:
     # ``theforge.model_availability.StoryAvailability``; typed loosely to keep
     # this module's import surface flat. None until the story resolves one.
     model_availability: Any | None = None
+    # The demonstrated-capability record this story loaded (#2466), memoized so
+    # the pre-spend eligibility check and the routing pass read the file once
+    # and cannot be handed two different answers for one story.
+    capability_records: Any | None = None
     preflight_cache_validation: dict[str, Any] = field(default_factory=dict)
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None

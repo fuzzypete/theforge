@@ -79,10 +79,10 @@ from .preflight import (
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
-    _refuse_unavailable_fixed_profiles_for,
     complexity_source,
     degraded_preflight_fields,
     persist_routing_decision,
+    refuse_unroutable_phases,
     score_to_band,
     story_availability_for,
 )
@@ -194,7 +194,6 @@ _prepare_preflight_working_dir = prepare_baseline_checkout
 
 if TYPE_CHECKING:
     from theforge.coordinator.logging import StructuredLogger
-    from theforge.model_availability import StoryAvailability
 
 _log = _cu._log
 _log_verbose = _cu._log_verbose
@@ -412,12 +411,12 @@ def _availability_checked_preflight_profile(
     )
 
     availability = story_availability_for(config, state)
-    # Every LATER phase is checked here too, before this call is paid for. A
-    # phase can be left with nothing by the account answer *combined with* the
-    # capability record or the dev declaration, and that combination was
-    # previously only visible at assignment time — after preflight had been
-    # charged for a story that could never reach dev (#2950 review).
-    _refuse_unroutable_later_phases(config, state, availability)
+    # EVERY phase is checked here, before this call is paid for — including
+    # this one, and including pinned roles on their own dispatch identity. One
+    # check over one derivation of what each phase dispatches; the two that grew
+    # apart disagreed, and each disagreement was either a paid discovery or a
+    # stop for a story that could have run (#2950 review).
+    refuse_unroutable_phases(config, state, availability)
 
     candidates = preflight_dispatch_profiles(config)
     for index, profile in enumerate(candidates):
@@ -429,53 +428,10 @@ def _availability_checked_preflight_profile(
                     f"{profile.model}"
                 )
             return profile
-    _refuse_unavailable_fixed_profiles_for("preflight", candidates, config, availability)
-    # Unreachable: the refusal above fires whenever every candidate is
-    # unavailable, and the loop returned otherwise. Kept so the function has one
-    # typed exit for callers rather than an implicit None.
+    # Unreachable: refuse_unroutable_phases above refuses when every preflight
+    # candidate is unavailable, and the loop returned otherwise. Kept so the
+    # function has one typed exit for callers rather than an implicit None.
     return config.preflight_profile
-
-
-def _refuse_unroutable_later_phases(
-    config: ForgeConfig,
-    state: CoordinatorState,
-    availability: "StoryAvailability",
-) -> None:
-    """Refuse before spending when a later phase already has no candidate.
-
-    Tier-independent by construction: it asks only whether a phase's whole
-    configured pool is gone, so it can never refuse a story that tier narrowing
-    would have routed. ``assign_models`` still performs the exact per-phase
-    enforcement once preflight produces the complexity score.
-
-    Raises:
-        NoAvailableModelError: when a required later phase retains no candidate
-            under availability combined with capability and dev-eligibility.
-    """
-    from theforge.assignment import (  # noqa: PLC0415
-        _availability_exclusions,
-        unroutable_phases,
-    )
-    from theforge.coordinator.preflight import pinned_role_profiles  # noqa: PLC0415
-    from theforge.model_capabilities import (  # noqa: PLC0415
-        capabilities_path,
-        load_capabilities,
-    )
-
-    if not (config.assignment.enabled and config.agents):
-        # Static routing has no pool to exhaust; its fixed profiles are refused
-        # where they are resolved, in _apply_static_availability.
-        return
-    unroutable = unroutable_phases(
-        config.agents,
-        availability_excluded=_availability_exclusions(
-            config.agents, availability.by_agent(config.agents, config)
-        ),
-        capability_records=load_capabilities(capabilities_path(config.project_root)),
-        explicit_profiles=pinned_role_profiles(config),
-    )
-    for role, payload in unroutable.items():
-        raise NoAvailableModelError(role, payload)
 
 
 def _run_preflight_phase(

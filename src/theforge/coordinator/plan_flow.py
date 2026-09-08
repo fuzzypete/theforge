@@ -706,6 +706,10 @@ def _apply_post_plan_dev_checkpoint(
         transport_fallbacks=config.transport_fallbacks,
         capability_records=_capability_records,
         model_availability=_model_availability,
+        # Resolved against the seated profile's own dispatch identity: the
+        # agent-name map has no entry for a dev pinned outside the pool, and
+        # that silence used to read as "available" (#2950 review).
+        incumbent_availability=_story_availability.for_profile(_adaptive.dev, config),
     )
     state._adaptive_decision = _updated
     if _updated.routing_decision:

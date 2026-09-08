@@ -32,6 +32,7 @@ from theforge.model_availability import (
     availability_detail,
     is_unavailable,
     phase_candidate_profiles,
+    phase_candidate_sets,
     profile_dispatch_key,
     resolve_story_availability,
     run_warning_key,
@@ -1392,10 +1393,39 @@ def _apply_static_availability(
     def _reachable(profile: ModelProfile) -> bool:
         return not is_unavailable(availability.for_profile(profile, config))
 
+    def _publish(block: dict[str, object]) -> None:
+        """Attach what has been derived so far to run state."""
+        if not block:
+            return
+        existing = dict(state.routing_decision or {})
+        existing.update({"origin": "static_availability", **block})
+        state.routing_decision = existing
+
     for phase, profiles in phase_candidate_profiles(config).items():
         surviving = [p for p in profiles if _reachable(p)]
         if not surviving:
-            # Every candidate for the phase is gone: refuse, naming each one.
+            # Every candidate for the phase is gone. Publish the evidence
+            # gathered so far — including this phase's own exclusions — before
+            # refusing, or the terminal stop lands with no structured record of
+            # what removed each candidate (#2950 review).
+            decision[phase] = {
+                "candidate_pool": [
+                    {
+                        "name": p.name or p.model,
+                        "tier": None,
+                        "included": False,
+                        "reason": REASON_MODEL_UNAVAILABLE,
+                        "detail": {
+                            "model": p.model,
+                            **availability_detail(availability.for_profile(p, config)),
+                        },
+                    }
+                    for p in profiles
+                    if availability.for_profile(p, config) is not None
+                ],
+                "final": {"models": []},
+            }
+            _publish(decision)
             _refuse_unavailable_fixed_profiles_for(phase, profiles, config, availability)
             continue
         # Record the phase's pool in the same candidate_pool entry shape the
@@ -1431,62 +1461,116 @@ def _apply_static_availability(
             replacements["plan_agent_review"] = _dc_replace(
                 config.plan_agent_review, pool=surviving
             )
-    if decision:
-        existing = dict(state.routing_decision or {})
-        existing.update({"origin": "static_availability", **decision})
-        state.routing_decision = existing
+    _publish(decision)
     return _dc_replace(config, **replacements) if replacements else config
 
 
-def pinned_role_profiles(config: ForgeConfig) -> dict[str, ModelProfile]:
-    """The single-profile role pins this config carries, by role.
+def story_capability_records(config: ForgeConfig, state: "CoordinatorState") -> dict:
+    """The story's demonstrated-capability record, loaded at most once.
 
-    Shared with the pre-spend eligibility pass, which must not report a pinned
-    role as unroutable just because the adaptive pool is empty for it: a pin
-    never draws from the pool, so its own identity is what has to be checked.
+    The pre-spend check and the routing pass both need it for the same story,
+    and reading the file twice per selection boundary is a read nothing asked
+    for (#2950 review). Memoized on state beside the availability answer, for
+    the same reason: two loads could disagree.
     """
-    return dict(explicit_role_overrides(config).profiles)
-
-
-def _refuse_unavailable_pins(
-    pins: dict[str, ModelProfile],
-    config: ForgeConfig,
-    availability: "StoryAvailability",
-) -> None:
-    """Refuse a pinned role whose own dispatch identity is unavailable.
-
-    ``assign_models`` checks a pin by matching it against the agents pool, which
-    silently passes a pin naming an identity the pool does not contain — the
-    operator's own override then reached dispatch with an unavailable model
-    while the routing decision showed only the pool as locked out (#2950
-    review). Checking the pin's identity directly is what closes that: it is the
-    same question, asked of the thing that will actually be invoked.
-
-    A pinned role has no pool to fall back to, so this refuses rather than
-    filters. Reviewer pins are pools and are filtered before they reach here.
-
-    Raises:
-        NoAvailableModelError: when a pinned role's identity is unavailable.
-    """
-    from theforge.assignment import (  # noqa: PLC0415
-        REASON_MODEL_UNAVAILABLE,
-        NoAvailableModelError,
+    existing = getattr(state, "capability_records", None)
+    if existing is not None:
+        return existing
+    from theforge.model_capabilities import (  # noqa: PLC0415
+        capabilities_path,
+        load_capabilities,
     )
 
-    for role, profile in sorted(pins.items()):
-        answer = availability.for_profile(profile, config)
-        if not is_unavailable(answer):
+    records = load_capabilities(capabilities_path(config.project_root))
+    state.capability_records = records
+    return records
+
+
+def refuse_unroutable_phases(
+    config: ForgeConfig,
+    state: "CoordinatorState",
+    availability: "StoryAvailability",
+) -> None:
+    """Refuse, before anything is dispatched, a phase with no candidate left.
+
+    One check over one derivation. Earlier iterations grew two — a pin check
+    that judged each pinned profile alone, and a pool check that judged every
+    role against ``config.agents`` — and every disagreement between them was a
+    finding: a pinned dev outside the pool went unchecked until after preflight
+    was charged; a story whose configured candidates were all reachable was
+    stopped because the adaptive registry was not; and a preflight primary was
+    refused while its available fallback had already run. Asking
+    :func:`phase_candidate_sets` what each phase actually dispatches removes the
+    disagreement rather than reconciling it.
+
+    Per phase, the surviving candidates are its own profiles minus the ones the
+    account cannot invoke — and, for a phase drawing from the adaptive pool, also
+    minus what the capability record and the ``dev_capable`` declaration remove.
+    Those two rules apply to pool candidates only: nothing else narrows a set the
+    operator named, and applying them to a pin would refuse a phase the router
+    would have seated.
+
+    Deliberately tier-independent, so it can never refuse a story that tier
+    narrowing would have routed; ``assign_models`` remains the exact per-phase
+    enforcement once preflight produces the complexity score.
+
+    Raises:
+        NoAvailableModelError: when a phase retains no candidate.
+    """
+    from theforge.assignment import (  # noqa: PLC0415
+        NoAvailableModelError,
+        _availability_exclusions,
+        _availability_pool,
+        _capability_exclusions,
+        _capability_pool,
+        _dev_capability_pool,
+        _dev_incapability_exclusions,
+        _pool_exhaustion_payload,
+    )
+
+    capability_records = story_capability_records(config, state)
+    availability_excluded = _availability_exclusions(
+        config.agents, availability.by_agent(config.agents, config)
+    )
+    for phase, candidates in phase_candidate_sets(config).items():
+        if not candidates.from_pool:
+            # A pinned or fixed set: availability is the only rule that narrows
+            # it, and each member is checked on its own dispatch identity.
+            reachable = [
+                p
+                for p in candidates.profiles
+                if not is_unavailable(availability.for_profile(p, config))
+            ]
+            if reachable:
+                continue
+            _refuse_unavailable_fixed_profiles_for(
+                phase, list(candidates.profiles), config, availability
+            )
+            # Every candidate was unavailable but none carried a resolvable
+            # answer, so there is nothing to attribute the stop to. Treat that
+            # as routable and let assignment decide.
             continue
-        raise NoAvailableModelError(
-            role,
-            {
-                profile_dispatch_key(profile, config) or profile.model: {
-                    "reason": REASON_MODEL_UNAVAILABLE,
-                    "label": profile.model,
-                    "detail": {"model": profile.model, **availability_detail(answer)},
-                }
-            },
+        role = _PHASE_ROLE.get(phase, phase)
+        capability_excluded = _capability_exclusions(config.agents, role, capability_records)
+        pool = _availability_pool(
+            _capability_pool(config.agents, capability_excluded), availability_excluded
         )
+        declared: dict[str, dict[str, object]] | None = None
+        if role == "dev":
+            declared = _dev_incapability_exclusions(pool)
+            pool = _dev_capability_pool(pool, "dev")
+        if pool:
+            continue
+        payload = _pool_exhaustion_payload(
+            config.agents, availability_excluded, capability_excluded, declared
+        )
+        if payload:
+            raise NoAvailableModelError(role, payload)
+
+
+#: Phase name → the role name ``assign_models`` files its exclusions under.
+#: They differ for the planner, whose phase is ``plan``.
+_PHASE_ROLE: dict[str, str] = {"plan": "planner"}
 
 
 def _available_profiles(
@@ -1569,6 +1653,14 @@ def _apply_preflight_config(
         config = _apply_story_allocation(config, state, log_verbose=_log_verbose)
         stamp_complexity_provenance(state)
         return config
+
+    # Every phase's candidate set, asked once more at the routing boundary. The
+    # preflight dispatch check is the pre-spend moment, but it is not the only
+    # entrance to routing: the cached-preflight and resume paths reach here
+    # without passing through it, and a pin or pool that emptied since must not
+    # be seated by them either (#2950 review). Idempotent and cheap — both the
+    # availability answer and the capability record are memoized on state.
+    refuse_unroutable_phases(config, state, _story_availability)
 
     from theforge.assignment import (  # noqa: I001, PLC0415
         _normalize_complexity as _norm_complexity,
@@ -1692,20 +1784,6 @@ def _apply_preflight_config(
         _explicit["plan_review"] = _explicit_plan_review_pool[0]
     elif "plan_review" in _explicit:
         del _explicit["plan_review"]
-
-    # Every remaining pin is a single profile with no pool behind it, so its own
-    # identity is the whole candidate set for that role. Checked here, against
-    # the answer for what it would actually dispatch, because assign_models can
-    # only recognise a pin it can find in the agents pool (#2950 review).
-    _refuse_unavailable_pins(
-        {
-            role: profile
-            for role, profile in _explicit.items()
-            if isinstance(profile, _ModelProfile)
-        },
-        config,
-        _story_availability,
-    )
 
     # Challenger-sampling exploration budget (#325, ADR-0006 clause 8 "bounded"):
     # at most per_sprint_cap exploration runs across the whole sprint. The

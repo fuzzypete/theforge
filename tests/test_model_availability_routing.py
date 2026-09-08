@@ -1013,3 +1013,111 @@ def test_the_checkpoint_leaves_an_available_incumbent_alone():
         decision, agents, availability={a.name: _available() for a in agents}
     )
     assert with_answers.dev.model == baseline.dev.model
+
+
+def test_the_checkpoint_refuses_an_explicitly_pinned_incumbent_gone_unavailable():
+    """A pinned dev is re-checked by the refresh, and has nothing to fall back to.
+
+    The checkpoint exempted explicit dev pins on the assumption the coordinator
+    had already cleared them. It had — against an *earlier* answer. This is the
+    refreshed one, and a pin it finds unreachable has no pool to reroute onto
+    (#2950 review).
+    """
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+
+    with pytest.raises(NoAvailableModelError) as exc_info:
+        _post_plan_pinned(decision, agents, incumbent=_unavailable())
+    assert exc_info.value.role == "dev"
+    assert "not available to this account" in str(exc_info.value)
+
+
+def test_the_checkpoint_honours_an_available_pinned_incumbent():
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+    updated = _post_plan_pinned(decision, agents, incumbent=_available())
+    assert updated.dev.model == decision.dev.model
+
+
+def test_an_off_pool_incumbent_is_checked_on_its_own_identity():
+    """The agent-name map has no entry for a pin outside the pool.
+
+    That silence read as "available", which is the same config.agents blind spot
+    the coordinator's pin check closed — the checkpoint had its own copy.
+    """
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+    off_pool = replace(decision.dev, name="pinned-dev", model="gpt-5", provider="openai")
+    decision = replace(decision, dev=off_pool)
+
+    with pytest.raises(NoAvailableModelError):
+        _post_plan_pinned(decision, agents, incumbent=_unavailable())
+
+
+def _post_plan_pinned(decision, agents, *, incumbent):
+    """Run the checkpoint with dev pinned and a resolved incumbent answer."""
+    from theforge.assignment import apply_post_plan_checkpoint
+
+    return apply_post_plan_checkpoint(
+        decision,
+        agents,
+        _cfg(),
+        "medium",
+        plan_review_decision="APPROVE",
+        plan_review_cycles=1,
+        p1_count=0,
+        p2_count=0,
+        explicit_roles={"dev"},
+        incumbent_availability=incumbent,
+    )
+
+
+def test_a_terminal_static_stop_still_records_its_exclusions(tmp_path):
+    """The stop and its evidence travel together, or the record explains nothing."""
+    # Reviewer identities distinct from the fixed preflight/dev profiles, so
+    # code_review is the phase that runs out rather than an earlier one.
+    reviewers = [
+        replace(_reviewer("r1", "gpt-5"), provider="openai"),
+        replace(_reviewer("r2", "gpt-5-mini"), provider="openai"),
+    ]
+    config = replace(
+        _static_config(tmp_path),
+        review_pool=reviewers,
+        review_pool_is_default=False,
+    )
+    state = _proceed_state()
+    with _patch_availability(
+        config,
+        {
+            "gpt-5": _unavailable(),
+            "gpt-5-mini": _unavailable(),
+            config.dev_profile.model: _available(),
+            config.preflight_profile.model: _available(),
+        },
+    ):
+        with pytest.raises(NoAvailableModelError) as exc_info:
+            _apply_preflight_config(config, state, task_slug="s1")
+    assert exc_info.value.role == "code_review"
+
+    pool = state.routing_decision["code_review"]["candidate_pool"]
+    assert {e["name"] for e in pool} == {"r1", "r2"}
+    assert all(e["reason"] == REASON_MODEL_UNAVAILABLE for e in pool)
+    assert all(not e["included"] for e in pool)
+
+
+def test_a_stop_from_capability_alone_is_not_attributed_to_the_account():
+    """The machine-readable reason follows the payload, not the exception class."""
+    from theforge.assignment import REASON_CAPABILITY_ABSENT, NoAvailableModelError
+
+    exc = NoAvailableModelError(
+        "code_review",
+        {
+            "sonnet": {
+                "reason": REASON_CAPABILITY_ABSENT,
+                "label": "sonnet",
+                "detail": {"capability": "tool_structured", "established_at": "2026-09-01"},
+            }
+        },
+    )
+    assert exc.exclusion_reason == REASON_CAPABILITY_ABSENT
+    assert "demonstrated absent" in str(exc)
