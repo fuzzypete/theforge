@@ -89,6 +89,124 @@ story and per phase. Stories the breaker cancels are recorded **SKIPPED** and
 attributed to the credential, not FAILED — the sprint killed them, no model
 judged them, and they contribute nothing to adaptive memory.
 
+### Model availability gate (issue #2950)
+
+Beside the auth gate, and at the same moment, a sprint asks the account catalog
+whether the credential it holds can actually invoke a model for each required
+phase. A model the catalog says the account cannot invoke is excluded from every
+candidate pool, with the reason recorded on the routing decision:
+
+```
+  ⚠ ROUTING  openai/gpt-5.4/cli excluded — not available to this account under
+             ChatGPT-account auth (not in account catalog, checked 2026-09-05)
+```
+
+If that leaves a phase with nothing, the run stops **before** dispatching
+anything:
+
+```
+  ✗ ROUTING  no model available for phase dev: openai/gpt-5.4/cli excluded
+             (not available to this account), openai/gpt-5.5/cli excluded
+             (not available to this account). Nothing dispatched, $0.00 spent.
+```
+
+Read this as a routing outcome, not an agent failure. The story is recorded
+**SKIPPED**, not FAILED — nothing judged it — and nothing is written against any
+model's capability history or profile, so the stop contributes nothing to
+adaptive memory. In a sprint the run then halts: every remaining story would
+route the same pool against the same account and reach the same refusal, so
+dispatching them only pays to be told again.
+
+The stop names every candidate that is gone **and the rule that removed it**. A
+phase can be emptied by more than one at once, and a message that blamed the
+account for a candidate the capability record ruled out would send you to fix
+the wrong thing:
+
+```
+  ✗ ROUTING  no model available for phase code_review: gpt-5.4 excluded (not
+             available to this account under ChatGPT-account auth), sonnet
+             excluded (tool_structured demonstrated absent (established
+             2026-09-01))
+```
+
+Five properties are worth knowing when diagnosing one:
+
+- **A candidate is a dispatch identity, not a model name.** Provider, transport,
+  runner and endpoint together decide what the account was asked about. Two
+  configured entries naming the same model under different credentials or
+  endpoints are two candidates — both are counted, both are named in a stop, and
+  both are warned about. Conversely one identity configured twice (as a pool
+  agent and as a phase profile) is one candidate and warns once.
+- **Only positive evidence stops anything.** A provider that publishes no
+  account catalog, or a catalog lookup that fails, yields *unverified* — the
+  model stays fully eligible and routes exactly as before. The run warns once
+  per model that its availability is unconfirmed, once per **run**: a second
+  sprint in the same process gets its own warnings, and parallel stories in one
+  sprint share a single line.
+- **The answer is read per story, not once at launch.** An account catalog that
+  changes mid-sprint changes routing for the stories that follow, with no
+  restart.
+- **Preflight is gated on what preflight actually dispatches.** It runs before
+  routing (routing needs the complexity score preflight produces), so the
+  candidate set for that phase is the configured `preflight` profile and its
+  fallback, not the adaptive pool. An unavailable primary with an available
+  configured fallback reseats onto the fallback and says so; with neither
+  invocable, the story stops having spent nothing.
+- **Every phase is checked before preflight is paid for.** One pass, before the
+  first paid call, asks of each phase: is anything it could dispatch still
+  reachable? A phase draws either from the adaptive pool — in which case the
+  capability record and any `dev_capable: false` declaration narrow it too, and
+  no single rule sees the combination — or from what the operator pinned, in
+  which case availability alone applies, because nothing else narrows a set they
+  named. Getting that provenance wrong is how a pinned dev outside the pool went
+  unchecked until after preflight was charged, and how a story whose configured
+  candidates were all reachable got stopped because the registry it never
+  consults was not. The pass is deliberately tier-independent: it stops only on a
+  phase with nothing left at all, so it never refuses a story tier narrowing
+  would have routed, and the router still performs the exact per-phase
+  enforcement afterwards.
+- **The spend in the message is the real one.** The launch gate and the
+  cached/resume paths genuinely cost nothing and say `$0.00 spent`. Where a
+  refusal is only reachable after preflight has run, the line reports what that
+  story has already cost instead of claiming zero.
+
+Static routing (`assignment.enabled: false`) is covered too, and a reviewer pool
+is still a pool there: its unavailable members are dropped and the run proceeds
+on what is left, with the stop reserved for a phase that has nothing at all.
+
+A **pinned** reviewer pool behaves the same way. Losing its first member does not
+abort the sprint when a later configured reviewer can run, and a member dropped
+for unavailability stays in the routing decision as an excluded candidate
+carrying `model_unavailable` with its auth mode and timestamp — not omitted, and
+not relabelled as an override lock.
+
+In a parallel sprint, sibling stories cancelled by a routing stop are attributed
+to that stop, not to the credential: they are recorded SKIPPED with the routing
+reason, and never as an authentication failure.
+
+Two more places the answer is consulted, both of which used to let an
+unreachable model through:
+
+- **A pinned role is checked on its own identity.** `dev` or `plan` pinned to a
+  model that is not also in the adaptive pool gets the same check as everything
+  else — a pin the account cannot invoke stops the story before preflight rather
+  than reaching dispatch. A pinned role has no pool behind it, so this refuses
+  rather than filters.
+- **The post-plan checkpoint re-checks the seated model, pinned or not.** That
+  checkpoint refreshes availability, so a model that became unreachable between
+  preflight and plan-review is caught there — including a pinned one, which the
+  earlier check cleared against an earlier answer. An unpinned incumbent reroutes
+  onto any reachable candidate (preferring the tier the story was routed to, then
+  walking the ladder) and stops only when the whole dev pool is gone; the reroute
+  is recorded in the checkpoint block as `incumbent_unavailable`. A pinned one
+  has nothing to reroute onto, so it stops.
+
+Under static routing the filtered pool is also recorded: `state.routing_decision`
+carries a `candidate_pool` for each configured phase in the same entry shape the
+adaptive router writes, so a pool that shrank has the account answer that shrank
+it attached. A phase that runs out entirely records its exclusions before the
+stop propagates, so the terminal case is explained too.
+
 ### Broken baseline recovery
 
 When a sprint aborts with `stopped_reason: broken_baseline` and the baseline

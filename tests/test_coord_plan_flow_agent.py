@@ -1771,7 +1771,7 @@ class TestPlanReviewerFailureAudit:
                     ModelProfile(
                         name="reviewer-b",
                         provider="deepseek",
-                        model="deepseek-chat",
+                        model="deepseek-v4-flash",
                         budget_usd=1.00,
                         timeout_seconds=300,
                         allowed_tools=("Read", "Glob"),
@@ -1977,7 +1977,7 @@ class TestPlanReviewerFailureAudit:
                     ModelProfile(
                         name="reviewer-b",
                         provider="deepseek",
-                        model="deepseek-chat",
+                        model="deepseek-v4-flash",
                         budget_usd=1.00,
                         timeout_seconds=300,
                         allowed_tools=("Read", "Glob"),
