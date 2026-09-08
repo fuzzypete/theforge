@@ -1552,19 +1552,41 @@ def run_task(
         # ── PLAN FLOW (spec validation, plan, plan review) ──────────────
         from .plan_flow import _run_plan_phase  # noqa: PLC0415
 
-        _plan_result = _run_plan_phase(
-            state,
-            config,
-            task,
-            story_content,
-            workspace_path,
-            plan_path,
-            state.preflight_result,
-            notify=notify,
-            logger=logger,
-            run_id=_run_id,
-            state_update_fn=state_update_fn,
-        )
+        try:
+            _plan_result = _run_plan_phase(
+                state,
+                config,
+                task,
+                story_content,
+                workspace_path,
+                plan_path,
+                state.preflight_result,
+                notify=notify,
+                logger=logger,
+                run_id=_run_id,
+                state_update_fn=state_update_fn,
+            )
+        except NoAvailableModelError as _availability_stop:
+            # The post-plan checkpoint refreshes availability, so the model
+            # seated at preflight can be found unreachable here — and with the
+            # whole dev pool gone there is nothing to reroute onto. Same routing
+            # outcome as the earlier boundaries: no dev dispatch happens, so
+            # nothing is recorded against any model, and the spend reported is
+            # what this story has actually cost by now (#2950 review).
+            _stop = routing_stop_message(_availability_stop, state.total_cost_measured)
+            _log(f"  ✗ ROUTING  {_stop}")
+            state.error = _stop
+            state.error_type = ROUTING_STOPPED_ERROR_TYPE
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=False,
+                    phase=Phase.PLAN,
+                    state=state,
+                    message=_stop,
+                    infrastructure_failure=True,
+                ),
+                config,
+            )
         if _plan_result is not None:
             return _attach_runtime_config(_plan_result, config)
 

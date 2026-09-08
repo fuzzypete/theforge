@@ -569,6 +569,62 @@ def _pool_exhaustion_payload(
     return payload
 
 
+#: The roles a story routes, in the order the refusals below report them.
+ROUTED_ROLES: tuple[str, ...] = ("preflight", "planner", "dev", "plan_review", "code_review")
+
+
+def unroutable_phases(
+    agents: list[AgentDef],
+    *,
+    availability_excluded: dict[str, dict[str, object]],
+    capability_records: dict | None = None,
+    explicit_profiles: dict[str, ModelProfile] | None = None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Which phases have no candidate at all, before any tier narrowing.
+
+    The tier-independent half of the question ``assign_models`` answers exactly.
+    It exists so a caller that is about to spend — the preflight dispatch, which
+    runs before routing because routing needs the complexity score preflight
+    produces — can establish that every phase still has *something* to seat
+    without paying for the classification first.
+
+    Combines all three hard eligibility rules, which is the point: a phase whose
+    pool is emptied jointly by the account answer and the capability record was
+    previously discovered only at assignment time, after preflight had been
+    charged (#2950 review). Availability alone was not enough to see it.
+
+    Deliberately conservative. It reports a phase only when the *whole*
+    configured pool is gone, so it never refuses a story that tier narrowing
+    would have routed; ``assign_models`` remains the exact per-phase
+    enforcement. Returns ``{role: {label: {reason, label, detail}}}``, empty
+    when every phase retains a candidate.
+    """
+    explicit_profiles = explicit_profiles or {}
+    unroutable: dict[str, dict[str, dict[str, object]]] = {}
+    for role in ROUTED_ROLES:
+        capability_excluded = _capability_exclusions(agents, role, capability_records)
+        pool = _availability_pool(
+            _capability_pool(agents, capability_excluded), availability_excluded
+        )
+        declared: dict[str, dict[str, object]] | None = None
+        if role == "dev":
+            declared = _dev_incapability_exclusions(pool)
+            pool = _dev_capability_pool(pool, "dev")
+        if pool:
+            continue
+        if role in explicit_profiles:
+            # A pinned role never draws from the pool, so an empty pool says
+            # nothing about it. Its own identity is checked where the pin is
+            # resolved, against the answer for what it would actually dispatch.
+            continue
+        payload = _pool_exhaustion_payload(
+            agents, availability_excluded, capability_excluded, declared
+        )
+        if payload:
+            unroutable[role] = payload
+    return unroutable
+
+
 class NoAvailableModelError(ValueError):
     """No model remains for a phase, at least partly because of account availability.
 
@@ -3392,6 +3448,9 @@ POST_PLAN_CHECKPOINT_RATIONALES: frozenset[str] = frozenset(
         "plan_review_p1_present",
         "plan_review_p2_exceeded",
         "no_reduced_tier_candidate",
+        # The seated dev became unreachable since preflight; the checkpoint
+        # reroutes rather than preserving it (#2950).
+        "incumbent_unavailable",
     }
 )
 
@@ -3486,6 +3545,82 @@ def apply_post_plan_checkpoint(
         }
         if dev_block is not None:
             dev_block["post_plan_checkpoint"] = block
+
+    # ── The seated model must still be invocable ───────────────────────
+    # Checked ahead of every bypass path below, because "the account cannot
+    # invoke the model this story is about to dispatch" outranks "the checkpoint
+    # is disabled" and "the complexity band is wrong". Those paths all preserve
+    # the incumbent, which is the correct answer for a demotion question and the
+    # wrong one for a model that has become unreachable since preflight seated
+    # it (#2950 review). An explicit dev pin is exempt for the same reason it is
+    # exempt below: it never drew from the pool, and the coordinator refuses an
+    # unavailable pin against its own identity before routing gets here.
+    incumbent_answer = (model_availability or {}).get(decision.dev.name)
+    if "dev" not in explicit_roles and is_unavailable(incumbent_answer):
+        available_pool = _availability_pool(
+            _dev_capability_pool(
+                _capability_pool(
+                    agents, _capability_exclusions(agents, "dev", capability_records)
+                ),
+                "dev",
+            ),
+            _availability_exclusions(agents, model_availability),
+        )
+        # A forced reroute, not a demotion: any tier the operator's pool offers
+        # is better than dispatching a model that cannot be reached. Prefer the
+        # tier the story was routed to, then walk the ladder cheapest-first —
+        # _pick_agent selects within one tier, so "any tier" has to be spelled
+        # out rather than passed as None.
+        replacement = None
+        for tier in [baseline_tier, *(t for t in _TIER_ORDER if t != baseline_tier)]:
+            if tier is None:
+                continue
+            replacement = _pick_agent(
+                available_pool,
+                tier,
+                secrets,
+                model_profiles=model_profiles,
+                role="dev",
+                complexity=_normalize_complexity(complexity),
+                observed_costs=observed_costs,
+                reasoning_effort=reasoning_effort,
+                domains=domains,
+                recency=recency,
+            )
+            if replacement is not None:
+                break
+        if replacement is None:
+            raise NoAvailableModelError(
+                "dev",
+                _pool_exhaustion_payload(
+                    agents,
+                    _availability_exclusions(agents, model_availability),
+                    _capability_exclusions(agents, "dev", capability_records),
+                    _dev_incapability_exclusions(agents),
+                ),
+            )
+        _record(
+            fired=True,
+            dec="reroute",
+            rationale="incumbent_unavailable",
+            final_tier=replacement.tier,
+        )
+        new_dev = _agent_to_profile(
+            replacement, role="dev", transport_fallbacks=transport_fallbacks
+        )
+        if dev_block is not None:
+            # Instrument the swap the same way the demotion below does, so the
+            # audit shows which model actually runs and why it changed.
+            final = dev_block.get("final")
+            if isinstance(final, dict):
+                final["model"] = new_dev.model
+                final["tier"] = replacement.tier
+                _base_rat = final.get("rationale", "")
+                final["rationale"] = (
+                    f"{_base_rat}; post-plan reroute {decision.dev.model} → {new_dev.model} "
+                    "(seated model no longer available to this account)"
+                ).lstrip("; ")
+        return _replace(decision, dev=new_dev)
 
     # ── Bypass paths (skipped) — operator intent / conservative config ──
     if not assignment_config.plan_tier_reduction:

@@ -846,3 +846,170 @@ def test_two_identities_sharing_a_model_string_announce_separately(tmp_path):
     assert len(entries) == 2, "two endpoints are two answers, even under one model name"
     assert {entry.label for entry in entries} == {"gpt-5"}
     assert len({entry.identity for entry in entries}) == 2
+
+
+# ── A pin outside the agents pool is checked on its own identity ──────
+
+
+def test_a_dev_pin_absent_from_the_pool_is_refused_when_unavailable(tmp_path):
+    """assign_models can only recognise a pin it can find in the pool.
+
+    An operator pinning `dev` to a model that is not also a pool agent got no
+    availability check at all: the pin reached dispatch while the routing
+    decision showed only the pool as locked out (#2950 review).
+    """
+    pinned = ModelProfile(
+        name="pinned-dev",
+        provider="openai",
+        model="gpt-5",
+        budget_usd=6.0,
+        timeout_seconds=900,
+        allowed_tools=(),
+    )
+    config = replace(_adaptive_config(tmp_path), dev_profile=pinned)
+    assert all(a.model != pinned.model for a in config.agents), "the pin is outside the pool"
+
+    answers = {
+        profile_dispatch_key(pinned, config): _unavailable(),
+        **{
+            profile_dispatch_key(a.to_model_profile(allowed_tools=()), config): _available()
+            for a in config.agents
+        },
+    }
+    with patch(
+        "theforge.coordinator.preflight.resolve_story_availability",
+        return_value=StoryAvailability(answers),
+    ):
+        with pytest.raises(NoAvailableModelError) as exc_info:
+            _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+
+    assert exc_info.value.role == "dev"
+    assert "gpt-5" in str(exc_info.value)
+
+
+def test_an_available_pin_outside_the_pool_still_routes(tmp_path):
+    """The check is availability, not membership: an available pin is honoured."""
+    pinned = ModelProfile(
+        name="pinned-dev",
+        provider="openai",
+        model="gpt-5",
+        budget_usd=6.0,
+        timeout_seconds=900,
+        allowed_tools=(),
+    )
+    config = replace(_adaptive_config(tmp_path), dev_profile=pinned)
+    answers = {
+        profile_dispatch_key(pinned, config): _available(),
+        **{
+            profile_dispatch_key(a.to_model_profile(allowed_tools=()), config): _available()
+            for a in config.agents
+        },
+    }
+    with patch(
+        "theforge.coordinator.preflight.resolve_story_availability",
+        return_value=StoryAvailability(answers),
+    ):
+        applied = _apply_preflight_config(config, _proceed_state(), task_slug="s1")
+    assert applied.dev_profile.model == "gpt-5"
+
+
+# ── Static exclusions are recorded, not just applied ──────────────────
+
+
+def test_static_filtering_is_recorded_in_the_routing_decision(tmp_path):
+    """Filtering a static pool without recording it leaves nothing to diagnose."""
+    config = replace(
+        _static_config(tmp_path),
+        review_pool=[_reviewer("r1", "sonnet"), _reviewer("r2", "opus")],
+        review_pool_is_default=False,
+    )
+    state = _proceed_state()
+    with _patch_availability(config, {"sonnet": _available(), "opus": _unavailable()}):
+        _apply_preflight_config(config, state, task_slug="s1")
+
+    pool = state.routing_decision["code_review"]["candidate_pool"]
+    dropped = next(e for e in pool if not e["included"])
+    assert dropped["reason"] == REASON_MODEL_UNAVAILABLE
+    assert dropped["detail"]["model"] == "opus"
+    assert dropped["detail"]["auth_mode"] == "ChatGPT-account auth"
+    assert dropped["detail"]["checked_at"] == CHECKED_AT.isoformat()
+    assert [e["name"] for e in pool if e["included"]] == ["r1"]
+
+
+def test_static_filtering_does_not_narrate_the_preflight_reseat(tmp_path):
+    """One runtime event, one narration: the dispatch check owns preflight's."""
+    config = _static_config(tmp_path)
+    lines: list[str] = []
+    with _patch_availability(config, {config.preflight_profile.model: _available()}):
+        _apply_preflight_config(config, _proceed_state(), log=lines.append, task_slug="s1")
+    assert not [line for line in lines if "preflight: dropped unavailable" in line]
+
+
+# ── The post-plan checkpoint will not preserve an unreachable incumbent ─
+
+
+def _post_plan(decision, agents, *, availability, capability_records=None):
+    from theforge.assignment import apply_post_plan_checkpoint
+
+    return apply_post_plan_checkpoint(
+        decision,
+        agents,
+        _cfg(),
+        "medium",
+        plan_review_decision="APPROVE",
+        plan_review_cycles=1,
+        p1_count=0,
+        p2_count=0,
+        model_availability=availability,
+        capability_records=capability_records,
+    )
+
+
+def test_the_checkpoint_reroutes_when_the_seated_dev_became_unavailable():
+    """Preserving the incumbent is right for a demotion, wrong for a dead model.
+
+    Every bypass path in the checkpoint returns the seated dev unchanged. When
+    the account lost access to that model since preflight, that hands the dev
+    phase a model it cannot invoke (#2950 review).
+    """
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+    seated = decision.dev.name
+
+    updated = _post_plan(
+        decision,
+        agents,
+        availability={
+            name: (_unavailable() if name == seated else _available())
+            for name in (a.name for a in agents)
+        },
+    )
+    assert updated.dev.name != seated, "the unreachable incumbent must not survive"
+    block = updated.routing_decision["dev"]["post_plan_checkpoint"]
+    assert block["rationale"] == "incumbent_unavailable"
+    assert block["decision"] == "reroute"
+
+
+def test_the_checkpoint_refuses_when_nothing_is_left_to_reroute_onto():
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+
+    with pytest.raises(NoAvailableModelError) as exc_info:
+        _post_plan(
+            decision,
+            agents,
+            availability={a.name: _unavailable() for a in agents},
+        )
+    assert exc_info.value.role == "dev"
+    assert set(exc_info.value.excluded) == {a.name for a in agents}
+
+
+def test_the_checkpoint_leaves_an_available_incumbent_alone():
+    """Parity: the ordinary demotion question is unchanged."""
+    agents = _agents()
+    decision = assign_models(agents, _cfg(), "medium", complexity_score=5)
+    baseline = _post_plan(decision, agents, availability=None)
+    with_answers = _post_plan(
+        decision, agents, availability={a.name: _available() for a in agents}
+    )
+    assert with_answers.dev.model == baseline.dev.model

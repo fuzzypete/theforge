@@ -152,6 +152,15 @@ Five properties are worth knowing when diagnosing one:
   fallback, not the adaptive pool. An unavailable primary with an available
   configured fallback reseats onto the fallback and says so; with neither
   invocable, the story stops having spent nothing.
+- **Later phases are checked before preflight is paid for, too.** A phase can be
+  emptied by availability *combined with* the capability record or a
+  `dev_capable: false` declaration, and no single rule sees that. A
+  tier-independent pass asks, before the first paid call, whether every phase
+  still has something to seat — so a story that could never reach dev is not
+  charged for its classification first. It is deliberately coarse: it stops only
+  on a phase whose whole configured pool is gone, so it never refuses a story
+  tier narrowing would have routed. The router still performs the exact
+  per-phase enforcement afterwards.
 - **The spend in the message is the real one.** The launch gate and the
   cached/resume paths genuinely cost nothing and say `$0.00 spent`. Where a
   refusal is only reachable after preflight has run, the line reports what that
@@ -170,6 +179,26 @@ not relabelled as an override lock.
 In a parallel sprint, sibling stories cancelled by a routing stop are attributed
 to that stop, not to the credential: they are recorded SKIPPED with the routing
 reason, and never as an authentication failure.
+
+Two more places the answer is consulted, both of which used to let an
+unreachable model through:
+
+- **A pinned role is checked on its own identity.** `dev` or `plan` pinned to a
+  model that is not also in the adaptive pool gets the same check as everything
+  else — a pin the account cannot invoke stops the story rather than reaching
+  dispatch. A pinned role has no pool behind it, so this refuses rather than
+  filters.
+- **The post-plan checkpoint re-checks the seated model.** That checkpoint
+  refreshes availability, so a model that became unreachable between preflight
+  and plan-review is caught there. It reroutes onto any reachable candidate —
+  preferring the tier the story was routed to, then walking the ladder — and
+  stops only when the whole dev pool is gone. The reroute is recorded in the
+  checkpoint block as `incumbent_unavailable`.
+
+Under static routing the filtered pool is also recorded: `state.routing_decision`
+carries a `candidate_pool` for each configured phase in the same entry shape the
+adaptive router writes, so a pool that shrank has the account answer that shrank
+it attached.
 
 ### Broken baseline recovery
 

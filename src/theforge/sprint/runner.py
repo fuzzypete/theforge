@@ -3907,6 +3907,13 @@ class SprintExecutionState:
     # what tells the scheduler the cancellation was a spending decision rather
     # than a judgment about the work (#2547).
     budget_cancelled_slugs: set[str] = field(default_factory=set)
+    # The routing refusal that stopped this sprint (#2950), and the stories it
+    # cancelled mid-flight. Sprint-wide state, so it lives here beside the
+    # budget equivalent rather than in run_sprint's frame: a queued story and an
+    # in-flight sibling read the same record, so their cancellation reasons
+    # cannot diverge when another stop condition already owns the sprint.
+    routing_stop_reason: str = ""
+    routing_cancelled_slugs: set[str] = field(default_factory=set)
     # The latest measured lower bound each active story reported through live
     # state updates. Used to recover spend when a worker dies before it can
     # return a terminal CoordinatorResult (#2547 follow-up).
@@ -7411,18 +7418,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # the same credential would be presented and refused identically.
     auth_circuit: dict | None = None
     auth_circuit_reason = ""
-    # Set by the first story whose routing refused for lack of an invocable
-    # model (#2950); every story after it is skipped rather than dispatched.
-    routing_stop_reason = ""
     # Slugs the breaker cancelled mid-flight. Their futures return through the
     # generic stop_event cancellation path, which is timeout-shaped and would
     # classify them FAILED; this set is how the scheduler tells "we killed it
     # because the credential was dead" apart from "the story failed".
     auth_cancelled_slugs: set[str] = set()
-    # Siblings this sprint cancelled because routing refused, held apart from
-    # the auth-cancelled set so their results are attributed to the account
-    # answer rather than to a credential rejection that never happened (#2950).
-    routing_cancelled_slugs: set[str] = set()
 
     use_plan_gates = max_parallel > 1  # only for parallel mode
 
@@ -7629,13 +7629,18 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 # been shown to have no model for a phase, dispatching the next
                 # story only pays to be told again. Recorded skipped, not
                 # failed — nothing judged it.
-                if routing_stop_reason:
+                if _sprint_state.routing_stop_reason:
                     _sprint_state.dag.mark_skipped(task.slug)
                     _set_outcome(
-                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=routing_stop_reason
+                        _sprint_state,
+                        task.slug,
+                        StoryOutcome.SKIPPED,
+                        reason=_sprint_state.routing_stop_reason,
                     )
-                    _log(f"SKIPPED {task.slug} ({routing_stop_reason})")
-                    _record_current_story_entry(task.slug, "SKIPPED", error=routing_stop_reason)
+                    _log(f"SKIPPED {task.slug} ({_sprint_state.routing_stop_reason})")
+                    _record_current_story_entry(
+                        task.slug, "SKIPPED", error=_sprint_state.routing_stop_reason
+                    )
                     if _sprint_state.state_writer is not None:
                         _sprint_state.state_writer.update(task.slug, status="skipped")
                     continue
@@ -8184,10 +8189,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         # killed over a dead credential, not one that failed — same
                         # attribution as the ordinary cancellation path below.
                         _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
-                        if affected_slug in routing_cancelled_slugs:
-                            routing_cancelled_slugs.discard(affected_slug)
+                        if affected_slug in _sprint_state.routing_cancelled_slugs:
+                            _sprint_state.routing_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = _routing_cancel_reason(
-                                _sprint_state, routing_stop_reason
+                                _sprint_state, _sprint_state.routing_stop_reason
                             )
                             _mark_story_routing_cancelled(_timeout_result, reason=_cancel_reason)
                             _timeout_outcome = StoryOutcome.SKIPPED
@@ -8329,10 +8334,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         # worker that raised on its way out of an auth-breaker
                         # cancellation was killed by the sprint, not by the story.
                         _exc_outcome: StoryOutcome = StoryOutcome.FAILED
-                        if affected_slug in routing_cancelled_slugs:
-                            routing_cancelled_slugs.discard(affected_slug)
+                        if affected_slug in _sprint_state.routing_cancelled_slugs:
+                            _sprint_state.routing_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = _routing_cancel_reason(
-                                _sprint_state, routing_stop_reason
+                                _sprint_state, _sprint_state.routing_stop_reason
                             )
                             _mark_story_routing_cancelled(_exc_result, reason=_cancel_reason)
                             _exc_outcome = StoryOutcome.SKIPPED
@@ -8423,7 +8428,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 # against the same account and reach the same refusal.
                 _routing_stop = _routing_stop_reason(result)
                 if _routing_stop:
-                    routing_stop_reason = routing_stop_reason or _routing_stop
+                    _sprint_state.routing_stop_reason = (
+                        _sprint_state.routing_stop_reason or _routing_stop
+                    )
                     _end_collision_claim(_sprint_state, slug, "stopped by model availability")
                     _log(f"SKIPPED {slug} ({_routing_stop})")
                     _record_current_story_entry(slug, "SKIPPED", error=_routing_stop)
@@ -8438,7 +8445,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     )
                     _log(f"HALT sprint: {_sprint_state.stop.reason}")
                     for _pending_slug, _pending_evt in _sprint_state.stop_events.items():
-                        routing_cancelled_slugs.add(_pending_slug)
+                        _sprint_state.routing_cancelled_slugs.add(_pending_slug)
                         _pending_evt.set()
                     for _gate_slug, _pending_gate in _sprint_state.plan_gates.items():
                         _log(f"Releasing plan gate for {_gate_slug} (routing stop)")
@@ -8493,9 +8500,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 # outage as a property of that story, which is precisely the
                 # conflation #1951 exists to prevent. Attribute it to the
                 # credential and record it as skipped, not judged.
-                if slug in routing_cancelled_slugs and not result.success:
-                    routing_cancelled_slugs.discard(slug)
-                    _cancel_reason = _routing_cancel_reason(_sprint_state, routing_stop_reason)
+                if slug in _sprint_state.routing_cancelled_slugs and not result.success:
+                    _sprint_state.routing_cancelled_slugs.discard(slug)
+                    _cancel_reason = _routing_cancel_reason(
+                        _sprint_state, _sprint_state.routing_stop_reason
+                    )
                     _mark_story_routing_cancelled(result, reason=_cancel_reason)
                     _end_collision_claim(_sprint_state, slug, "cancelled by the routing stop")
                     _log(f"SKIPPED {slug} ({_cancel_reason})")

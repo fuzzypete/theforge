@@ -248,3 +248,104 @@ def test_the_resume_path_stops_rather_than_seating_the_static_roster(
     assert result.state.error_type == ROUTING_STOPPED_ERROR_TYPE
     assert "no model available for phase code_review" in result.message
     assert mock_pool.call_count == 0, "no reviewer is dispatched after the stop"
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.plan_flow.run_agent")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_a_phase_emptied_by_availability_plus_capability_stops_before_preflight(
+    mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
+):
+    """Availability alone was not enough to see this phase was already dead.
+
+    One reviewer is unavailable, the other is ruled out by the capability
+    record. Neither rule empties code_review on its own, so the exhaustion was
+    previously discovered at assignment time — after preflight had been charged
+    for a story that could never reach review (#2950 review).
+    """
+    from theforge.config import AgentDef, AssignmentConfig
+    from theforge.model_capabilities import CAPABILITY_TOOL_STRUCTURED, OUTCOME_ABSENT
+
+    agents = [
+        AgentDef(
+            name="reachable",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+        ),
+        AgentDef(
+            name="unreachable",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+        ),
+    ]
+    config = replace(
+        _make_config(tmp_path),
+        agents=agents,
+        assignment=AssignmentConfig(enabled=True, max_cost_per_story_usd=50.0),
+        models=None,
+        review_pool_is_default=True,
+        plan_model_is_default=True,
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir(exist_ok=True)
+    mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+    # sonnet: reachable but demonstrated unable to produce structured output.
+    capabilities = {
+        "version": 1,
+        "identities": {
+            "anthropic/sonnet/api": {
+                "provider": "anthropic",
+                "model": "sonnet",
+                "transport": "api",
+                "capabilities": {
+                    CAPABILITY_TOOL_STRUCTURED: {
+                        "outcome": OUTCOME_ABSENT,
+                        "established_at": "2026-09-01T00:00:00Z",
+                        "subject_signature": "",
+                        "detail": "returned prose",
+                        "probe_role": "agent-code-review",
+                    }
+                },
+            }
+        },
+    }
+    # opus: capable, but the account cannot invoke it.
+    answers = {}
+    for profile in [a.to_model_profile(allowed_tools=()) for a in agents]:
+        key = profile_dispatch_key(profile, config)
+        if key is not None:
+            answers[key] = _answer(
+                MODEL_AVAILABILITY_UNAVAILABLE
+                if profile.model == "opus"
+                else MODEL_AVAILABILITY_AVAILABLE
+            )
+    preflight_key = profile_dispatch_key(config.preflight_profile, config)
+    if preflight_key is not None:
+        answers.setdefault(preflight_key, _answer(MODEL_AVAILABILITY_AVAILABLE))
+
+    with patch(
+        "theforge.coordinator.preflight.resolve_story_availability",
+        return_value=StoryAvailability(answers),
+    ):
+        with patch("theforge.model_capabilities.load_capabilities", return_value=capabilities):
+            result = run_task(config, task)
+
+    assert mock_preflight.call_count == 0, (
+        "the story was already unroutable; preflight must not be charged to find out"
+    )
+    assert result.state.error_type == ROUTING_STOPPED_ERROR_TYPE
+    assert "$0.00 spent" in result.message
+    assert result.state.total_cost_measured == 0.0
+    # Both rules are named, not just the account answer.
+    assert "not available to this account" in result.message
+    assert "demonstrated absent" in result.message
