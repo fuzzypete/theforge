@@ -27,9 +27,14 @@ from .config import (
     TransportFallbackConfig,
 )
 from .config.auth import check_agent_auth
-from .config.model_identity import PHASE_PLAN_REVIEW, PHASE_REVIEW
+from .config.model_identity import PHASE_PLAN_REVIEW, PHASE_REVIEW, ModelAvailability
 from .config.pricing import price_tiebreak_signal_for
 from .config.profiles import _apply_transport_fallback
+from .model_availability import (
+    availability_detail,
+    format_unavailable_detail,
+    is_unavailable,
+)
 from .model_capabilities import (
     CAPABILITY_TOOL_STRUCTURED,
     identity_for_agent,
@@ -76,6 +81,10 @@ REASON_DEV_INCAPABLE = "dev_incapable"
 # candidate's identity (#2466). Never-established and stale records do not
 # produce this reason — only a current, demonstrated absence does.
 REASON_CAPABILITY_ABSENT = "capability_demonstrated_absent"
+# The account this run authenticates as cannot invoke this model (#2950). Only
+# positive account-catalog evidence produces this reason; an unverified answer
+# (no catalog, or a failed lookup) leaves the candidate fully eligible.
+REASON_MODEL_UNAVAILABLE = "model_unavailable"
 REASON_NONE = "none"  # selected / included candidate
 
 EXCLUSION_REASONS: frozenset[str] = frozenset(
@@ -88,6 +97,7 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
         REASON_EXPLICIT_OVERRIDE_LOCKED,
         REASON_DEV_INCAPABLE,
         REASON_CAPABILITY_ABSENT,
+        REASON_MODEL_UNAVAILABLE,
         REASON_NONE,
     }
 )
@@ -439,6 +449,194 @@ def _capability_exclusions(
                 "probe_role": result.probe_role,
             }
     return excluded
+
+
+def _availability_exclusions(
+    agents: list[AgentDef],
+    model_availability: "dict[str, ModelAvailability] | None",
+) -> dict[str, dict[str, object]]:
+    """Which candidates the current account answer rules out (#2950).
+
+    Returns ``{agent_name: {state, auth_mode, checked_at, freshness, reason}}``,
+    empty when no answer was supplied or nothing in the pool is unavailable.
+
+    Only ``unavailable`` — positive catalog evidence that this credential cannot
+    invoke this model — excludes. ``unverified`` means the question could not be
+    answered, and an unanswerable question must not narrow the pool: a provider
+    that publishes no catalog routes exactly as it did before availability
+    existed. The exclusion is role-independent, unlike the capability gate: an
+    account that cannot invoke a model cannot invoke it for any phase.
+    """
+    if not model_availability:
+        return {}
+    excluded: dict[str, dict[str, object]] = {}
+    for agent in agents:
+        answer = model_availability.get(agent.name)
+        if is_unavailable(answer):
+            excluded[agent.name] = availability_detail(answer)  # type: ignore[arg-type]
+    return excluded
+
+
+def _availability_pool(
+    agents: list[AgentDef],
+    excluded: dict[str, dict[str, object]],
+) -> list[AgentDef]:
+    """Apply availability exclusions to a candidate pool.
+
+    Like :func:`_capability_pool`, the filtered pool is returned even when
+    empty. Restoring an unavailable candidate to have somebody to seat would
+    spend the story's budget on a call the account cannot make — which is the
+    failure this input exists to prevent. Callers refuse instead; see
+    :class:`NoAvailableModelError`.
+    """
+    if not excluded:
+        return agents
+    return [a for a in agents if a.name not in excluded]
+
+
+def _availability_exclusion_note(excluded: dict[str, dict[str, object]]) -> str:
+    """Operator-facing rationale fragment for a role's availability exclusions."""
+    if not excluded:
+        return ""
+    parts = ", ".join(
+        f"{name} ({format_unavailable_detail(detail)})"
+        for name, detail in sorted(excluded.items())
+    )
+    return f"; excluded [{parts}]"
+
+
+# ``error_type`` stamped on a run the availability refusal stopped. Deliberately
+# not an agent-failure category: no agent was invoked, so the run made no
+# statement about the story and nothing may be recorded against any model.
+ROUTING_STOPPED_ERROR_TYPE = "RoutingStopped"
+
+
+def _exclusion_sentence(record: dict[str, object]) -> str:
+    """Render one excluded candidate's reason in the operator's vocabulary."""
+    reason = record.get("reason")
+    detail = record.get("detail")
+    if reason == REASON_MODEL_UNAVAILABLE and isinstance(detail, dict):
+        return format_unavailable_detail(detail)
+    if reason == REASON_CAPABILITY_ABSENT and isinstance(detail, dict):
+        capability = detail.get("capability") or "the required capability"
+        established = detail.get("established_at") or "?"
+        return f"{capability} demonstrated absent (established {established})"
+    if reason == REASON_DEV_INCAPABLE:
+        return "declared dev_capable=false"
+    return str(reason or "excluded")
+
+
+def _pool_exhaustion_payload(
+    agents: list[AgentDef],
+    availability_excluded: dict[str, dict[str, object]],
+    capability_excluded: dict[str, dict[str, object]],
+    dev_declared_excluded: dict[str, dict[str, object]] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Why each candidate is gone, for a pool that no longer has one.
+
+    A phase can be emptied by more than one hard rule at once — the account
+    cannot invoke two of the three, and the capability record rules out the
+    third. Naming only the availability exclusions would tell the operator the
+    account is the whole story and send them to fix the wrong thing, so the stop
+    reports every candidate with the rule that actually removed it (#2950
+    review). Priority matches the candidate pool's: availability first, since a
+    model the account cannot reach makes every other reason moot.
+    """
+    dev_declared_excluded = dev_declared_excluded or {}
+    payload: dict[str, dict[str, object]] = {}
+    # Keyed by agent name, which is unique within a pool; ``label`` carries the
+    # same name for rendering so every payload in the codebase reads the same
+    # way regardless of what its key had to be.
+    for agent in agents:
+        if agent.name in availability_excluded:
+            payload[agent.name] = {
+                "reason": REASON_MODEL_UNAVAILABLE,
+                "label": agent.name,
+                "detail": availability_excluded[agent.name],
+            }
+        elif agent.name in capability_excluded:
+            payload[agent.name] = {
+                "reason": REASON_CAPABILITY_ABSENT,
+                "label": agent.name,
+                "detail": capability_excluded[agent.name],
+            }
+        elif agent.name in dev_declared_excluded:
+            payload[agent.name] = {
+                "reason": REASON_DEV_INCAPABLE,
+                "label": agent.name,
+                "detail": dev_declared_excluded[agent.name],
+            }
+    return payload
+
+
+class NoAvailableModelError(ValueError):
+    """No model remains for a phase, at least partly because of account availability.
+
+    Raised *before* the phase is dispatched, so no model is asked to do
+    anything. This is a routing outcome, not an agent failure: nothing may be
+    recorded against any model's capability history or profile.
+
+    The message deliberately does **not** claim a spend. What the story has
+    already cost depends on where the refusal was reached — nothing at all at
+    the sprint gate and on the cached/resume paths, but a charged preflight on
+    the live coordinator path — and only the catching site knows which (#2950
+    review). Catchers append their own figure via :func:`routing_stop_message`.
+
+    A ``ValueError`` subclass for the same reason
+    :class:`NoCapableCandidateError` is — callers already handle an unroutable
+    pool as a ``ValueError`` and must not need a second failure shape.
+    """
+
+    #: Reason priority when a payload carries more than one rule, matching the
+    #: candidate pool's: availability first, since a model the account cannot
+    #: reach makes every other reason moot.
+    _REASON_PRIORITY = (REASON_MODEL_UNAVAILABLE, REASON_CAPABILITY_ABSENT, REASON_DEV_INCAPABLE)
+
+    def __init__(self, role: str, excluded: dict[str, dict[str, object]]) -> None:
+        self.role = role
+        self.excluded = excluded
+        # Derived, not fixed: the pre-spend pass raises this for a phase emptied
+        # entirely by the capability record or the dev declaration, and a
+        # machine-readable field saying model_unavailable would attribute the
+        # stop to an account answer that contributed nothing (#2950 review).
+        present = {record.get("reason") for record in excluded.values()}
+        self.exclusion_reason = next(
+            (reason for reason in self._REASON_PRIORITY if reason in present),
+            REASON_MODEL_UNAVAILABLE,
+        )
+        # The map's key is whatever the caller can guarantee unique — an agent
+        # name from the pool, or a dispatch identity for configured profiles.
+        # ``label`` is what the operator reads, and two candidates may share
+        # one: the same model string under two credentials is two exclusions
+        # with one name, and both have to appear (#2950 review).
+        detail = ", ".join(
+            f"{record.get('label') or key} excluded ({_exclusion_sentence(record)})"
+            for key, record in sorted(
+                excluded.items(), key=lambda item: (str(item[1].get("label") or item[0]), item[0])
+            )
+        )
+        super().__init__(
+            f"no model available for phase {role}: {detail or 'no candidate was configured'}"
+        )
+
+    def summary(self) -> str:
+        """One-line operator rendering, matching the ROUTING stop the CLI prints."""
+        return str(self)
+
+
+def routing_stop_message(exc: NoAvailableModelError, spent_usd: float = 0.0) -> str:
+    """The operator-facing routing stop, with the spend the caller actually knows.
+
+    ``spent_usd`` is what this story has cost by the time the stop was reached.
+    Zero is the common case and the one the acceptance criterion is about; a
+    live coordinator run that already paid for preflight says so rather than
+    printing a $0.00 the operator's bill will contradict.
+    """
+    if spent_usd > 0:
+        tail = f"Nothing further dispatched, ${spent_usd:.2f} already spent on this story."
+    else:
+        tail = "Nothing dispatched, $0.00 spent."
+    return f"{exc}. {tail}"
 
 
 class NoCapableCandidateError(ValueError):
@@ -2065,6 +2263,25 @@ def _capability_pool_entry(
     return True
 
 
+def _availability_pool_entry(
+    entry: dict[str, object],
+    record: dict[str, object] | None,
+) -> bool:
+    """Mark a pool entry excluded because the account cannot invoke it (#2950).
+
+    Returns True when the entry was marked. The recorded ``detail`` names the
+    auth mode that answered and when, so the operator reads the same sentence
+    the routing stop would have printed — with the decision, not from a failed
+    dispatch later.
+    """
+    if not record:
+        return False
+    entry["included"] = False
+    entry["reason"] = REASON_MODEL_UNAVAILABLE
+    entry["detail"] = dict(record)
+    return True
+
+
 def _single_model_pool(
     agents: list[AgentDef],
     target_tier: str | None,
@@ -2073,20 +2290,26 @@ def _single_model_pool(
     secrets: dict[str, str] | None,
     capability_excluded: dict[str, dict[str, object]] | None = None,
     role: str = "",
+    availability_excluded: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a single-model role (preflight/planner/dev).
 
     Every agent is listed with ``included`` and, when excluded, a canonical
-    ``reason``. Priority of exclusion reasons is deterministic: declared dev
-    incapability; then the selected model; an explicit override locks out the
-    rest; then tier mismatch; then a demonstrated-absent capability; then
-    auth/transport unavailability.
+    ``reason``. Priority of exclusion reasons is deterministic: account
+    unavailability first — it is the one fact that makes every other reason
+    moot, and burying it under a tier mismatch would hide why the pool shrank;
+    then declared dev incapability; then the selected model; an explicit
+    override locks out the rest; then tier mismatch; then a demonstrated-absent
+    capability; then auth/transport unavailability.
     """
     capability_excluded = capability_excluded or {}
+    availability_excluded = availability_excluded or {}
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
-        if role == "dev" and not a.dev_capable:
+        if _availability_pool_entry(entry, availability_excluded.get(a.name)):
+            pass
+        elif role == "dev" and not a.dev_capable:
             entry["included"] = False
             entry["reason"] = REASON_DEV_INCAPABLE
         elif a.name == selected_name:
@@ -2161,6 +2384,7 @@ def _reviewer_candidate_pool(
     secrets: dict[str, str] | None,
     health_deprioritized: set[str] | None = None,
     capability_excluded: dict[str, dict[str, object]] | None = None,
+    availability_excluded: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a reviewer role (plan_review/code_review).
 
@@ -2171,13 +2395,18 @@ def _reviewer_candidate_pool(
     ``anti_self_review``; a candidate dropped by provider-health demotion
     surfaces as ``transport_unavailable`` with a ``health_deprioritized`` detail
     (a recent provider-shape failure is a transient transport unavailability).
+    A candidate the account cannot invoke at all is checked first and surfaces
+    as ``model_unavailable`` — see :func:`_availability_pool_entry`.
     """
     health_deprioritized = health_deprioritized or set()
     capability_excluded = capability_excluded or {}
+    availability_excluded = availability_excluded or {}
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
-        if a.name in selected_names:
+        if _availability_pool_entry(entry, availability_excluded.get(a.name)):
+            pass
+        elif a.name in selected_names:
             entry["included"] = True
             entry["reason"] = REASON_NONE
         elif locked:
@@ -2747,6 +2976,8 @@ def _build_routing_decision(
     # Dev pool at the effective (post-promotion) tier, annotated with the
     # profile signals the router actually weighed for each included candidate.
     capability_exclusions = evidence.capability_exclusions
+    # Role-independent, so every pool below receives the same map (#2950).
+    availability_exclusions = evidence.availability_exclusions
     dev_pool = _single_model_pool(
         agents,
         dev_effective_tier,
@@ -2755,6 +2986,7 @@ def _build_routing_decision(
         secrets,
         capability_excluded=capability_exclusions.get("dev"),
         role="dev",
+        availability_excluded=availability_exclusions,
     )
     dev_domain_signals = evidence.dev_domain_signals
     dev_cost_signals = evidence.dev_cost_signals
@@ -2883,6 +3115,8 @@ def _build_routing_decision(
                 decision.preflight.name,
                 "preflight" in explicit_roles,
                 secrets,
+                capability_excluded=capability_exclusions.get("preflight"),
+                availability_excluded=availability_exclusions,
             ),
             "exploration": dict(exploration),
             **(
@@ -2906,6 +3140,7 @@ def _build_routing_decision(
                 "planner" in explicit_roles,
                 secrets,
                 capability_excluded=capability_exclusions.get("planner"),
+                availability_excluded=availability_exclusions,
             ),
             "exploration": dict(exploration),
             **(
@@ -2991,6 +3226,7 @@ def _build_routing_decision(
                 secrets,
                 health_deprioritized=pr_depri,
                 capability_excluded=capability_exclusions.get("plan_review"),
+                availability_excluded=availability_exclusions,
             ),
             "demotion_check": _reviewer_demotion_check(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
@@ -3018,6 +3254,7 @@ def _build_routing_decision(
                 secrets,
                 health_deprioritized=cr_depri,
                 capability_excluded=capability_exclusions.get("code_review"),
+                availability_excluded=availability_exclusions,
             ),
             "demotion_check": _reviewer_demotion_check(
                 cr_fired, cr_depri, cr_fellback, unhealthy_models
@@ -3041,6 +3278,7 @@ def reconcile_explicit_reviewer_pools(
     code_reviewers: list[ModelProfile] | None = None,
     secrets: dict[str, str] | None = None,
     capability_records: dict | None = None,
+    availability_excluded: dict[str, dict[str, dict[str, object]]] | None = None,
 ) -> dict[str, object]:
     """Reconcile reviewer role blocks with explicit pools spliced post-assign.
 
@@ -3052,6 +3290,15 @@ def reconcile_explicit_reviewer_pools(
     rebuilds only the affected reviewer role blocks from the real post-splice
     profiles so the persisted block stays reconstructable and consistent with
     runtime (#1391 iter1). Other roles and the block ``origin`` are preserved.
+
+    ``availability_excluded`` names the pinned reviewers the coordinator dropped
+    because the account cannot invoke them, keyed role → label → availability
+    detail. They are rebuilt as *excluded* candidates carrying
+    ``model_unavailable`` and their auth mode and timestamp. Leaving them out
+    entirely would make the decision unable to explain why the operator's own
+    pool shrank, and letting a same-named adaptive agent stand in for one would
+    report the wrong reason — ``explicit_override_locked`` instead of the
+    account answer that actually removed it (#2950 review).
 
     An explicit pool is operator intent and is never filtered here — but a
     spliced reviewer whose required capability is recorded demonstrably absent
@@ -3087,11 +3334,33 @@ def reconcile_explicit_reviewer_pools(
         if not isinstance(role_block, dict):
             return
         selected = {p.name for p in reviewers}
+        dropped = (availability_excluded or {}).get(role) or {}
         # Explicit pools are operator-locked: agents outside the pool are locked
         # out; every profile that will run is an included candidate — even ones
         # not present in the adaptive ``agents`` registry.
         pool = _reviewer_candidate_pool(agents, selected, None, True, secrets)
+        # A pinned reviewer the account cannot invoke is an exclusion, not a
+        # lock-out. Overwrite any same-named adaptive entry so the recorded
+        # reason is the account answer rather than the generic override lock.
+        for entry in pool:
+            record = dropped.get(str(entry.get("name")))
+            if record is not None:
+                entry["included"] = False
+                entry["reason"] = REASON_MODEL_UNAVAILABLE
+                entry["detail"] = dict(record)
         present = {e["name"] for e in pool}
+        for label, record in sorted(dropped.items()):
+            if label not in present:
+                pool.append(
+                    {
+                        "name": label,
+                        "tier": None,
+                        "included": False,
+                        "reason": REASON_MODEL_UNAVAILABLE,
+                        "detail": dict(record),
+                    }
+                )
+                present.add(label)
         for p in reviewers:
             if p.name not in present:
                 pool.append(
@@ -3136,6 +3405,9 @@ POST_PLAN_CHECKPOINT_RATIONALES: frozenset[str] = frozenset(
         "plan_review_p1_present",
         "plan_review_p2_exceeded",
         "no_reduced_tier_candidate",
+        # The seated dev became unreachable since preflight; the checkpoint
+        # reroutes rather than preserving it (#2950).
+        "incumbent_unavailable",
     }
 )
 
@@ -3167,6 +3439,8 @@ def apply_post_plan_checkpoint(
     recency: object | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
     capability_records: dict | None = None,
+    model_availability: dict[str, ModelAvailability] | None = None,
+    incumbent_availability: ModelAvailability | None = None,
 ) -> AssignmentDecision:
     """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
 
@@ -3229,6 +3503,105 @@ def apply_post_plan_checkpoint(
         }
         if dev_block is not None:
             dev_block["post_plan_checkpoint"] = block
+
+    # ── The seated model must still be invocable ───────────────────────
+    # Checked ahead of every bypass path below, because "the account cannot
+    # invoke the model this story is about to dispatch" outranks "the checkpoint
+    # is disabled" and "the complexity band is wrong". Those paths all preserve
+    # the incumbent, which is the correct answer for a demotion question and the
+    # wrong one for a model that has become unreachable since preflight seated
+    # it (#2950 review).
+    #
+    # ``incumbent_availability`` is the answer for what ``decision.dev`` would
+    # actually dispatch, resolved by the caller against its dispatch identity.
+    # The agent-name map cannot answer for a pinned dev that is not also a pool
+    # agent — the name is simply absent — and that silence read as "available"
+    # (#2950 review, the config.agents family). A pinned dev is checked here for
+    # the same reason: this is a refreshed answer, so it can find a pin
+    # unreachable that was reachable when the coordinator cleared it.
+    incumbent_answer = incumbent_availability
+    if incumbent_answer is None:
+        incumbent_answer = (model_availability or {}).get(decision.dev.name)
+    if is_unavailable(incumbent_answer):
+        if "dev" in explicit_roles:
+            # A pin has no pool behind it, so there is nothing to reroute onto.
+            raise NoAvailableModelError(
+                "dev",
+                {
+                    decision.dev.name or decision.dev.model: {
+                        "reason": REASON_MODEL_UNAVAILABLE,
+                        "label": decision.dev.model,
+                        "detail": {
+                            "model": decision.dev.model,
+                            **availability_detail(incumbent_answer),
+                        },
+                    }
+                },
+            )
+        available_pool = _availability_pool(
+            _dev_capability_pool(
+                _capability_pool(
+                    agents, _capability_exclusions(agents, "dev", capability_records)
+                ),
+                "dev",
+            ),
+            _availability_exclusions(agents, model_availability),
+        )
+        # A forced reroute, not a demotion: any tier the operator's pool offers
+        # is better than dispatching a model that cannot be reached. Prefer the
+        # tier the story was routed to, then walk the ladder cheapest-first —
+        # _pick_agent selects within one tier, so "any tier" has to be spelled
+        # out rather than passed as None.
+        replacement = None
+        for tier in [baseline_tier, *(t for t in _TIER_ORDER if t != baseline_tier)]:
+            if tier is None:
+                continue
+            replacement = _pick_agent(
+                available_pool,
+                tier,
+                secrets,
+                model_profiles=model_profiles,
+                role="dev",
+                complexity=_normalize_complexity(complexity),
+                observed_costs=observed_costs,
+                reasoning_effort=reasoning_effort,
+                domains=domains,
+                recency=recency,
+            )
+            if replacement is not None:
+                break
+        if replacement is None:
+            raise NoAvailableModelError(
+                "dev",
+                _pool_exhaustion_payload(
+                    agents,
+                    _availability_exclusions(agents, model_availability),
+                    _capability_exclusions(agents, "dev", capability_records),
+                    _dev_incapability_exclusions(agents),
+                ),
+            )
+        _record(
+            fired=True,
+            dec="reroute",
+            rationale="incumbent_unavailable",
+            final_tier=replacement.tier,
+        )
+        new_dev = _agent_to_profile(
+            replacement, role="dev", transport_fallbacks=transport_fallbacks
+        )
+        if dev_block is not None:
+            # Instrument the swap the same way the demotion below does, so the
+            # audit shows which model actually runs and why it changed.
+            final = dev_block.get("final")
+            if isinstance(final, dict):
+                final["model"] = new_dev.model
+                final["tier"] = replacement.tier
+                _base_rat = final.get("rationale", "")
+                final["rationale"] = (
+                    f"{_base_rat}; post-plan reroute {decision.dev.model} → {new_dev.model} "
+                    "(seated model no longer available to this account)"
+                ).lstrip("; ")
+        return _replace(decision, dev=new_dev)
 
     # ── Bypass paths (skipped) — operator intent / conservative config ──
     if not assignment_config.plan_tier_reduction:
@@ -3305,9 +3678,16 @@ def apply_post_plan_checkpoint(
     # needs no refusal here: this checkpoint is an optional *demotion*, so no
     # capable cheaper candidate simply preserves the already-seated dev
     # ("no_reduced_tier_candidate") rather than failing the run.
-    dev_pool = _dev_capability_pool(
-        _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records)),
-        "dev",
+    # Availability is resolved fresh for this checkpoint by the caller, so a
+    # model the account lost access to since preflight cannot be seated by the
+    # demotion either (#2950). Like the capability filter above, an empty pool
+    # here needs no refusal: the checkpoint preserves the already-seated dev.
+    dev_pool = _availability_pool(
+        _dev_capability_pool(
+            _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records)),
+            "dev",
+        ),
+        _availability_exclusions(agents, model_availability),
     )
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
     target_agent = (
@@ -3634,6 +4014,7 @@ def assign_models(
     explore_rng: random.Random | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
     capability_records: dict | None = None,
+    model_availability: dict[str, ModelAvailability] | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -3661,6 +4042,17 @@ def assign_models(
     (#2466). Raises :class:`NoCapableCandidateError` when the record rules out
     *every* candidate for a role: there is no correct model to seat, and seating
     one anyway is the failure the record exists to prevent.
+
+    ``model_availability`` is the current account answer per agent name (#2950),
+    resolved by the caller immediately before this call so an answer that
+    changes mid-sprint changes routing for the stories that follow. Another
+    optional pure input: an ``unavailable`` candidate is excluded from every
+    phase's pool with the ``model_unavailable`` reason, an ``unverified`` one
+    stays fully eligible and is ranked exactly as it is today, and passing no
+    answer at all routes exactly as before. Raises
+    :class:`NoAvailableModelError` when it empties a phase's pool — that stop
+    happens before the phase is dispatched, so the story costs $0.00 and no
+    model acquires a verdict.
     """
     if not agents:
         raise ValueError("assign_models requires a non-empty agents pool")
@@ -3749,11 +4141,70 @@ def assign_models(
     evidence.capability_exclusions = {
         role: excluded for role, excluded in capability_excluded.items() if excluded
     }
+    # ── Account availability gate (#2950) ──────────────────────────────
+    # Resolved by the caller immediately before this selection and applied here
+    # to every role at once: unlike a capability, availability is not per-role.
+    # It is applied at the same point as the capability filter and for the same
+    # reason — every selection path for a role, including the tier fallback,
+    # the pool-exhaustion fallback and the budget enforcer's cheaper-model
+    # search, must draw from the already-filtered pool, so no path can reseat a
+    # model the account cannot invoke.
+    availability_excluded = _availability_exclusions(agents, model_availability)
+    evidence.availability_exclusions = availability_excluded
     role_pools: dict[str, list[AgentDef]] = {}
     capability_notes: dict[str, str] = {}
     for role, excluded in capability_excluded.items():
-        role_pools[role] = _capability_pool(agents, excluded)
-        capability_notes[role] = _capability_exclusion_note(excluded)
+        role_pools[role] = _availability_pool(
+            _capability_pool(agents, excluded), availability_excluded
+        )
+        capability_notes[role] = _capability_exclusion_note(excluded) + (
+            _availability_exclusion_note(availability_excluded)
+        )
+    # Refuse before any phase is dispatched when availability empties a pool.
+    # Checked ahead of the capability refusal because it is the stronger fact:
+    # a capability record describes what a model was observed to do, while this
+    # says the account cannot reach the model at all. Unlike the capability
+    # gate, an explicit override is NOT exempt — an operator pin the account
+    # cannot invoke has no successful dispatch to honor, and honoring it would
+    # spend the story's budget to discover that.
+    # The dev declaration is the third hard rule that can empty a pool, and it is
+    # resolved here — ahead of the refusals rather than after them — so the
+    # availability refusal below sees dev's *final* pool. Judging dev on the
+    # pre-declaration pool would let a pool emptied jointly by the account answer
+    # and ``dev_capable: false`` fall through to the declaration refusal, which
+    # names only the declared models and silently drops the unavailable ones.
+    dev_incapability_exclusions = _dev_incapability_exclusions(role_pools["dev"])
+    capability_filtered_dev_pool = role_pools["dev"]
+    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
+
+    for role, pool in role_pools.items():
+        if availability_excluded and not pool:
+            # Report every candidate with the rule that removed it, not only the
+            # availability ones: a pool emptied jointly by the account answer and
+            # the capability record (or the dev declaration) must not read as an
+            # account problem alone.
+            raise NoAvailableModelError(
+                role,
+                _pool_exhaustion_payload(
+                    agents,
+                    availability_excluded,
+                    capability_excluded[role],
+                    dev_incapability_exclusions if role == "dev" else None,
+                ),
+            )
+    for pinned_role, profile in explicit_profiles.items():
+        pinned_identity = identity_for_profile(profile)
+        pinned_unavailable = {
+            agent.name: {
+                "reason": REASON_MODEL_UNAVAILABLE,
+                "label": agent.name,
+                "detail": availability_excluded[agent.name],
+            }
+            for agent in agents
+            if agent.name in availability_excluded and identity_for_agent(agent) == pinned_identity
+        }
+        if pinned_unavailable:
+            raise NoAvailableModelError(pinned_role, pinned_unavailable)
     # Refuse rather than seat a model the record says cannot do the job. Checked
     # here — before any selection runs — so the refusal names the role and the
     # evidence instead of surfacing later as an empty pool or, worse, as a phase
@@ -3761,15 +4212,17 @@ def assign_models(
     # it never reaches candidate selection, and the operator's pin stands (it is
     # flagged in that role's rationale instead).
     for role, excluded in capability_excluded.items():
-        if excluded and not role_pools[role] and role not in explicit_profiles:
+        # dev is judged on its pre-declaration pool here, exactly as before: a
+        # dev pool the declaration alone emptied is the declaration's refusal
+        # below, not a capability one.
+        pool = capability_filtered_dev_pool if role == "dev" else role_pools[role]
+        if excluded and not pool and role not in explicit_profiles:
             raise NoCapableCandidateError(role, ROLE_REQUIRED_CAPABILITY[role], excluded)
 
     # A declared dev incapability is an independent hard eligibility boundary,
-    # applied after demonstrated-capability exclusions so every downstream dev
+    # applied above (before the availability refusal) so every downstream dev
     # mechanism consumes the same pool. Do not restore the raw pool when it is
     # empty: there is no permitted adaptive dev candidate.
-    dev_incapability_exclusions = _dev_incapability_exclusions(role_pools["dev"])
-    role_pools["dev"] = _dev_capability_pool(role_pools["dev"], "dev")
     if not role_pools["dev"] and "dev" not in explicit_profiles:
         raise NoCapableCandidateError.declared_dev_incapability(dev_incapability_exclusions)
 

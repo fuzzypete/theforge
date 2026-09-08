@@ -28,6 +28,11 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.agent_types import AgentResult
+from theforge.assignment import (
+    ROUTING_STOPPED_ERROR_TYPE,
+    NoAvailableModelError,
+    routing_stop_message,
+)
 from theforge.config import (
     PREFLIGHT_FORBIDDEN_TOOLS,
     ForgeConfig,
@@ -77,7 +82,9 @@ from .preflight import (
     complexity_source,
     degraded_preflight_fields,
     persist_routing_decision,
+    refuse_unroutable_phases,
     score_to_band,
+    story_availability_for,
 )
 from .preflight_cache import capture_preflight_cache_snapshot
 from .preflight_complexity_gate import evaluate_preflight_complexity_gate
@@ -380,6 +387,53 @@ def _sanitize_preflight_profile(
     return replace(profile, allowed_tools=resolved)
 
 
+def _availability_checked_preflight_profile(
+    config: ForgeConfig,
+    state: CoordinatorState,
+    *,
+    log: Callable[[str], None],
+) -> ModelProfile:
+    """Return the preflight profile to dispatch, or refuse before spending.
+
+    Preflight is the story's first paid call and it happens before routing, so
+    this is the only place an unavailable preflight model can be caught while
+    the story still costs nothing. Prefers the configured fallback when the
+    primary is unavailable — a reseat inside the operator's own configuration,
+    not a routing decision — and refuses when neither can be invoked.
+
+    Raises:
+        NoAvailableModelError: when the account can invoke no configured
+            preflight profile.
+    """
+    from theforge.model_availability import (  # noqa: PLC0415
+        is_unavailable,
+        preflight_dispatch_profiles,
+    )
+
+    availability = story_availability_for(config, state)
+    # EVERY phase is checked here, before this call is paid for — including
+    # this one, and including pinned roles on their own dispatch identity. One
+    # check over one derivation of what each phase dispatches; the two that grew
+    # apart disagreed, and each disagreement was either a paid discovery or a
+    # stop for a story that could have run (#2950 review).
+    refuse_unroutable_phases(config, state, availability)
+
+    candidates = preflight_dispatch_profiles(config)
+    for index, profile in enumerate(candidates):
+        if not is_unavailable(availability.for_profile(profile, config)):
+            if index:
+                log(
+                    f"  ⚠ ROUTING  preflight {candidates[0].model} excluded — "
+                    "not available to this account; using configured fallback "
+                    f"{profile.model}"
+                )
+            return profile
+    # Unreachable: refuse_unroutable_phases above refuses when every preflight
+    # candidate is unavailable, and the loop returned otherwise. Kept so the
+    # function has one typed exit for callers rather than an implicit None.
+    return config.preflight_profile
+
+
 def _run_preflight_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -407,7 +461,36 @@ def _run_preflight_phase(
     _ensure_runners()
 
     state.phase = Phase.PREFLIGHT
-    preflight_profile = config.preflight_profile
+
+    # ── Availability, before the first paid call of the story (#2950) ──
+    # Preflight runs ahead of routing (routing needs the complexity score
+    # preflight produces), so the router's exclusion cannot protect this
+    # invocation — by the time assign_models refuses, the preflight agent has
+    # been charged. Resolve the account answer here instead and either reseat
+    # onto the configured fallback or stop, both before anything is dispatched.
+    # The answer is stashed on state so routing reuses it rather than asking a
+    # second time and possibly disagreeing with the phase that already ran.
+    try:
+        preflight_profile = _availability_checked_preflight_profile(config, state, log=_log)
+    except NoAvailableModelError as exc:
+        # One sentence, built once: the persisted state error and the
+        # operator-facing message describe the same stop, and a reader
+        # comparing the audit against the console must not find two of them.
+        _stop_message = routing_stop_message(exc)
+        _log(f"  ✗ ROUTING  {_stop_message}")
+        state.error = _stop_message
+        state.error_type = ROUTING_STOPPED_ERROR_TYPE
+        return (
+            config,
+            CoordinatorResult(
+                success=False,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=_stop_message,
+                infrastructure_failure=True,
+            ),
+            False,
+        )
     if state_update_fn is not None:
         state_update_fn(
             {
@@ -1135,9 +1218,39 @@ def _run_preflight_phase(
             }
         )
 
-    config = _apply_preflight_config(
-        config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
-    )
+    try:
+        config = _apply_preflight_config(
+            config, state, log=_log, log_verbose=_log_verbose, task_slug=task.slug
+        )
+    except NoAvailableModelError as exc:
+        # Availability emptied a phase's pool (#2950). This is a routing
+        # outcome, not an agent failure: nothing was dispatched for the phase,
+        # so no model may be credited or blamed for it, and the run must not
+        # write a capability-history or model-profile row from here. Returning
+        # an infrastructure-flagged result is how the coordinator says "this run
+        # made no statement about the story" — the same contract a substrate
+        # abort uses (#1951), which is exactly what keeps the stop out of
+        # adaptive memory.
+        #
+        # The spend reported is this story's actual spend, which by here is the
+        # preflight that already ran. Printing $0.00 would be a claim the
+        # operator's bill contradicts, so the figure comes from the phase that
+        # incurred it rather than from a fixed sentence (#2950 review).
+        _stop_message = routing_stop_message(exc, state.total_cost_measured)
+        _log(f"  ✗ ROUTING  {_stop_message}")
+        state.error = _stop_message
+        state.error_type = ROUTING_STOPPED_ERROR_TYPE
+        return (
+            config,
+            CoordinatorResult(
+                success=False,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=_stop_message,
+                infrastructure_failure=True,
+            ),
+            False,
+        )
     # Durable copy of the decision just installed: the in-memory preflight state
     # this run holds does not survive a mid-sprint process re-exec, and a resume
     # without it would seat the static roster instead of this panel (#2154).

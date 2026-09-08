@@ -49,6 +49,9 @@ _REASON_TEXT = {
     "anti_self_review": "excluded — anti-self-review (same model as the code under review)",
     "phase_eligibility": "excluded — not eligible for this phase",
     "explicit_override_locked": "preserved — locked by explicit forge.yaml override",
+    # The detail carries the account answer itself, so the base line stays short
+    # and the auth mode / timestamp are rendered from it below (#2950).
+    "model_unavailable": "excluded",
 }
 
 # Adaptive-mechanism tri-state glyphs (AC: absence of a mechanism must not be
@@ -58,8 +61,15 @@ _STATE_DID_NOT_FIRE = ("◐", "checked, did not fire")
 _STATE_FIRED = ("●", "fired")
 
 
-def _reason_text(reason: str | None, detail: str | None = None) -> str:
+def _reason_text(reason: str | None, detail: object = None) -> str:
     base = _REASON_TEXT.get(reason or "", f"excluded — {reason}" if reason else "excluded")
+    if reason == "model_unavailable" and isinstance(detail, dict):
+        # Read as the sentence the routing stop would have printed, not as a
+        # dict dump: the auth mode and the time of the answer are what tell an
+        # operator whether to believe it.
+        from theforge.model_availability import format_unavailable_detail  # noqa: PLC0415
+
+        return f"{base} — {format_unavailable_detail(detail)}"
     if detail:
         return f"{base} ({detail})"
     return base
