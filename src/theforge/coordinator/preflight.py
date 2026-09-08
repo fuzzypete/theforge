@@ -5,14 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
 
 import yaml
 
 from theforge.config import (
-    DEFAULT_INVESTIGATION_TOOLS,
     AgentSpec,
     ForgeConfig,
     ModelInfo,
@@ -20,16 +18,20 @@ from theforge.config import (
     apply_model_info,
     model_info_view,
 )
-from theforge.config.bridge import model_ref_to_profile
-from theforge.config.model_identity import PHASE_PLAN, ModelAvailability
+from theforge.config.model_identity import ModelAvailability
 from theforge.config.profiles import _apply_transport_fallback
+from theforge.config.role_overrides import (
+    explicit_role_overrides,
+)
 from theforge.model_availability import (
     AVAILABILITY_WARNINGS as _availability_warnings,
 )
 from theforge.model_availability import (
     StoryAvailability,
+    phase_candidate_profiles,
     resolve_story_availability,
     run_warning_key,
+    unavailable_candidates,
 )
 from theforge.policy_provenance import (
     BLOCKING_BASES,
@@ -1279,85 +1281,6 @@ def _apply_story_allocation(
     return config
 
 
-@dataclass(frozen=True)
-class ExplicitRoleOverrides:
-    """The roles an operator pinned in config, and to which profiles.
-
-    ``profiles`` is the single-profile-per-role map ``assign_models`` consumes
-    as ``explicit_profiles``; ``review_pool`` / ``plan_review_pool`` carry the
-    full pinned pools, whose first entry is what locks the corresponding role
-    against budget downgrade.
-    """
-
-    profiles: dict[str, ModelProfile] = field(default_factory=dict)
-    roles: frozenset[str] = frozenset()
-    review_pool: tuple[ModelProfile, ...] = ()
-    plan_review_pool: tuple[ModelProfile, ...] = ()
-
-
-def explicit_role_overrides(config: ForgeConfig) -> ExplicitRoleOverrides:
-    """Derive which roles config pins, from config alone.
-
-    Extracted from :func:`_apply_preflight_config` because the pre-dispatch
-    availability gate must ask the same question the router will ask (#2950): a
-    gate that guessed at which roles are pinned could refuse a sprint the router
-    would have routed, or clear one it will refuse. One derivation, two callers.
-
-    Collects overrides from both the legacy-agents path (``models`` is None) and
-    the v0.8 ``models:`` path. The ``is_default`` flags are authoritative
-    regardless of which YAML path set them, so those guards are not limited to
-    ``models is None``.
-    """
-    from theforge.config import (  # noqa: I001, PLC0415
-        DEFAULT_DEV_PROFILE as _DEF_DEV,
-        DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
-    )
-
-    profiles: dict[str, ModelProfile] = {}
-    roles: set[str] = set()
-    review_pool: tuple[ModelProfile, ...] = ()
-    plan_review_pool: tuple[ModelProfile, ...] = ()
-
-    if config.models is None:
-        if config.dev_profile is not _DEF_DEV:
-            profiles["dev"] = config.dev_profile
-            roles.add("dev")
-        if config.preflight_profile is not _DEF_PRE:
-            profiles["preflight"] = config.preflight_profile
-            roles.add("preflight")
-    # Materialize before testing emptiness: ``profiles`` below is a computed
-    # property, so "is it non-empty" and "what is in it" must be one question
-    # asked once, not two that can disagree.
-    configured_review_pool = tuple(config.review_pool or ())
-    if configured_review_pool and not config.review_pool_is_default:
-        roles.add("review_pool")
-        review_pool = configured_review_pool
-        # Lock code_review against budget downgrade and audit it as overridden.
-        profiles["code_review"] = review_pool[0]
-    if not config.plan_model_is_default:
-        roles.add("planner")
-        profiles["planner"] = model_ref_to_profile(
-            "plan",
-            config.plan.ref,
-            # See plan_flow: the plan role names the investigation set rather
-            # than borrowing preflight's narrowed one (#2346).
-            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
-            phase=PHASE_PLAN,
-        )
-    configured_plan_review_pool = tuple(config.plan_agent_review.profiles or ())
-    if config.plan_agent_review.enabled and configured_plan_review_pool:
-        roles.add("plan_agent_review")
-        plan_review_pool = configured_plan_review_pool
-        profiles["plan_review"] = plan_review_pool[0]
-
-    return ExplicitRoleOverrides(
-        profiles=profiles,
-        roles=frozenset(roles),
-        review_pool=review_pool,
-        plan_review_pool=plan_review_pool,
-    )
-
-
 def story_availability_for(
     config: ForgeConfig,
     state: "CoordinatorState",
@@ -1392,8 +1315,6 @@ def _fixed_profile_availability(
     The warning surface for a static run: with no agents pool, the models an
     operator needs told about are the ones their config names.
     """
-    from theforge.sprint.availability_gate import phase_candidate_profiles  # noqa: PLC0415
-
     named: dict[str, ModelProfile] = {}
     for profiles in phase_candidate_profiles(config).values():
         for profile in profiles:
@@ -1412,7 +1333,6 @@ def _refuse_unavailable_fixed_profiles_for(
         REASON_MODEL_UNAVAILABLE,
         NoAvailableModelError,
     )
-    from theforge.sprint.availability_gate import unavailable_candidates  # noqa: PLC0415
 
     excluded, total = unavailable_candidates(profiles, config, availability.answers)
     if not total or len(excluded) != total:
@@ -1440,8 +1360,6 @@ def _refuse_unavailable_fixed_profiles(
     the phase cannot run. Refusing here is what stops an adaptive-disabled run
     from paying to discover that (#2950 review).
     """
-    from theforge.sprint.availability_gate import phase_candidate_profiles  # noqa: PLC0415
-
     for phase, profiles in phase_candidate_profiles(config).items():
         _refuse_unavailable_fixed_profiles_for(phase, profiles, config, availability)
 

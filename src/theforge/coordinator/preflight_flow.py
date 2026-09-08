@@ -405,8 +405,10 @@ def _availability_checked_preflight_profile(
         NoAvailableModelError: when the account can invoke no configured
             preflight profile.
     """
-    from theforge.model_availability import is_unavailable  # noqa: PLC0415
-    from theforge.sprint.availability_gate import preflight_dispatch_profiles  # noqa: PLC0415
+    from theforge.model_availability import (  # noqa: PLC0415
+        is_unavailable,
+        preflight_dispatch_profiles,
+    )
 
     availability = story_availability_for(config, state)
     candidates = preflight_dispatch_profiles(config)

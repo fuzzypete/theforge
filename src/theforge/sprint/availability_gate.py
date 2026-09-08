@@ -6,8 +6,10 @@ arrived after WORKSPACE, preflight, routing and plan had all been charged, and
 four stories produced nothing. The account answer was knowable the whole time.
 
 This module owns the pre-dispatch half of the answer: resolve the current
-account catalog for every candidate each required phase may draw from, and
-refuse to launch when a phase has nothing available or unverified left. It runs
+account catalog for every candidate each required phase may draw from (the
+derivation itself lives in :mod:`theforge.model_availability`, shared with the
+coordinator so the gate and the router cannot disagree about it), and refuse to
+launch when a phase has nothing available or unverified left. It runs
 alongside :mod:`theforge.sprint.auth_gate`, ahead of intake remediation, batch
 preflight, the base pull and every worktree touch, so the stop costs seconds and
 no story acquires a verdict.
@@ -29,22 +31,21 @@ a sprint.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..config.model_identity import ModelAvailability
 from ..model_availability import (
-    availability_detail,
     availability_target,
     dispatch_key,
     format_unavailable_detail,
-    is_unavailable,
-    profile_dispatch_key,
+    phase_candidate_profiles,
+    preflight_dispatch_profiles,
+    unavailable_candidates,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..config import AgentDef, ModelProfile
     from ..config.types import ForgeConfig
 
 
@@ -76,84 +77,6 @@ class PhaseUnavailable(NamedTuple):
     def models(self) -> list[str]:
         """Display names of the excluded candidates, in stable order."""
         return sorted(str(record.get("model") or "?") for record in self.excluded.values())
-
-
-def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
-    """Map each required phase to the profiles it may actually dispatch.
-
-    Two different questions, and getting them the wrong way round is how an
-    unavailable model gets paid for:
-
-    - **preflight** dispatches ``config.preflight_profile`` (and its configured
-      fallback). It runs *before* routing — routing needs the complexity score
-      preflight produces — so the adaptive pool is not its candidate set, and
-      admitting the phase because some other agent in the pool is available
-      would clear a dispatch that is about to fail (#2950 review).
-    - every **later** phase is chosen by ``assign_models`` from the adaptive
-      pool, unless the operator pinned it, in which case the pin is the whole
-      candidate set — the same answer the router reaches from the same
-      derivation.
-    """
-    from ..coordinator.preflight import explicit_role_overrides  # noqa: PLC0415
-
-    overrides = explicit_role_overrides(config)
-    adaptive = bool(config.assignment.enabled and config.agents)
-
-    def pool(role: str, dev_only: bool = False) -> list["ModelProfile"]:
-        pinned = overrides.profiles.get(role)
-        if pinned is not None:
-            return [pinned]
-        if adaptive:
-            agents: Iterable[AgentDef] = config.agents
-            if dev_only:
-                agents = [a for a in config.agents if a.dev_capable]
-            return [a.to_model_profile(allowed_tools=()) for a in agents]
-        return []
-
-    candidates: dict[str, list[ModelProfile]] = {
-        "preflight": preflight_dispatch_profiles(config),
-        "dev": pool("dev", dev_only=True) or [config.dev_profile],
-        "code_review": pool("code_review") or list(config.review_pool),
-    }
-    if config.plan.enabled:
-        from ..config.bridge import model_ref_to_profile  # noqa: PLC0415
-
-        candidates["plan"] = pool("planner") or [model_ref_to_profile("plan", config.plan.ref)]
-    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-        candidates["plan_review"] = pool("plan_review") or list(config.plan_agent_review.profiles)
-    return {phase: profiles for phase, profiles in candidates.items() if profiles}
-
-
-def preflight_dispatch_profiles(config: "ForgeConfig") -> list["ModelProfile"]:
-    """The profiles a preflight invocation can actually use, in attempt order."""
-    profiles = [config.preflight_profile]
-    if config.preflight_fallback_profile is not None:
-        profiles.append(config.preflight_fallback_profile)
-    return [p for p in profiles if p is not None]
-
-
-def unavailable_candidates(
-    profiles: "Iterable[ModelProfile]",
-    config: "ForgeConfig",
-    answers: dict[str, ModelAvailability],
-) -> tuple[dict[str, dict[str, object]], int]:
-    """Return ``(excluded_by_identity, distinct_candidate_count)``.
-
-    Both sides count *identities*, so the caller's "is every candidate
-    excluded?" comparison comes from one accounting rather than two that can
-    disagree.
-    """
-    identities: dict[str, ModelProfile] = {}
-    for profile in profiles:
-        key = profile_dispatch_key(profile, config)
-        if key is not None:
-            identities.setdefault(key, profile)
-    excluded: dict[str, dict[str, object]] = {}
-    for key, profile in identities.items():
-        answer = answers.get(key)
-        if is_unavailable(answer):
-            excluded[key] = {"model": profile.model, **availability_detail(answer)}
-    return excluded, len(identities)
 
 
 def check_sprint_availability(

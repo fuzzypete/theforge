@@ -49,6 +49,7 @@ from .config.models import (
     normalize_model_key,
 )
 from .config.profiles import _apply_transport_fallback
+from .config.role_overrides import explicit_role_overrides
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .config import AgentDef, ForgeConfig
@@ -66,10 +67,13 @@ __all__ = [
     "format_unverified_detail",
     "is_unavailable",
     "is_unverified",
+    "phase_candidate_profiles",
+    "preflight_dispatch_profiles",
     "profile_dispatch_key",
     "resolve_agent_availability",
     "resolve_story_availability",
     "run_warning_key",
+    "unavailable_candidates",
 ]
 
 
@@ -453,6 +457,88 @@ def format_unverified_detail(name: str, availability: ModelAvailability) -> str:
         f"{name} availability unconfirmed under {detail.get('auth_mode') or 'unknown auth'} "
         f"({reason}) — routed normally"
     )
+
+
+# ── What each phase can actually dispatch ──────────────────────────────
+#
+# Derived from config alone and consumed by both the pre-dispatch launch gate
+# (theforge.sprint.availability_gate) and the coordinator's routing. It lives
+# here, beside the answers it is compared against, because the two callers sit
+# in packages that must not import each other to share it.
+
+
+def phase_candidate_profiles(config: "ForgeConfig") -> dict[str, list["ModelProfile"]]:
+    """Map each required phase to the profiles it may actually dispatch.
+
+    Two different questions, and getting them the wrong way round is how an
+    unavailable model gets paid for:
+
+    - **preflight** dispatches ``config.preflight_profile`` (and its configured
+      fallback). It runs *before* routing — routing needs the complexity score
+      preflight produces — so the adaptive pool is not its candidate set, and
+      admitting the phase because some other agent in the pool is available
+      would clear a dispatch that is about to fail (#2950 review).
+    - every **later** phase is chosen by ``assign_models`` from the adaptive
+      pool, unless the operator pinned it, in which case the pin is the whole
+      candidate set — the same answer the router reaches from the same
+      derivation.
+    """
+    overrides = explicit_role_overrides(config)
+    adaptive = bool(config.assignment.enabled and config.agents)
+
+    def pool(role: str, dev_only: bool = False) -> list["ModelProfile"]:
+        pinned = overrides.profiles.get(role)
+        if pinned is not None:
+            return [pinned]
+        if adaptive:
+            agents: Iterable[AgentDef] = config.agents
+            if dev_only:
+                agents = [a for a in config.agents if a.dev_capable]
+            return [a.to_model_profile(allowed_tools=()) for a in agents]
+        return []
+
+    candidates: dict[str, list[ModelProfile]] = {
+        "preflight": preflight_dispatch_profiles(config),
+        "dev": pool("dev", dev_only=True) or [config.dev_profile],
+        "code_review": pool("code_review") or list(config.review_pool),
+    }
+    if config.plan.enabled:
+        candidates["plan"] = pool("planner") or [model_ref_to_profile("plan", config.plan.ref)]
+    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
+        candidates["plan_review"] = pool("plan_review") or list(config.plan_agent_review.profiles)
+    return {phase: profiles for phase, profiles in candidates.items() if profiles}
+
+
+def preflight_dispatch_profiles(config: "ForgeConfig") -> list["ModelProfile"]:
+    """The profiles a preflight invocation can actually use, in attempt order."""
+    profiles = [config.preflight_profile]
+    if config.preflight_fallback_profile is not None:
+        profiles.append(config.preflight_fallback_profile)
+    return [p for p in profiles if p is not None]
+
+
+def unavailable_candidates(
+    profiles: "Iterable[ModelProfile]",
+    config: "ForgeConfig",
+    answers: dict[str, ModelAvailability],
+) -> tuple[dict[str, dict[str, object]], int]:
+    """Return ``(excluded_by_identity, distinct_candidate_count)``.
+
+    Both sides count *identities*, so the caller's "is every candidate
+    excluded?" comparison comes from one accounting rather than two that can
+    disagree.
+    """
+    identities: dict[str, ModelProfile] = {}
+    for profile in profiles:
+        key = profile_dispatch_key(profile, config)
+        if key is not None:
+            identities.setdefault(key, profile)
+    excluded: dict[str, dict[str, object]] = {}
+    for key, profile in identities.items():
+        answer = answers.get(key)
+        if is_unavailable(answer):
+            excluded[key] = {"model": profile.model, **availability_detail(answer)}
+    return excluded, len(identities)
 
 
 # ── One warning per model, per run ─────────────────────────────────────
