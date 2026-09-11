@@ -668,7 +668,8 @@ class TestAuditRecordMigration:
     def test_the_migration_is_registered_for_the_current_version(self):
         from theforge.coordinator import audit_storage
 
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 47
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 48
+        assert audit_storage.MIGRATION_HELPERS[47] is audit_storage._migrate_v47_to_v48
         assert audit_storage.MIGRATION_HELPERS[46] is audit_storage._migrate_v46_to_v47
         assert audit_storage.MIGRATION_HELPERS[45] is audit_storage._migrate_v45_to_v46
 

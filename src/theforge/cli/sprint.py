@@ -586,6 +586,7 @@ def _semantic_readiness_scheduler(config: object):
             project_root=getattr(config, "project_root", None) or project_root,
             secrets=getattr(config, "secrets", None),
             profile=config.preflight_profile,
+            semantic_review=getattr(getattr(config, "intake", None), "semantic_review", "off"),
         )
 
     return _readiness
@@ -666,6 +667,7 @@ def _admit_readmitted_issues_semantically(*, issues, config):
             project_root=config.project_root,
             secrets=getattr(config, "secrets", None),
             profile=config.preflight_profile,
+            semantic_review=getattr(getattr(config, "intake", None), "semantic_review", "off"),
         )
         if readiness is None:
             # Admitted (or policy requires nothing of it). Annotate it the way
@@ -727,6 +729,7 @@ def _withhold_stale_semantic_revisions(resolved, config):
             revision_digest=digest,
             revision_type=getattr(task, "source_revision_type", None),
             project_root=config.project_root,
+            semantic_review=getattr(getattr(config, "intake", None), "semantic_review", "off"),
         )
         if readiness is None:
             kept.append(entry)

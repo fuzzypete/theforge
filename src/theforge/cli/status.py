@@ -521,7 +521,7 @@ def cmd_status(args: object) -> int:
 
     # ── --ready: sprint-eligible issues carrying the `ready` label ────────
     if ready:
-        return _show_ready_queue(project_root, milestone)
+        return _show_ready_queue(project_root, milestone, config.intake.semantic_review)
 
     if watch_interval is not None and watch_interval <= 0:
         print(
@@ -610,11 +610,15 @@ def _show_operator_action_queue(project_root: Path) -> int:
     return 0
 
 
-def _show_ready_queue(project_root: Path, milestone: str | None) -> int:
+def _show_ready_queue(
+    project_root: Path,
+    milestone: str | None,
+    semantic_review: str = "off",
+) -> int:
     """Print the ready-labeled, sprint-eligible issue set (milestone-optional)."""
     from theforge.ready_queue import build_ready_queue, format_ready_queue
 
-    entries = build_ready_queue(project_root, milestone=milestone)
+    entries = build_ready_queue(project_root, milestone=milestone, semantic_review=semantic_review)
     print(format_ready_queue(entries, milestone=milestone))
     return 0
 

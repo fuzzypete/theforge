@@ -25,15 +25,22 @@ axis's answer, not the state's.
 
 ## Which documents require a review
 
-| Type | Lifecycle state | Requirement |
+`intake.semantic_review` is an operator policy. It defaults to `off`, including
+when the key is absent from `forge.yaml`.
+
+| `intake.semantic_review` | Canonical type / lifecycle state | Requirement and admission effect |
 | --- | --- | --- |
-| `bug`, `enhancement`, `task`, `spike` | `implementation_ready` | `required` |
-| `bug`, `enhancement`, `task`, `spike` | any other state | `not_required` |
-| every other type — `epic`, `operator-action`, an untyped document, a manifest file story | any state | `not_required` |
+| `off` (default) | every document | `not_required`; no admission consumer evaluates, spends, or withholds on semantic grounds. |
+| `required` | `bug`, `enhancement`, `task`, `spike` in `implementation_ready` | `required`; admission evaluates an unseen revision once, then requires an operator ratification. |
+| `required` | every other type or lifecycle state, including a manifest file story | `not_required`. |
 
 A `not_required` document keeps whatever structural/lifecycle admission result
 it already had. Nothing about semantic readiness makes it more or less
 admissible.
+
+The admission behavior described below applies only in `required` mode. The
+evaluator and its revision-scoped records remain available on demand in either
+mode.
 
 A document that is not yet `implementation_ready` is already refused on
 structural or lifecycle grounds; requiring a semantic review of it would spend
@@ -59,10 +66,12 @@ prevent.
 
 ## Who runs the evaluation
 
-Nobody has to. When admission reaches a document policy marks `required` and no
-evaluation is recorded for its current revision, the evaluation is performed
-there and then — no `forge review-semantic` keystroke, one issue at a time,
-stands between grooming and a recorded review.
+Nobody has to. When `intake.semantic_review: required` and admission reaches a
+document policy marks `required` with no evaluation recorded for its current
+revision, the evaluation is performed there and then — no `forge
+review-semantic` keystroke, one issue at a time, stands between grooming and a
+recorded review. With the default `off` policy, admission does neither an
+evaluation nor withholding.
 
 The rules that bound it:
 
@@ -101,9 +110,10 @@ The rules that bound it:
   evaluated-clean — including a failure of the audit store itself, which is
   reported as `evaluation_failed` rather than read as an absence of concerns.
 
-`forge review-semantic` is unchanged and still works for any document,
-including one policy does not require a review of, recording its result on the
-same terms.
+`forge review-semantic` and `forge ratify-semantic` work in either policy mode,
+recording evaluations and ratifications on the same terms. A clean revision
+ratified while policy is `off` is immediately `reviewed_ready` if the project
+later switches to `required`.
 
 Automatic evaluation runs where budget is already being committed — sprint
 query-mode admission and manifest issue admission. `forge status --ready` is a

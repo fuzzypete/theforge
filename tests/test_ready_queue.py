@@ -458,8 +458,11 @@ def test_cmd_status_ready_flag_passes_milestone_through(tmp_path: Path) -> None:
 
     seen: dict[str, object] = {}
 
-    def _fake_build(project_root, *, milestone=None, fetch_issues=None):  # noqa: ANN001, ANN003
+    def _fake_build(  # noqa: ANN001, ANN003
+        project_root, *, milestone=None, fetch_issues=None, semantic_review="off"
+    ):
         seen["milestone"] = milestone
+        seen["semantic_review"] = semantic_review
         return []
 
     with (
@@ -471,3 +474,4 @@ def test_cmd_status_ready_flag_passes_milestone_through(tmp_path: Path) -> None:
 
     assert result == 0
     assert seen["milestone"] == "v0.11.0"
+    assert seen["semantic_review"] == "off"
