@@ -1,0 +1,57 @@
+schema_version: 2
+run_id: cf848aebadcb
+authoritative_run_record: .forge/audits/runs/cf848aebadcb.json
+generated_at: '2026-09-07T03:33:54.121670+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0044375000000000005
+story:
+  slug: issue-2601
+  name: The two structured events that would reopen the reviewer-reliability proxy
+    are named only inside a closed spike's document
+  github_issue: 2601
+story_shape:
+  work_type: feature
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/plans/1848-reviewer-finding-fate-spike.md
+what_changed:
+  description: 'The run updated the closed spike document for #1848 to record that
+    the negative verdict is conditional on two named structured events and that landing
+    both would make the verdict explicitly reviewable without changing the current
+    STAY OUT outcome while those prerequisites are absent.'
+  approach: It made the reopening condition explicit in the existing planning document
+    by naming the two prerequisite event types, tying them back to the proxy question,
+    and documenting that reopening after those events would trigger re-evaluation
+    rather than automatic adoption.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- conditional-verdict-reopeners
+- document-prerequisites-explicitly
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The single review cycle found the docs-only change consistent with the referenced
+    external issue state and surfaced no blocking defects.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 2.5991726
+  dominant_difficulty: Capturing a conditional reopening path precisely in documentation
+    without altering the standing negative verdict.

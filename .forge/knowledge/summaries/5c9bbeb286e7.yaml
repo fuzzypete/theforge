@@ -1,0 +1,120 @@
+schema_version: 2
+run_id: 5c9bbeb286e7
+authoritative_run_record: .forge/audits/runs/5c9bbeb286e7.json
+generated_at: '2026-09-07T04:53:47.804117+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00782575
+story:
+  slug: issue-2664
+  name: Sprint digest story rows print the issue reference in place of the story title
+  github_issue: 2664
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint.py
+- src/theforge/cli/sprint_digest.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/query.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/state_writer.py
+- src/theforge/sprint/story_state.py
+- tests/test_cli_status_integration.py
+- tests/test_sprint_status_bootstrap_window.py
+- tests/test_sprint_story_title.py
+what_changed:
+  description: The run carried issue titles through sprint story state and changed
+    sprint digest row rendering to use that preserved title instead of repeating the
+    issue reference as the final column. It also updated bootstrap, query, manifest,
+    runner, audit, and state-writing paths so operator-facing summaries could recover
+    titles consistently across active, resumed, and carried stories.
+  approach: 'The fix treated the problem as a state-shape issue rather than a formatting-only
+    bug: title data was preserved in the serialized story record, helper logic was
+    added to recover issue identity and title across lifecycle transitions, and digest/audit
+    consumers were aligned to read the richer story state.'
+  files_modified: *id002
+what_was_learned:
+- claim: When operator-facing output depends on intake metadata, preserving that metadata
+    in the serialized story state is safer than trying to reconstruct it later from
+    identifiers or display-oriented fields.
+  evidence:
+  - type: review_finding
+    finding_id: abc8239bb52b24f6
+    description: Review found that rebuilding a carried story's summary row from audit
+      data reconstructed path as a literal issue reference, which erased the title
+      in digest output even though intake had resolved it; this shows reconstruction
+      from fallback fields loses operator-visible metadata.
+  - type: file
+    path: src/theforge/sprint/story_state.py
+    description: This file was introduced to centralize story-state helpers, demonstrating
+      that title and issue identity needed a canonical representation in persisted
+      story records so later readers would not infer them from path text.
+  - type: file
+    path: src/theforge/sprint/state_writer.py
+    description: Changes here show the state-writing boundary was part of the fix,
+      which is evidence that downstream readers could only render correct titles once
+      the serialized state itself retained them.
+- claim: For resumed or carried sprint stories, issue identity should be derived from
+    canonical story-state fields rather than parsed from entry text, because title-bearing
+    paths and synthesized records break text-based recovery.
+  evidence:
+  - type: review_finding
+    finding_id: b079c3d423dafe4e
+    description: Review caught that a resumed sprint's synthesized run record wrote
+      task.github_issue as null once the carried story path held the real title, because
+      issue number recovery depended on entry text shape; that failure demonstrates
+      text parsing is not stable across lifecycle transitions.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that the P1 was fixed by deriving issue identity
+      via story_state.issue_number_for in audit.py, confirming the durable lesson
+      was to use canonical helper-based recovery instead of field-shape assumptions.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: Audit-path changes were necessary because carried-story reconstruction
+      happens there; the file's involvement shows resume/carry flows are where non-canonical
+      issue recovery causes state loss and misreporting.
+learned_patterns:
+- persist-intake-metadata
+- canonical-story-identity
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b079c3d423dafe4e
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: When a resumed sprint synthesizes a run record for a story carried
+      from an earlier generation, the record's task.github_issue is written as null
+      for any issue-backed story whose accumulated path now carries its real title,
+      because _carried_story_record recovers the issue number only from an entry github_issue
+      key that no sprint entry builder populates or from a path beginning with the
+      literal Issue-number string that titled records no longer contain, so per-issue
+      cost totals and issue-keyed audi
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced resume/carry reconstruction as the place where title
+    and issue identity were lost if code relied on path or entry-text conventions.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 21.5616365
+  dominant_difficulty: Keeping story title and issue identity consistent across bootstrap,
+    persisted state, resumed runs, carried stories, and digest/audit readers.

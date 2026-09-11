@@ -1,0 +1,110 @@
+schema_version: 2
+run_id: cb5ec7f3d6e5
+authoritative_run_record: .forge/audits/runs/cb5ec7f3d6e5.json
+generated_at: '2026-09-06T17:08:00.911118+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01048625
+story:
+  slug: issue-2922
+  name: A sprint's final cost falls below spend it reported before a re-exec
+  github_issue: 2922
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint_status.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/budget_runtime.py
+- src/theforge/sprint/carry.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/state_writer.py
+- tests/test_sprint_stopped_run_cost.py
+what_changed:
+  description: Sprint run accounting and stopped-run status reporting were updated
+    so a run keeps a monotonic recorded spend across re-exec boundaries and surfaces
+    unreconciled totals instead of silently presenting a lowered post-restart figure
+    as settled.
+  approach: The change threaded persisted spend state and audit metadata through runner
+    lifecycle, carry/budget state, and status rendering so process restarts reuse
+    prior recorded totals and final reporting distinguishes authoritative, reconciled
+    cost from uncertainty.
+  files_modified: *id002
+what_was_learned:
+- claim: When a sprint can cross an internal process boundary, cost enforcement and
+    final reporting must treat pre-boundary spend as durable run state rather than
+    recomputing from only currently visible per-story totals.
+  evidence:
+  - type: diff
+    ref: 011c2246990ba7d01edfcd1508866a237d827580
+    description: This diff spans runner, carry, budget runtime, and state-writing
+      paths, showing the fix had to preserve and reload spend across re-exec lifecycle
+      boundaries instead of relying on a fresh in-memory recomputation after restart.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: Runner participation shows the accounting issue lived at sprint lifecycle
+      boundaries where re-exec occurs, demonstrating that monotonic spend depends
+      on run-level state surviving that transition.
+  - type: file
+    path: src/theforge/sprint/state_writer.py
+    description: Persisting additional run state through the writer demonstrates that
+      earlier spend observations must be recorded outside the process so later phases
+      of the same run can continue from them.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approval explicitly validated monotonic recorded spend via
+      high-water handling, confirming the central lesson was preserving durable run-level
+      spend rather than recalculating from restarted workers.
+- claim: If final sprint cost cannot be reconciled with earlier recorded observations,
+    the operator-facing status path must represent that uncertainty explicitly rather
+    than emitting a single settled-looking total.
+  evidence:
+  - type: diff
+    ref: 1305a87aa146f8245128694029e0edd6c93a11c7
+    description: This diff includes coordinated changes in audit and sprint status
+      output, showing the resolution was not only accounting preservation but also
+      explicit reporting semantics for unreconciled totals.
+  - type: file
+    path: src/theforge/cli/sprint_status.py
+    description: Status rendering was part of the fix, which demonstrates that reconciliation
+      failures matter at the operator interface and cannot remain an internal bookkeeping
+      detail.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: Audit involvement shows reconciliation state had to be captured as
+      structured run metadata, supporting the lesson that uncertainty must be tracked
+      and surfaced, not silently collapsed into a number.
+learned_patterns:
+- reexec-spend-high-water
+- explicit-unreconciled-status
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether recorded spend stayed monotonic through re-exec and
+    whether stopped-run output preserved that distinction clearly enough to trust
+    budget-facing totals.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 3.0749187000000004
+  dominant_difficulty: Keeping budget accounting authoritative across a self-restarting
+    sprint lifecycle without letting restart-local recomputation undercut already-recorded
+    run spend.

@@ -1,0 +1,67 @@
+schema_version: 2
+run_id: cb346fd8a088
+authoritative_run_record: .forge/audits/runs/cb346fd8a088.json
+generated_at: '2026-09-07T05:10:59.047750+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.005415
+story:
+  slug: issue-2818
+  name: Land project memory by the same carrier and arming as the code from the same
+    run
+  github_issue: 2818
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/controller-runbook.md
+- src/theforge/coordinator/completion.py
+- src/theforge/coordinator/exception_context.py
+- src/theforge/coordinator/pr_auto_merge.py
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/memory_publication.py
+- tests/test_coord_merge_step_state.py
+- tests/test_sprint_audit_publish.py
+what_changed:
+  description: "Project memory publication was aligned with the repository\u2019s\
+    \ configured landing path so memory uses the same carrier kind as story code and,\
+    \ when that path is pull-request based, its carrier can be armed for auto-merge\
+    \ without making publication fail when arming is unavailable or refused. Publication\
+    \ state handling was also adjusted so merged memory carriers are not reused while\
+    \ still-open carriers continue accumulating."
+  approach: The run factored auto-merge arming into coordinator-level support shared
+    with existing merge handling, threaded arming outcomes into memory publication
+    end-state recording, and updated operator documentation and publication tests
+    around the armed-versus-published distinction and merged-versus-open branch reuse.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- shared-carrier-arming
+- publish-even-when-arming-fails
+- memory-branch-reuse-depends-on-merge-state
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review confirmed the change was routed through the same merge-step implementation
+    and merge-strategy path already used for story carriers.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 3.668567
+  dominant_difficulty: Matching memory publication to code landing behavior without
+    conflating successful publication with successful auto-merge arming.

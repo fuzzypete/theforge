@@ -1,0 +1,90 @@
+schema_version: 2
+run_id: f9a0914c00c4
+authoritative_run_record: .forge/audits/runs/f9a0914c00c4.json
+generated_at: '2026-09-06T04:24:14.347283+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.005719
+story:
+  slug: issue-2923
+  name: forge explain cannot read the routing record of a live or stopped story, though
+    the record exists on disk
+  github_issue: 2923
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/adaptive-assignment.md
+- docs/guides/cli-reference.md
+- src/theforge/cli/explain.py
+- src/theforge/cli/explain_live.py
+- tests/test_cli_explain_live.py
+what_changed:
+  description: The run extended `forge explain` so it can surface routing explanations
+    for live and stopped stories by reading unfinished-story records, and updated
+    CLI/docs output to distinguish missing records from unreadable ones.
+  approach: It added a dedicated live/stopped lookup path alongside the existing explain
+    flow, then hardened lookup behavior through review so run-targeted searches only
+    treat matching on-disk records as relevant before reporting read failures.
+  files_modified: *id002
+what_was_learned:
+- claim: When a CLI falls back to scanning shared on-disk audit locations, lookup
+    must confirm record identity before surfacing parse/read errors; otherwise unrelated
+    corrupt files can be misreported as evidence for the requested target.
+  evidence:
+  - type: review_finding
+    finding_id: 68146b2162902405
+    description: Review found that `forge explain --run missing-run` could encounter
+      a malformed audit file for another story and incorrectly report that the requested
+      run's routing record existed but was unreadable, demonstrating that fallback
+      readers must verify the requested run/story match before converting unrelated
+      file corruption into a target-specific result.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes specifically because targetless lookup
+      paths could misattribute malformed live audits from other stories to the requested
+      run, showing this is a real failure mode in broad filesystem searches rather
+      than a hypothetical edge case.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the fix ensured run-id lookups no longer
+      claimed another story's corrupt audit as the requested record, confirming identity-gating
+      was the condition needed for correct behavior.
+learned_patterns:
+- identity-before-error-on-fallback-scan
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 68146b2162902405
+    severity: P1
+    file: src/theforge/cli/explain_live.py
+    description: When forge explain --run missing-run encounters any malformed .forge/logs/**/audit.yaml
+      for another story, it reports that a routing record for run missing-run exists
+      on disk but could not be read.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop focused on preventing broad live-audit scans from attributing
+    unrelated malformed records to the requested run/story.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 11.096534799999999
+  dominant_difficulty: Correctly resolving explanation records across unfinished-run
+    storage paths without misidentifying unrelated on-disk audits during fallback
+    lookup.
