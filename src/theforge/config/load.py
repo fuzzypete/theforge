@@ -1738,6 +1738,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     intake_grooming = intake_data.get("grooming", False)
     intake_auto_fix = intake_data.get("auto_fix", False)
     intake_auto_fix_mode = intake_data.get("auto_fix_mode", "comment")
+    intake_semantic_review = intake_data.get("semantic_review", "off")
     if not isinstance(intake_grooming, bool):
         raise ValueError(f"forge.yaml 'intake.grooming' must be a bool, got {intake_grooming!r}")
     if not isinstance(intake_auto_fix, bool):
@@ -1747,10 +1748,16 @@ def load_config(config_path: Path) -> ForgeConfig:
             "forge.yaml 'intake.auto_fix_mode' must be 'comment' or 'edit',"
             f" got {intake_auto_fix_mode!r}"
         )
+    if intake_semantic_review not in {"off", "required"}:
+        raise ValueError(
+            "forge.yaml 'intake.semantic_review' must be 'off' or 'required',"
+            f" got {intake_semantic_review!r}"
+        )
     intake_cfg = IntakeConfig(
         grooming=intake_grooming,
         auto_fix=intake_auto_fix,
         auto_fix_mode=intake_auto_fix_mode,
+        semantic_review=intake_semantic_review,
     )
 
     knowledge_data = raw.get("knowledge", {}) or {}

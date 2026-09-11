@@ -141,6 +141,7 @@ def _readiness(
     body: str = _RUNNABLE_BODY,
     labels: tuple[str, ...] = ("enhancement",),
     lifecycle_state: str = "implementation_ready",
+    semantic_review: str = "required",
 ):
     return derive_semantic_readiness(
         issue_ref="issue-2785",
@@ -149,6 +150,7 @@ def _readiness(
         labels=labels,
         store=store,
         lifecycle_state=lifecycle_state,
+        semantic_review=semantic_review,
     )
 
 
@@ -220,6 +222,13 @@ def test_requirement_does_not_apply_outside_implementation_ready(tmp_path: Path)
     assert not readiness.withholds_admission
 
 
+def test_default_policy_makes_every_document_not_required(tmp_path: Path) -> None:
+    readiness = _readiness(SemanticReviewStore(tmp_path), semantic_review="off")
+    assert readiness.requirement == REQUIREMENT_NOT_REQUIRED
+    assert readiness.state == STATE_UNEVALUATED
+    assert not readiness.withholds_admission
+
+
 # ── Derived state ────────────────────────────────────────────────────────────
 
 
@@ -251,6 +260,24 @@ def test_ratified_clean_evaluation_is_reviewed_ready(tmp_path: Path) -> None:
     assert readiness.reviewed_ready
     assert not readiness.withholds_admission
     assert readiness.reason_codes == ()
+
+
+def test_clean_ratification_recorded_while_off_is_ready_after_policy_enables(
+    tmp_path: Path,
+) -> None:
+    store = SemanticReviewStore(tmp_path)
+    digest = _digest()
+    store.append_record(_record(issue_ref="issue-2785", input_digest=digest))
+    store.append_ratification(_ratification(issue_ref="issue-2785", input_digest=digest))
+
+    while_off = _readiness(store, semantic_review="off")
+    after_enabling = _readiness(store, semantic_review="required")
+
+    assert while_off.requirement == REQUIREMENT_NOT_REQUIRED
+    assert while_off.state == STATE_REVIEWED_READY
+    assert after_enabling.requirement == REQUIREMENT_REQUIRED
+    assert after_enabling.state == STATE_REVIEWED_READY
+    assert not after_enabling.withholds_admission
 
 
 def test_all_rejected_concerns_yield_reviewed_ready(tmp_path: Path) -> None:
@@ -450,6 +477,7 @@ def _gate(store_root: Path, *, force: bool = False, body: str = _RUNNABLE_BODY):
             body=body,
             labels=labels,
             store=store,
+            semantic_review="required",
         )
 
     return apply_shape_gate(
@@ -568,6 +596,7 @@ def test_ready_queue_and_shape_gate_agree_on_the_same_body(tmp_path: Path) -> No
             body=body,
             labels=labels,
             store=store,
+            semantic_review="required",
         )
 
     issues = [
@@ -612,6 +641,7 @@ def test_manifest_issue_entries_reach_the_same_admission_boundary(tmp_path: Path
             body=_RUNNABLE_BODY,
             labels=("enhancement",),
             store=SemanticReviewStore(tmp_path),
+            semantic_review="required",
         )
 
     tasks = build_tasks_from_manifest(manifest, tmp_path, semantic_admission=withhold)

@@ -1013,6 +1013,7 @@ intake:
   grooming: false             # opt-in inline shape/grooming repair at sprint entry
   auto_fix: false             # allow a single agent rewrite pass on failure
   auto_fix_mode: comment      # "comment" (post + drop) | "edit" (rewrite body, rerun once)
+  semantic_review: off        # "off" (default) | "required" ratified semantic readiness gate
 
 # ── Post-run knowledge capture (optional) ─────────────────
 # Defaults to disabled. See "Post-run knowledge summaries" below.
@@ -1072,6 +1073,7 @@ remediation-to-runnable cost ratio is queryable per milestone.
 | `intake.grooming` | `false` | Enable the opt-in inline shape/grooming repair pass at sprint entry. |
 | `intake.auto_fix` | `false` | Allow a single agent rewrite pass when the gate fails. |
 | `intake.auto_fix_mode` | `comment` | `comment` posts the candidate and drops the story; `edit` rewrites the issue body in place and reruns the gate once. |
+| `intake.semantic_review` | `off` | `off` leaves every document semantically `not_required`; `required` requires a ratified review for implementation-ready `bug`, `enhancement`, `task`, and `spike` issues. Evaluations and ratifications remain available on demand in either mode. |
 
 Canonical design: **ADR-0001 — Intake Readiness Workflow**
 

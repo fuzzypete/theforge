@@ -151,6 +151,7 @@ def _semantic_readiness(
     body: str,
     labels: list[str],
     project_root: Path,
+    semantic_review: str = "off",
 ):
     """Derive semantic readiness for one listed issue, or ``None`` on failure.
 
@@ -175,6 +176,7 @@ def _semantic_readiness(
             body=body,
             labels=labels,
             project_root=project_root,
+            semantic_review=semantic_review,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -186,6 +188,7 @@ def build_ready_queue(
     milestone: str | None = None,
     fetch_issues: Callable[[], list[dict]] | None = None,
     semantic_readiness: Callable[..., object] | None = None,
+    semantic_review: str = "off",
 ) -> list[ReadyEntry]:
     """Return the ``ready``-labeled issue set with each entry's gate verdict.
 
@@ -206,7 +209,12 @@ def build_ready_queue(
     """
 
     fetch_issues = fetch_issues or (lambda: _gh_list_ready_issues(project_root, milestone))
-    semantic_readiness = semantic_readiness or _semantic_readiness
+    if semantic_readiness is None:
+
+        def _configured_semantic_readiness(**kwargs):
+            return _semantic_readiness(**kwargs, semantic_review=semantic_review)
+
+        semantic_readiness = _configured_semantic_readiness
 
     issues = fetch_issues()
     entries: list[ReadyEntry] = []

@@ -385,6 +385,7 @@ def cmd_ratify_semantic(args: object) -> int:
         body=issue.body,
         labels=issue.labels,
         store=store,
+        semantic_review=config.intake.semantic_review,
     )
     print(f"ratified_revision={digest}")
     print(f"ratified_at={ratification.ratified_at}")
