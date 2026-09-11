@@ -149,6 +149,7 @@ def _schedule(
         secrets=None,
         profile=_profile(),
         lifecycle_state=lifecycle_state,
+        semantic_review="required",
         store=store,
         agent_runner=runner,
     )
@@ -188,6 +189,78 @@ def test_policy_not_required_document_is_not_evaluated_and_admission_is_unchange
     assert runner.calls == 0
     assert SemanticReviewStore(tmp_path).iter_records() == []
     assert not readiness.withholds_admission
+
+
+def test_off_policy_admits_without_evaluating_across_admission_seams(tmp_path: Path) -> None:
+    """The default gate neither spends nor withholds in query, manifest, queue, or dispatch."""
+    from theforge.cli.sprint import _semantic_readiness_scheduler
+    from theforge.ready_queue import build_ready_queue
+    from theforge.sprint.manifest import semantic_manifest_admission
+    from theforge.sprint.shape_gate import apply_shape_gate
+
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="off"),
+    )
+    runner = _Runner()
+    scheduler = _semantic_readiness_scheduler(config)
+
+    def _fetch(_number, _root):
+        return {
+            "title": TITLE,
+            "body": BODY,
+            "labels": ["enhancement"],
+            "state": "OPEN",
+            "closedAt": None,
+            "stateReason": None,
+            "updatedAt": None,
+            "lastEditedAt": None,
+            "comments": [],
+            "timeline": [],
+        }
+
+    with pytest.MonkeyPatch.context() as patcher:
+        from theforge.eval.semantic_auto import ensure_semantic_evaluation as _ensure
+
+        patcher.setattr(
+            "theforge.eval.semantic_auto.ensure_semantic_evaluation",
+            lambda **kwargs: _ensure(**{**kwargs, "agent_runner": runner}),
+        )
+        query = apply_shape_gate(
+            [{"number": 2907, "title": TITLE}],
+            tmp_path,
+            fetch_detail=_fetch,
+            semantic_readiness=scheduler,
+        )
+        patcher.setattr(
+            "theforge.eval.semantic_runner.load_semantic_issue",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("off must not read for admission")
+            ),
+        )
+        assert semantic_manifest_admission(2907, tmp_path, config) is None
+        queue = build_ready_queue(
+            tmp_path,
+            fetch_issues=lambda: [
+                {"number": 2907, "title": TITLE, "body": BODY, "labels": [{"name": "enhancement"}]}
+            ],
+        )
+
+    assert [issue["number"] for issue in query.runnable] == [2907]
+    assert queue[0].admissible
+    assert runner.calls == 0
+    assert SemanticReviewStore(tmp_path).iter_records() == []
+    assert (
+        _live_dispatch_withholding(
+            issue_number=2907,
+            revision_digest=_digest(),
+            revision_type="enhancement",
+            project_root=tmp_path,
+        )
+        is None
+    )
 
 
 def test_a_record_does_not_change_admission_of_a_not_required_document(
@@ -352,6 +425,7 @@ def test_an_invocation_that_cannot_be_attempted_is_recorded_as_failed(tmp_path: 
         project_root=tmp_path,
         secrets=None,
         profile=unresolvable,
+        semantic_review="required",
         agent_runner=runner,
     )
 
@@ -415,6 +489,7 @@ def test_changing_the_configured_model_does_not_buy_a_second_evaluation(
         project_root=tmp_path,
         secrets=None,
         profile=other_model,
+        semantic_review="required",
         store=store,
         agent_runner=runner,
     )
@@ -618,7 +693,12 @@ def test_shape_gate_admits_after_the_bound_scheduler_records_a_clean_ratified_re
     from theforge.cli.sprint import _semantic_readiness_scheduler
     from theforge.sprint.shape_gate import apply_shape_gate
 
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
     runner = _Runner()
     scheduler = _semantic_readiness_scheduler(config)
 
@@ -705,8 +785,7 @@ def test_manifest_issue_admission_without_config_stays_read_only(tmp_path: Path)
         withheld = _live_manifest_admission(2907, tmp_path)
 
     assert called == []
-    assert withheld is not None
-    assert withheld.reason_code == SEMANTIC_NOT_RATIFIED_CODE
+    assert withheld is None
 
 
 def test_manifest_issue_admission_with_config_schedules_the_evaluation(
@@ -714,7 +793,12 @@ def test_manifest_issue_admission_with_config_schedules_the_evaluation(
 ) -> None:
 
     runner = _Runner()
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
 
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setattr(
@@ -744,7 +828,12 @@ def test_manifest_issue_admission_with_config_schedules_the_evaluation(
 def test_a_structurally_refused_issue_entry_is_not_evaluated(tmp_path: Path) -> None:
 
     called: list[str] = []
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
 
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setattr(
@@ -782,7 +871,9 @@ def test_listing_a_required_unevaluated_issue_spends_nothing(tmp_path: Path) -> 
         patcher.setattr("theforge.eval.semantic_runner.run_agent", _runner_must_not_run)
         entries = build_ready_queue(
             tmp_path,
-            semantic_readiness=_live_ready_queue_readiness,
+            semantic_readiness=lambda **kwargs: _live_ready_queue_readiness(
+                **kwargs, semantic_review="required"
+            ),
             fetch_issues=lambda: [
                 {
                     "number": 2907,
@@ -820,6 +911,7 @@ def test_two_issues_with_identical_content_each_get_their_own_record(
         project_root=tmp_path,
         secrets=None,
         profile=_profile(),
+        semantic_review="required",
         store=store,
         agent_runner=first,
     )
@@ -833,6 +925,7 @@ def test_two_issues_with_identical_content_each_get_their_own_record(
         project_root=tmp_path,
         secrets=None,
         profile=_profile(),
+        semantic_review="required",
         store=store,
         agent_runner=second,
     )
@@ -915,7 +1008,12 @@ def test_a_shape_gate_reading_a_broken_store_skips_rather_than_admits(
     from theforge.cli.sprint import _semantic_readiness_scheduler
     from theforge.sprint.shape_gate import apply_shape_gate
 
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
 
     def _fetch(_number, _root):
         return {
@@ -1117,6 +1215,7 @@ def test_the_dispatched_revision_must_be_the_one_admission_cleared(tmp_path: Pat
             revision_digest=_digest(),
             revision_type="enhancement",
             project_root=tmp_path,
+            semantic_review="required",
         )
         is None
     )
@@ -1126,6 +1225,7 @@ def test_the_dispatched_revision_must_be_the_one_admission_cleared(tmp_path: Pat
         revision_digest=_digest(EDITED_BODY),
         revision_type="enhancement",
         project_root=tmp_path,
+        semantic_review="required",
     )
     assert stale is not None
     assert stale.reason_code == SEMANTIC_NOT_RATIFIED_CODE
@@ -1140,6 +1240,7 @@ def test_the_dispatch_check_leaves_a_not_required_document_alone(tmp_path: Path)
             revision_digest=_digest(labels=("documentation",)),
             revision_type="documentation",
             project_root=tmp_path,
+            semantic_review="required",
         )
         is None
     )
@@ -1158,6 +1259,7 @@ def test_the_dispatch_check_withholds_when_the_store_cannot_be_read(tmp_path: Pa
         revision_type="enhancement",
         project_root=tmp_path,
         store=_BrokenStore(tmp_path),
+        semantic_review="required",
     )
     assert withheld is not None
     assert withheld.reason_code == SEMANTIC_EVALUATION_FAILED_CODE
@@ -1216,7 +1318,10 @@ def test_query_mode_withholds_a_story_whose_revision_moved_before_resolution(
         source_revision_type="enhancement",
     )
     stale = _replace(admitted, source_revision_digest=_digest(EDITED_BODY))
-    config = SimpleNamespace(project_root=tmp_path)
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        intake=SimpleNamespace(semantic_review="required"),
+    )
 
     def _resolved(task):
         return ResolvedSprint(
@@ -1284,7 +1389,12 @@ def test_a_remediated_issue_readded_after_the_gate_is_evaluated_not_just_withhel
     from theforge.eval import semantic_auto
 
     runner = _Runner()
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
     issues = [_gate_annotated(2901), {"number": 2907, "title": TITLE}]
 
     with pytest.MonkeyPatch.context() as patcher:
@@ -1324,7 +1434,12 @@ def test_a_readded_issue_that_clears_review_proceeds(tmp_path: Path) -> None:
     _schedule(tmp_path, _Runner(), store=store)
     _ratify(store, issue_ref="issue-2907", digest=_digest())
 
-    config = SimpleNamespace(project_root=tmp_path, secrets=None, preflight_profile=_profile())
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        secrets=None,
+        preflight_profile=_profile(),
+        intake=SimpleNamespace(semantic_review="required"),
+    )
     issues = [{"number": 2907, "title": TITLE}]
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setattr(
@@ -1496,7 +1611,12 @@ def test_manifest_mode_skips_an_entry_whose_fetched_revision_moved(tmp_path: Pat
             lambda _entry, _root: (_Source(), "2907", "issue:2907"),
         )
         patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
-        built = build_tasks_from_manifest(manifest, tmp_path, semantic_admission=lambda *_a: None)
+        built = build_tasks_from_manifest(
+            manifest,
+            tmp_path,
+            semantic_admission=lambda *_a: None,
+            config=SimpleNamespace(intake=SimpleNamespace(semantic_review="required")),
+        )
 
     # The entry was admitted on the ratified revision; the fetch returned a
     # newer one, so it is not dispatched on the older revision's clearance.
@@ -1532,7 +1652,12 @@ def test_manifest_mode_keeps_an_entry_whose_fetched_revision_is_the_cleared_one(
             lambda _entry, _root: (_Source(), "2907", "issue:2907"),
         )
         patcher.setattr(semantic_auto, "semantic_dispatch_withholding", _live_dispatch_withholding)
-        built = build_tasks_from_manifest(manifest, tmp_path, semantic_admission=lambda *_a: None)
+        built = build_tasks_from_manifest(
+            manifest,
+            tmp_path,
+            semantic_admission=lambda *_a: None,
+            config=SimpleNamespace(intake=SimpleNamespace(semantic_review="required")),
+        )
 
     assert [task.slug for task, _s, _r in built] == ["issue-2907"]
 

@@ -46,6 +46,7 @@ from theforge.config.types import ModelProfile
 from theforge.eval.semantic_input import build_semantic_evaluation_input
 from theforge.eval.semantic_prompt import PROMPT_CONTRACT_VERSION
 from theforge.eval.semantic_readiness import (
+    SEMANTIC_REVIEW_OFF,
     SEMANTIC_REVIEW_REQUIRED_STATE,
     STATE_EVALUATION_FAILED,
     STATE_UNEVALUATED,
@@ -168,6 +169,7 @@ def _failed_readiness(
     input_digest: str,
     canonical_type: str | None,
     lifecycle_state: str,
+    semantic_review: str,
     detail: str,
 ) -> SemanticReadiness:
     """Build an ``evaluation_failed`` readiness without consulting the store.
@@ -184,6 +186,7 @@ def _failed_readiness(
         requirement=semantic_requirement(
             canonical_type=canonical_type,
             lifecycle_state=lifecycle_state,
+            semantic_review=semantic_review,
         ),
         state=STATE_EVALUATION_FAILED,
         detail=detail,
@@ -250,6 +253,7 @@ def ensure_semantic_evaluation(
     profile: ModelProfile,
     prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
     store: SemanticReviewStore | None = None,
     agent_runner: Callable[..., AgentResult] | None = None,
 ) -> SemanticReadiness:
@@ -278,6 +282,7 @@ def ensure_semantic_evaluation(
             input_digest=evaluation_input.input_digest,
             canonical_type=evaluation_input.canonical_type,
             lifecycle_state=lifecycle_state,
+            semantic_review=semantic_review,
             detail=f"the semantic audit record for the current revision could not be read: {exc}",
         )
 
@@ -296,6 +301,7 @@ def ensure_semantic_evaluation(
                 canonical_type=evaluation_input.canonical_type,
                 store=semantic_store,
                 lifecycle_state=lifecycle_state,
+                semantic_review=semantic_review,
             )
         except Exception as exc:  # noqa: BLE001
             _log.warning("semantic audit records unreadable for %s: %s", issue_ref, exc)
@@ -347,6 +353,7 @@ def ensure_semantic_evaluation(
             input_digest=evaluation_input.input_digest,
             canonical_type=evaluation_input.canonical_type,
             lifecycle_state=lifecycle_state,
+            semantic_review=semantic_review,
             detail=detail,
         )
 
@@ -440,6 +447,7 @@ def semantic_issue_entry_admission(
     profile: ModelProfile,
     prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
     store: SemanticReviewStore | None = None,
     agent_runner: Callable[..., AgentResult] | None = None,
 ) -> SemanticReadiness | None:
@@ -461,6 +469,9 @@ def semantic_issue_entry_admission(
 
     Returns the withholding readiness, or ``None`` when the entry may proceed.
     """
+    if semantic_review == SEMANTIC_REVIEW_OFF:
+        return None
+
     from theforge.admissibility import classify_admissibility  # noqa: PLC0415
     from theforge.eval.semantic_runner import load_semantic_issue  # noqa: PLC0415
 
@@ -483,6 +494,7 @@ def semantic_issue_entry_admission(
         profile=profile,
         prompt_contract_version=prompt_contract_version,
         lifecycle_state=lifecycle_state,
+        semantic_review=semantic_review,
         store=store,
         agent_runner=agent_runner,
     )
@@ -497,6 +509,7 @@ def semantic_dispatch_withholding(
     project_root: Path,
     store: SemanticReviewStore | None = None,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
 ) -> SemanticReadiness | None:
     """Return the readiness withholding the revision about to be dispatched, if any.
 
@@ -519,6 +532,9 @@ def semantic_dispatch_withholding(
     when policy requires no review of it — and the withholding readiness
     otherwise.
     """
+    if semantic_review == SEMANTIC_REVIEW_OFF:
+        return None
+
     from theforge.eval.semantic_runner import normalize_issue_ref  # noqa: PLC0415
 
     issue_ref = normalize_issue_ref(issue_number)
@@ -530,6 +546,7 @@ def semantic_dispatch_withholding(
             canonical_type=revision_type,
             store=semantic_store,
             lifecycle_state=lifecycle_state,
+            semantic_review=semantic_review,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("semantic audit records unreadable for %s: %s", issue_ref, exc)
@@ -538,6 +555,7 @@ def semantic_dispatch_withholding(
             input_digest=revision_digest,
             canonical_type=revision_type,
             lifecycle_state=lifecycle_state,
+            semantic_review=semantic_review,
             detail=(
                 f"the semantic audit record for the dispatched revision could not be read: {exc}"
             ),

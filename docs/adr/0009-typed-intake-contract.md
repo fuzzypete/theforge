@@ -204,11 +204,14 @@ the policy could be decided against measurements rather than ahead of them.
   ratification (`forge ratify-semantic`) that decides every concern raised.
   Rejecting a concern clears it for that revision; accepting one withholds
   readiness for that revision until the document changes.
-- **Applicability and evaluation state are separate axes**, per clause 2. Policy
-  requires a ratified review for `bug`, `enhancement`, `task` and `spike` in the
-  `implementation_ready` lifecycle state, and for nothing else; a document policy
-  does not name still reports its evaluation state truthfully and keeps its
-  existing structural/lifecycle admission result.
+- **Applicability and evaluation state are separate axes**, per clause 2.
+  `intake.semantic_review` is operator policy and defaults to `off`: in that
+  mode every document is `not_required` and admission neither evaluates nor
+  withholds on semantic grounds. With `required`, policy requires a ratified
+  review for `bug`, `enhancement`, `task` and `spike` in the
+  `implementation_ready` lifecycle state, and for nothing else; a document
+  policy does not name still reports its evaluation state truthfully and keeps
+  its existing structural/lifecycle admission result.
 - **Unratified concerns are not a refusal.** `unevaluated` and
   `awaiting_ratification` withhold admission under the same reason code —
   `semantic_review_not_ratified` — because the withholding fact in both cases is

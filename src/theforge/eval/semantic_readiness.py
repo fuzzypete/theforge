@@ -9,11 +9,11 @@ review of one exact document revision.
 Two axes, deliberately separate (they answer different questions and a single
 enum would compress them the way ADR-0009 clause 2 warns against):
 
-* **Requirement** — does policy require a semantic review of this document
-  before implementation? ``required`` for the dev-runnable types named in
-  :data:`SEMANTIC_REVIEW_REQUIRED_TYPES` while the document is in the
-  ``implementation_ready`` lifecycle state; ``not_required`` for every type and
-  state policy does not name.
+* **Requirement** — does operator policy require a semantic review of this
+  document before implementation? ``intake.semantic_review: required`` names
+  the dev-runnable types in :data:`SEMANTIC_REVIEW_REQUIRED_TYPES` while they
+  are in the ``implementation_ready`` lifecycle state. ``off`` (the default)
+  yields ``not_required`` for every document.
 * **Evaluation state** — what is on record for the *current* revision:
   ``unevaluated``, ``awaiting_ratification``, ``accepted_concerns``,
   ``reviewed_ready``, or ``evaluation_failed``. This axis is computed the same
@@ -61,6 +61,9 @@ SEMANTIC_REVIEW_REQUIRED_STATE = "implementation_ready"
 
 REQUIREMENT_REQUIRED = "required"
 REQUIREMENT_NOT_REQUIRED = "not_required"
+
+SEMANTIC_REVIEW_OFF = "off"
+SEMANTIC_REVIEW_REQUIRED = "required"
 
 # ── Evaluation states ───────────────────────────────────────────────────────
 
@@ -135,8 +138,15 @@ class SemanticReadiness:
         return (code,) if code else ()
 
 
-def semantic_requirement(*, canonical_type: str | None, lifecycle_state: str) -> str:
+def semantic_requirement(
+    *,
+    canonical_type: str | None,
+    lifecycle_state: str,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
+) -> str:
     """Return ``required`` / ``not_required`` for one type in one lifecycle state."""
+    if semantic_review != SEMANTIC_REVIEW_REQUIRED:
+        return REQUIREMENT_NOT_REQUIRED
     if lifecycle_state != SEMANTIC_REVIEW_REQUIRED_STATE:
         return REQUIREMENT_NOT_REQUIRED
     if canonical_type is None or canonical_type not in SEMANTIC_REVIEW_REQUIRED_TYPES:
@@ -188,6 +198,7 @@ def derive_semantic_readiness(
     labels: tuple[str, ...] | list[str],
     store: SemanticReviewStore,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
 ) -> SemanticReadiness:
     """Derive the current revision's semantic readiness from recorded state.
 
@@ -207,6 +218,7 @@ def derive_semantic_readiness(
         canonical_type=evaluation_input.canonical_type,
         store=store,
         lifecycle_state=lifecycle_state,
+        semantic_review=semantic_review,
     )
 
 
@@ -217,6 +229,7 @@ def derive_semantic_readiness_for_revision(
     canonical_type: str | None,
     store: SemanticReviewStore,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
 ) -> SemanticReadiness:
     """Derive readiness for a revision whose identity the caller already computed.
 
@@ -230,6 +243,7 @@ def derive_semantic_readiness_for_revision(
     requirement = semantic_requirement(
         canonical_type=canonical_type,
         lifecycle_state=lifecycle_state,
+        semantic_review=semantic_review,
     )
 
     record = store.latest_successful_record(issue_ref=issue_ref, input_digest=digest)
@@ -292,6 +306,7 @@ def semantic_readiness_for_issue(
     labels: tuple[str, ...] | list[str],
     project_root: Path,
     lifecycle_state: str = SEMANTIC_REVIEW_REQUIRED_STATE,
+    semantic_review: str = SEMANTIC_REVIEW_OFF,
 ) -> SemanticReadiness:
     """Shared admission boundary: one derivation, three consumers.
 
@@ -310,4 +325,5 @@ def semantic_readiness_for_issue(
         labels=labels,
         store=SemanticReviewStore(project_root),
         lifecycle_state=lifecycle_state,
+        semantic_review=semantic_review,
     )

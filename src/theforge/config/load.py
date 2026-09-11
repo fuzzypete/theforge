@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
+from yaml.nodes import MappingNode, ScalarNode
 
 from theforge.root_file_conventions import normalize_root_file_stacks
 
@@ -136,6 +137,42 @@ def _resolved_yaml_leaf_paths(raw_leaf_paths: tuple[str, ...]) -> tuple[str, ...
                 tail = suffix[len(head) :]
                 resolved.add(f"plan_agent_review.ref.{mapped}{tail}")
     return tuple(sorted(resolved))
+
+
+def _intake_semantic_review_token(config_text: str) -> str | None:
+    """Return the source token for ``intake.semantic_review`` when it is scalar.
+
+    PyYAML's YAML 1.1 resolver turns ``off``, ``no``, and ``false`` into the
+    same Python ``False``. The policy deliberately supports the documented bare
+    ``off`` spelling but no boolean aliases, so the typed config boundary needs
+    the original scalar token to distinguish them.
+    """
+    document = yaml.compose(config_text)
+    if not isinstance(document, MappingNode):
+        return None
+
+    intake_node = next(
+        (
+            value_node
+            for key_node, value_node in reversed(document.value)
+            if isinstance(key_node, ScalarNode) and key_node.value == "intake"
+        ),
+        None,
+    )
+    if not isinstance(intake_node, MappingNode):
+        return None
+
+    semantic_review_node = next(
+        (
+            value_node
+            for key_node, value_node in reversed(intake_node.value)
+            if isinstance(key_node, ScalarNode) and key_node.value == "semantic_review"
+        ),
+        None,
+    )
+    if isinstance(semantic_review_node, ScalarNode):
+        return semantic_review_node.value
+    return None
 
 
 _VALID_DEV_P2_POLICIES = frozenset({"in_scope", "all", "p1_only"})
@@ -1122,8 +1159,8 @@ def load_config(config_path: Path) -> ForgeConfig:
             "⚠ .forge/secrets.yaml detected — migrate to .forge/.env (see .forge/.env.example)"
         )
 
-    with open(config_path, encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f) or {}
+    config_text = config_path.read_text(encoding="utf-8")
+    raw: dict[str, Any] = yaml.safe_load(config_text) or {}
     yaml_leaf_paths = _resolved_yaml_leaf_paths(collect_leaf_paths(raw))
     derived_path_prefixes: set[str] = {
         "review_pool_is_default",
@@ -1738,6 +1775,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     intake_grooming = intake_data.get("grooming", False)
     intake_auto_fix = intake_data.get("auto_fix", False)
     intake_auto_fix_mode = intake_data.get("auto_fix_mode", "comment")
+    intake_semantic_review = intake_data.get("semantic_review", "off")
     if not isinstance(intake_grooming, bool):
         raise ValueError(f"forge.yaml 'intake.grooming' must be a bool, got {intake_grooming!r}")
     if not isinstance(intake_auto_fix, bool):
@@ -1747,10 +1785,20 @@ def load_config(config_path: Path) -> ForgeConfig:
             "forge.yaml 'intake.auto_fix_mode' must be 'comment' or 'edit',"
             f" got {intake_auto_fix_mode!r}"
         )
+    # Preserve only the documented bare ``off`` spelling. Other YAML 1.1 false
+    # aliases (for example ``no`` and ``false``) are invalid enum values.
+    if intake_semantic_review is False and _intake_semantic_review_token(config_text) == "off":
+        intake_semantic_review = "off"
+    if intake_semantic_review not in {"off", "required"}:
+        raise ValueError(
+            "forge.yaml 'intake.semantic_review' must be 'off' or 'required',"
+            f" got {intake_semantic_review!r}"
+        )
     intake_cfg = IntakeConfig(
         grooming=intake_grooming,
         auto_fix=intake_auto_fix,
         auto_fix_mode=intake_auto_fix_mode,
+        semantic_review=intake_semantic_review,
     )
 
     knowledge_data = raw.get("knowledge", {}) or {}
