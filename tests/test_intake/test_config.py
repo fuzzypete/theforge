@@ -63,8 +63,17 @@ def test_intake_invalid_semantic_review_rejected(tmp_path):
         load_config(_write_config({"intake": {"semantic_review": "advisory"}}, tmp_path))
 
 
+@pytest.mark.parametrize("false_alias", ["false", "no"])
+def test_intake_rejects_yaml_false_aliases_for_semantic_review(tmp_path, false_alias):
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text(f"intake:\n  semantic_review: {false_alias}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="semantic_review"):
+        load_config(config_path)
+
+
 def test_intake_rejects_boolean_true_semantic_review(tmp_path):
-    with pytest.raises(ValueError, match="quoted string"):
+    with pytest.raises(ValueError, match="semantic_review"):
         load_config(_write_config({"intake": {"semantic_review": True}}, tmp_path))
 
 
