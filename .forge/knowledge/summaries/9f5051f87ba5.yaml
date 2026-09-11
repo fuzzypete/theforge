@@ -1,0 +1,119 @@
+schema_version: 2
+run_id: 9f5051f87ba5
+authoritative_run_record: .forge/audits/runs/9f5051f87ba5.json
+generated_at: '2026-09-07T20:38:18.717143+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008862749999999999
+story:
+  slug: issue-2926
+  name: A model declared not dev-capable is still selected for dev by the adaptive
+    router
+  github_issue: 2926
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- config
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/assignment.py
+- src/theforge/config/models.py
+- src/theforge/config/profiles.py
+- tests/test_assignment.py
+- tests/test_assignment_routing_decision.py
+- tests/test_config_models.py
+- tests/test_exploration_routing_seam.py
+- tests/test_post_plan_checkpoint.py
+what_changed:
+  description: Adaptive dev-role assignment was updated so declared dev capability
+    participates in model eligibility, and the same prohibition is enforced when dev
+    is explicitly pinned. The routing decision path also distinguishes capability
+    refusal in the same typed way across these dev-selection branches.
+  approach: The run threaded routing.dev_capable through the config/model objects
+    used by assignment, applied it as a hard gate at each dev-selection boundary in
+    adaptive assignment, and aligned the error/reporting behavior and seam-level checks
+    around those boundaries.
+  files_modified: *id002
+what_was_learned:
+- claim: When a routing constraint is meant to be a hard prohibition, future work
+    must verify every entry path that can bind the role, including explicit pins,
+    not just the ordinary adaptive candidate-selection path.
+  evidence:
+  - type: review_finding
+    finding_id: 3089ff9c84e8c50c
+    description: Review caught that after the main adaptive path had been updated,
+      an explicit dev pin still selected a model declared dev_capable=false and recorded
+      it as admitted, showing that checking only the shared adaptive pool was insufficient
+      because another role-binding path bypassed the prohibition.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes specifically because ordinary adaptive
+      and pinned-config flows honored dev_capable=false while explicit dev pins still
+      bypassed it, demonstrating that future runs need to enumerate and verify each
+      role-assignment ingress separately.
+  - type: plan_step
+    step_id: '2'
+    description: 'The plan step framed dev capability as a hard adaptive eligibility
+      rule to be applied and audited, which connects the later review miss to a broader
+      implementation lesson: hard constraints must be enforced at every boundary where
+      eligibility can be reintroduced.'
+- claim: Structurally similar refusal cases in assignment should be checked for consistent
+    typed failure semantics, because review may accept the policy enforcement while
+    still surfacing mismatched error behavior as a separate issue.
+  evidence:
+  - type: review_finding
+    finding_id: 77ebef16b649a2e4
+    description: Review identified that the all-dev_capable=false case raised a plain
+      ValueError while a neighboring absent-capability case raised NoCapableCandidateError,
+      showing that once a new exclusion path is added, future runs should compare
+      it against adjacent refusal branches for semantic parity rather than only checking
+      the acceptance/rejection outcome.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly notes that the prior explicit-pin issue
+      now raises a typed NoCapableCandidateError, demonstrating that the review loop
+      treated typed error alignment as part of completing the constraint enforcement
+      rather than as incidental cleanup.
+  - type: file
+    path: src/theforge/assignment.py
+    description: Assignment is the locus where both candidate admission and failure
+      signaling converge; the review findings against this file show that future changes
+      in eligibility logic here should be audited for both gating behavior and the
+      exact exception path emitted when no candidate remains.
+learned_patterns:
+- role-constraint-all-entrypoints
+- typed-refusal-parity
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 3089ff9c84e8c50c
+    severity: P1
+    file: src/theforge/assignment.py
+    description: An explicit dev pin to a model declared dev_capable=false is still
+      honored as the dev owner and the routing candidate pool marks that model included
+      with reason none.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced bypasses at dev-selection boundaries, first for explicit
+    pins and then for inconsistent no-candidate error typing.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 13.484181399999999
+  dominant_difficulty: The hard part was making one operator-declared eligibility
+    constraint bind uniformly across multiple independent dev-assignment paths and
+    their failure modes.

@@ -1,0 +1,40 @@
+{
+  "schema_version": 46,
+  "run_id": "9194b09290fb",
+  "parent_run_id": null,
+  "forge_version": null,
+  "sprint_id": "154b13df64a8",
+  "sprint_name": "issues-2919,2920,2921,2922,2923",
+  "task": {
+    "slug": "issue-2919",
+    "path": "Issue #2919",
+    "github_issue": 2919
+  },
+  "timing": {
+    "started_at": "2026-09-06T01:23:53Z",
+    "finished_at": "2026-09-06T02:07:16Z"
+  },
+  "outcome": {
+    "final_phase": "DONE",
+    "success": true,
+    "cost_usd": 2.6055,
+    "error_type": null,
+    "message": null
+  },
+  "totals": {
+    "cost_usd": 2.6055
+  },
+  "reviews": [],
+  "carried_from_accumulated_state": true,
+  "landing_status": "landed",
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2928",
+    "pr_merged_at": null
+  },
+  "merge": false
+}

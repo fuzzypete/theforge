@@ -1,0 +1,149 @@
+schema_version: 2
+run_id: aaaa82768faa
+authoritative_run_record: .forge/audits/runs/aaaa82768faa.json
+generated_at: '2026-09-11T14:47:28.004144+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0116225
+story:
+  slug: issue-2988
+  name: Semantic readiness requirement is operator policy under intake.semantic_review
+    and defaults to off
+  github_issue: 2988
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- config
+- backend
+- cli
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/adr/0009-typed-intake-contract.md
+- docs/guides/inputs-reference.md
+- docs/reference/semantic-readiness.md
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/sprint.py
+- src/theforge/cli/status.py
+- src/theforge/config/load.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/eval/semantic_auto.py
+- src/theforge/eval/semantic_readiness.py
+- src/theforge/ready_queue.py
+- src/theforge/sprint/manifest.py
+- tests/fixtures/audit_record_schema_v48.json
+- tests/test_cli_semantic_eval.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_decomposition_acceptance_seam.py
+- tests/test_intake/test_config.py
+- tests/test_knowledge_receipt_seam.py
+- tests/test_ready_queue.py
+- tests/test_semantic_auto_scheduling.py
+- tests/test_semantic_readiness.py
+what_changed:
+  description: This run made semantic readiness an operator-controlled intake policy
+    via `intake.semantic_review`, with `off` as the default when the key is absent,
+    while preserving the existing ratified-review contract unchanged when the mode
+    is `required`. It also kept `forge review-semantic` and `forge ratify-semantic`
+    available independently of the admission gate and updated the semantic-readiness
+    and ADR documentation to match.
+  approach: The change introduced a validated config mode at load time, routed semantic-readiness
+    derivation through that policy before admission and readiness consumers act, preserved
+    revision-scoped evaluation and ratification behavior for `required`, and proved
+    the behavior across CLI, queue, manifest, and documentation seams.
+  files_modified: *id002
+what_was_learned:
+- claim: When a config enum is expressed in YAML using human words like `off`, loader
+    validation must account for YAML scalar coercion before enforcing string-only
+    allowed values.
+  evidence:
+  - type: review_finding
+    finding_id: e33c43e8424f82ea
+    description: 'Review found that the documented unquoted `semantic_review: off`
+      example was parsed by `yaml.safe_load` into boolean `False`, so naive string
+      validation rejected the canonical config form and showed that YAML coercion
+      has to be normalized or guarded during load.'
+  - type: review_finding
+    finding_id: 3ec92809ea0fb72c
+    description: The follow-up finding showed that broadening the fix to accept boolean
+      `False` also admitted other YAML false aliases like `no` and `false`, demonstrating
+      that handling coercion requires a narrow mapping for intended spellings rather
+      than treating all falsey parses as equivalent.
+  - type: file
+    path: src/theforge/config/load.py
+    description: This is the load-time validation seam where both review findings
+      landed, showing the lesson applies specifically at config parsing and normalization
+      rather than later policy use sites.
+- claim: For policy-gated evaluations, verification has to cover every consumer seam
+    that can evaluate, spend, or withhold; proving one admission path is not enough.
+  evidence:
+  - type: plan_step
+    step_id: '3'
+    description: The plan explicitly targeted proof at the semantic and command seams,
+      reflecting that correctness depended on coordinated behavior across multiple
+      consumers rather than a single implementation point.
+  - type: file
+    path: src/theforge/cli/sprint.py
+    description: This file is one consumer seam for sprint admission, showing the
+      gate behavior had to be checked where stories enter sprints interactively.
+  - type: file
+    path: src/theforge/sprint/manifest.py
+    description: This separate manifest-based admission path demonstrates that admission
+      behavior exists in more than one command seam and must be verified independently.
+  - type: file
+    path: src/theforge/cli/status.py
+    description: Status reporting is another consumer of readiness state, so the policy
+      had to suppress semantic withholding effects here as well, not only at admission.
+  - type: file
+    path: src/theforge/ready_queue.py
+    description: The ready-queue path is another readiness consumer, showing that
+      policy-controlled non-evaluation had to hold wherever readiness is derived for
+      dispatch and queueing.
+learned_patterns:
+- yaml-coercion-aware-enums
+- multi-seam-policy-verification
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: e33c43e8424f82ea
+    severity: P1
+    file: src/theforge/config/load.py
+    description: "A forge.yaml containing the unquoted key value semantic_review:\
+      \ off \u2014 exactly as shown in the docs/guides/inputs-reference.md example\
+      \ block \u2014 is parsed by yaml.safe_load into boolean False (verified: the\
+      \ loader at load.py:1126 uses PyYAML safe_load, and safe_load('semantic_review:\
+      \ off') yields False under the YAML 1.1 resolver), which then fails the membership\
+      \ check against the string set and aborts configuration loading with a ValueError,\
+      \ so a project explicitly writing the documented default c"
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 3ec92809ea0fb72c
+    severity: P1
+    file: src/theforge/config/load.py
+    description: 'A forge.yaml containing intake.semantic_review: no or intake.semantic_review:
+      false loads successfully as semantic_review off.'
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced config-load edge cases where YAML boolean
+    coercion interacted with a two-valued policy enum.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 25.973923600000003
+  dominant_difficulty: Making a default-off operator policy hold consistently across
+    all readiness consumers without altering required-mode revision and ratification
+    semantics.

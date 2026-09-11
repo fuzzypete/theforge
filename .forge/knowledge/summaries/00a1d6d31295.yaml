@@ -1,0 +1,131 @@
+schema_version: 2
+run_id: 00a1d6d31295
+authoritative_run_record: .forge/audits/runs/00a1d6d31295.json
+generated_at: '2026-09-07T04:45:38.809509+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01054275
+story:
+  slug: issue-2663
+  name: forge status reports an orphaned agent process group for a record whose group
+    holds no processes
+  github_issue: 2663
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/status.py
+- src/theforge/process_group.py
+- tests/test_cli_status_integration.py
+- tests/test_process_group.py
+what_changed:
+  description: The run changed orphan-agent status reporting so it no longer treats
+    every dead-owner sidecar as a live leaked process group, and aligned the read-only
+    listing with the same liveness/identity reasoning used by the mutating reaper.
+    It also refined handling of retained sidecars so status can distinguish reportable
+    orphaned processes from stale or non-reapable bookkeeping records.
+  approach: The implementation centralized the listing path around the process-group
+    identity and escapee checks already used during reaping, then iterated through
+    review-driven edge cases where retained sidecars, lease-bearing records, observed
+    descendants, and test-origin records caused the read-only and mutating paths to
+    diverge.
+  files_modified: *id002
+what_was_learned:
+- claim: When a read-only status surface describes lingering processes, it needs to
+    share the same per-record identity/liveness decision procedure as the mutating
+    cleanup path; filtering only on a dead owner PID is not enough and causes status/cleanup
+    disagreement.
+  evidence:
+  - type: review_finding
+    finding_id: b56b023eee8edfdf
+    description: 'This finding showed that once listing began using the reaper''s
+      identity check, a different omission appeared: records with surviving evidence
+      in lease or observed snapshots were being suppressed, demonstrating that the
+      listing must apply the same full per-record liveness logic as cleanup rather
+      than a simpler dead-owner filter.'
+  - type: file
+    path: src/theforge/process_group.py
+    description: This file contains both orphan listing and orphan reaping logic;
+      the run's changes there are the locus where the two paths were brought into
+      agreement, showing that the reusable lesson is about sharing decision logic
+      at the process-group layer.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly recorded that the current head fixed status/reaper
+      agreement, confirming that the central issue throughout review was consistency
+      between the read-only listing and the mutating sweep.
+- claim: Retained process-group sidecars have multiple edge-case states, so status
+    logic must classify them individually instead of treating all retained records
+    as one category.
+  evidence:
+  - type: review_finding
+    finding_id: 0dcd59afc7e5b585
+    description: "This finding surfaced a distinct retained-sidecar state\u2014test-origin\
+      \ records whose groups still verify\u2014that status originally reported as\
+      \ orphaned even though the mutating sweep discarded them unsignalled first,\
+      \ showing that retained sidecars are not homogeneous."
+  - type: review_finding
+    finding_id: b56b023eee8edfdf
+    description: 'This finding identified another distinct state: unverifiable records
+      that still carried lease or observed evidence of running processes. Its contrast
+      with the stale-sidecar case demonstrates that retained records need per-state
+      classification rather than blanket suppression or blanket reporting.'
+- claim: For read-only diagnostics, preserving and surfacing the reason a record is
+    unverifiable matters because operators otherwise cannot tell whether silence or
+    a banner reflects stale bookkeeping versus evidence-backed live processes.
+  evidence:
+  - type: review_finding
+    finding_id: 5717ef9b049165b1
+    description: This finding stated that discarding the identity-check reason left
+      operators with no read-only way to confirm or disconfirm a retained sidecar's
+      state, directly demonstrating the value of carrying diagnostic rationale through
+      the status path.
+  - type: file
+    path: src/theforge/cli/status.py
+    description: Status output is produced here; citing this file supports that the
+      lesson concerns what the read-only surface communicates once lower-level classification
+      has determined a record is unverifiable or otherwise non-reportable.
+learned_patterns:
+- shared-status-reaper-verdict
+- classify-retained-sidecars
+- preserve-readonly-diagnostic-reasons
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b56b023eee8edfdf
+    severity: P1
+    file: src/theforge/process_group.py
+    description: A sidecar whose owner sprint is dead and whose process group cannot
+      be identified, but which carries a lease token or an observed-descendant snapshot
+      matching processes that are still running, is now omitted entirely from the
+      read-only orphan listing, so forge status prints nothing while the mutating
+      sweep for that same record kills those live escapees and counts the record as
+      reaped.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly exposed edge cases where orphan listing and orphan
+    reaping still diverged on specific retained sidecar shapes even after the main
+    stale-record mismatch was addressed.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 5.3869982
+  dominant_difficulty: Making read-only status and mutating cleanup agree across subtle
+    retained-sidecar states without collapsing distinct cases like stale records,
+    live escapees, and test-origin artifacts.
