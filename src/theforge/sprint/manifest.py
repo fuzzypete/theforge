@@ -379,6 +379,7 @@ def semantic_manifest_admission(issue_number: int, project_root: Path, config=No
             secrets=getattr(config, "secrets", None),
             profile=config.preflight_profile,
             lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+            semantic_review=getattr(getattr(config, "intake", None), "semantic_review", "off"),
         )
 
     from ..admissibility import classify_admissibility  # noqa: PLC0415
@@ -396,6 +397,7 @@ def semantic_manifest_admission(issue_number: int, project_root: Path, config=No
             labels=issue.labels,
             project_root=project_root,
             lifecycle_state=SEMANTIC_REVIEW_REQUIRED_STATE,
+            semantic_review="off",
         )
     except Exception:  # noqa: BLE001
         return None
@@ -473,6 +475,7 @@ def build_tasks_from_manifest(
                 revision_digest=task.source_revision_digest,
                 revision_type=task.source_revision_type,
                 project_root=project_root,
+                semantic_review=getattr(getattr(config, "intake", None), "semantic_review", "off"),
             )
             if stale is not None:
                 print(

@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 47
+CURRENT_RECORD_SCHEMA_VERSION = 48
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2842,6 +2842,18 @@ def _migrate_v46_to_v47(record: dict) -> dict:
     }
 
 
+def _migrate_v47_to_v48(record: dict) -> dict:
+    """Advance v47 records across ``intake.semantic_review`` provenance.
+
+    v48 records the semantic-admission policy that controlled whether a sprint
+    could evaluate or withhold an implementation-ready issue. A v47 record
+    predates that setting; leaving its recorded configuration without the key
+    accurately distinguishes that historical run from one that resolved the
+    default ``off`` policy.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2897,6 +2909,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     44: _migrate_v44_to_v45,
     45: _migrate_v45_to_v46,
     46: _migrate_v46_to_v47,
+    47: _migrate_v47_to_v48,
 }
 
 

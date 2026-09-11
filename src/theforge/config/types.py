@@ -1344,12 +1344,14 @@ class IntakeConfig:
     grooming check. ``auto_fix`` enables the one-pass agent remediation on
     failure. ``auto_fix_mode`` selects the output mode: ``comment`` posts
     the proposed replacement and drops the story; ``edit`` updates the
-    issue body in place and reruns the gate once.
+    issue body in place and reruns the gate once. ``semantic_review`` is the
+    operator policy for requiring a ratified semantic review at admission.
     """
 
     grooming: bool = False
     auto_fix: bool = False
     auto_fix_mode: str = "comment"  # "comment" | "edit"
+    semantic_review: str = "off"  # "off" | "required"
 
 
 @dataclass(frozen=True)

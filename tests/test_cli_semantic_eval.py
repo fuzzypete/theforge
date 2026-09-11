@@ -192,8 +192,11 @@ def test_cmd_semantic_report_renders_json(capsys) -> None:
     assert json.loads(out) == {"precision": 0.5}
 
 
-def _ratify_config(tmp_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(project_root=tmp_path)
+def _ratify_config(tmp_path: Path, semantic_review: str = "off") -> SimpleNamespace:
+    return SimpleNamespace(
+        project_root=tmp_path,
+        intake=SimpleNamespace(semantic_review=semantic_review),
+    )
 
 
 def _seed_evaluation(tmp_path: Path, findings: tuple[SemanticFinding, ...]):
@@ -260,7 +263,7 @@ def test_cmd_ratify_semantic_records_decisions_and_reports_readiness(
     with (
         patch(
             "theforge.cli.eval_cmd._load_checked_config",
-            return_value=_ratify_config(tmp_path),
+            return_value=_ratify_config(tmp_path, "required"),
         ),
         patch(
             "theforge.eval.semantic_runner.load_semantic_issue",
@@ -300,7 +303,9 @@ def test_cmd_ratify_semantic_reject_all_yields_reviewed_ready(tmp_path: Path, ca
         rc = eval_cmd.cmd_ratify_semantic(_ratify_args(reject_all=True))
 
     assert rc == 0
-    assert "semantic_state=reviewed_ready" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "semantic_state=reviewed_ready" in out
+    assert "semantic_requirement=not_required" in out
 
 
 def test_cmd_ratify_semantic_refuses_an_undecided_concern(tmp_path: Path, capsys) -> None:
