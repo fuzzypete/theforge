@@ -44,6 +44,15 @@ def test_intake_explicit_values(tmp_path):
     assert cfg.intake.semantic_review == "required"
 
 
+def test_intake_accepts_documented_unquoted_semantic_review_off(tmp_path):
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("intake:\n  semantic_review: off\n", encoding="utf-8")
+
+    cfg = load_config(config_path)
+
+    assert cfg.intake.semantic_review == "off"
+
+
 def test_intake_invalid_mode_rejected(tmp_path):
     with pytest.raises(ValueError, match="auto_fix_mode"):
         load_config(_write_config({"intake": {"auto_fix_mode": "pr"}}, tmp_path))
@@ -52,6 +61,11 @@ def test_intake_invalid_mode_rejected(tmp_path):
 def test_intake_invalid_semantic_review_rejected(tmp_path):
     with pytest.raises(ValueError, match="semantic_review"):
         load_config(_write_config({"intake": {"semantic_review": "advisory"}}, tmp_path))
+
+
+def test_intake_rejects_boolean_true_semantic_review(tmp_path):
+    with pytest.raises(ValueError, match="quoted string"):
+        load_config(_write_config({"intake": {"semantic_review": True}}, tmp_path))
 
 
 def test_intake_invalid_grooming_type_rejected(tmp_path):

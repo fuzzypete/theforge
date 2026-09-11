@@ -1748,6 +1748,16 @@ def load_config(config_path: Path) -> ForgeConfig:
             "forge.yaml 'intake.auto_fix_mode' must be 'comment' or 'edit',"
             f" got {intake_auto_fix_mode!r}"
         )
+    # PyYAML follows YAML 1.1 and resolves the documented bare ``off`` token
+    # to ``False``. Preserve the operator-facing enum spelling at this
+    # boundary; no other boolean is a valid semantic-review mode.
+    if intake_semantic_review is False:
+        intake_semantic_review = "off"
+    elif intake_semantic_review is True:
+        raise ValueError(
+            "forge.yaml 'intake.semantic_review' must be 'off' or 'required'; "
+            "use a quoted string for the policy value"
+        )
     if intake_semantic_review not in {"off", "required"}:
         raise ValueError(
             "forge.yaml 'intake.semantic_review' must be 'off' or 'required',"
