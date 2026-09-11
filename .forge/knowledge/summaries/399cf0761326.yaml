@@ -1,0 +1,102 @@
+schema_version: 2
+run_id: 399cf0761326
+authoritative_run_record: .forge/audits/runs/399cf0761326.json
+generated_at: '2026-09-06T17:15:06.337697+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00861875
+story:
+  slug: issue-2921
+  name: A run terminated by the coordinator is recorded against the model's capability
+    history as a model failure
+  github_issue: 2921
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/profiles.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/coordinator/model_profiles_bridge.py
+- src/theforge/coordinator/state.py
+- src/theforge/model_profiles_storage.py
+- tests/test_coord_max_iterations_no_submit.py
+- tests/test_coord_model_profiles_seam.py
+- tests/test_model_profiles_bridge.py
+what_changed:
+  description: The run separated coordinator-imposed dev cutoffs with `max_iterations_no_submit`
+    from model capability outcomes so those terminal no-submit terminations no longer
+    enter model success/failure history as model failures. It also updated profile-listing
+    documentation and CLI behavior around how these outcomes are represented.
+  approach: The change carried the coordinator's internal termination classification
+    through the state/profile bridge into profile storage, with targeted handling
+    at the seam where dev-run outcomes are converted into capability records, then
+    verified the behavior with seam and regression tests plus review-driven correction
+    of a retry edge case.
+  files_modified: *id002
+what_was_learned:
+- claim: When excluding coordinator-caused terminations from capability history, apply
+    the exclusion only to the terminal attempt that actually ended for that reason;
+    a sticky or run-global suppression flag can incorrectly erase later successful
+    retries.
+  evidence:
+  - type: review_finding
+    finding_id: 5671be2137ec25d9
+    description: Review found that after an internal-iteration no-submit failure,
+      a later retry could finish successfully yet still be recorded as harness_terminated,
+      demonstrating that segregation logic attached too broadly will drop legitimate
+      model success evidence.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes specifically because the no-submit segregation
+      persisted across a later successful retry, showing the implementation risk is
+      not the classification itself but letting it outlive the terminal branch where
+      it was earned.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the flag was limited to the terminal
+      branch where the coordinator actually ended the run, confirming that per-attempt
+      scoping was the condition needed to preserve successful capability records.
+  - type: file
+    path: src/theforge/coordinator/model_profiles_bridge.py
+    description: This seam is where run outcomes are translated into profile records;
+      the review issue and its fix both centered here, demonstrating that coordinator-vs-model
+      attribution must be decided at outcome-conversion time with retry-aware scope.
+learned_patterns:
+- terminal-outcome-not-sticky
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 5671be2137ec25d9
+    severity: P1
+    file: src/theforge/coordinator/model_profiles_bridge.py
+    description: When a dev attempt exhausts its internal iterations without submit
+      and a later retry completes the run successfully, the run is still recorded
+      as harness_terminated and the model receives no successful capability record.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - "The review loop focused on attribution scope at the coordinator\u2192profile\
+    \ seam, especially preventing terminal no-submit classification from contaminating\
+    \ later retry outcomes."
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 8.0095864
+  dominant_difficulty: Preserving coordinator termination semantics across the outcome-recording
+    seam without suppressing valid success records from subsequent retries.

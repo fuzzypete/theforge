@@ -1,0 +1,130 @@
+schema_version: 2
+run_id: 3f7f7d57181d
+authoritative_run_record: .forge/audits/runs/3f7f7d57181d.json
+generated_at: '2026-09-07T04:50:19.254718+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00959525
+story:
+  slug: issue-2603
+  name: Measure how often a diagnosed fix-success criterion admits a change that removes
+    the symptom without addressing the confirmed cause
+  github_issue: 2603
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- data-processing
+- backend
+- testing
+- docs
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/plans/2603-criterion-symptom-gaming.adjudications.yaml
+- docs/plans/2603-criterion-symptom-gaming.md
+- scripts/measure_criterion_gaming.py
+- tests/test_measure_criterion_gaming.py
+what_changed:
+  description: Produced a reproducible measurement artifact for diagnosed issues that
+    classifies whether recorded fix-success criteria admit symptom-removing changes
+    and whether the landed change was such a case, along with the adjudication data
+    and documentation needed to regenerate the report.
+  approach: The run paired a scripted extraction/rendering pipeline with a checked-in
+    adjudication file and generated report, then iterated through review to harden
+    cohort selection, issue-to-landed-change joining, and artifact verification behavior.
+  files_modified: *id002
+what_was_learned:
+- claim: For offline measurements that join cached issue facts to landed commits,
+    identity must be derived from the selected issue record itself rather than from
+    separately substituted cached fields, or one issue's criterion can be silently
+    paired with another issue's landed change while all superficial consistency checks
+    still pass.
+  evidence:
+  - type: review_finding
+    finding_id: a40b8f6fc1dbdd94
+    description: 'Review demonstrated a concrete false-positive path: swapping in
+      issue #2689''s cached title and landed SHA for issue #2595 still passed drift
+      and classification checks, which shows that validating substituted fields is
+      insufficient unless the join is anchored to the chosen diagnose record.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly notes that the landed-change join was
+      corrected to derive title data from the selected diagnose audit, confirming
+      that the defect's cause was the join strategy rather than the surrounding renderer.
+- claim: A refresh mode described as rewriting mechanical fields must preserve the
+    original cohort boundary unless the operator explicitly changes it, because recomputing
+    an implicit upper bound mutates the measured population and invalidates reproducibility.
+  evidence:
+  - type: review_finding
+    finding_id: b74c86fe152845a0
+    description: Review found that running --refresh-facts without --until replaced
+      the stored upper bound with current UTC time, directly showing how a nominally
+      mechanical refresh can silently change which issues are included in the measurement.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval records that this P1 reproducibility defect was
+      fixed and verified, reinforcing that cohort-bound preservation was necessary
+      to keep regenerated artifacts measuring the same window.
+- claim: Checked-in artifact tests for generated reports need cell-level assertions
+    on the substantive outputs, because loose string-presence checks can stay green
+    after edits to rates, per-issue classifications, or named criteria and therefore
+    do not protect the measurement result.
+  evidence:
+  - type: review_finding
+    finding_id: f92a2e38944674e9
+    description: Review showed that artifact tests still passed when generated rates,
+      per-issue content, or named criteria were edited so long as only row count and
+      a generic decision token remained consistent, demonstrating that high-level
+      shape checks do not verify report substance.
+  - type: review_finding
+    finding_id: eaea988e3037f0ea
+    description: 'A later review finding exposed the same weakness more specifically:
+      with the diagnose corpus unavailable, a landed-answer cell could be altered
+      without failure and a false admits result was ''verified'' only by finding the
+      generic word no somewhere in the row, showing the need for exact assertions
+      on each output field.'
+learned_patterns:
+- record-anchored-joins
+- frozen-cohort-boundaries
+- cell-level-artifact-assertions
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: a40b8f6fc1dbdd94
+    severity: P1
+    file: scripts/measure_criterion_gaming.py
+    description: 'During an offline render, substituting issue #2689''s cached title
+      and landed SHA into issue #2595 passed every drift and classification check
+      and paired #2595''s criterion with #2689''s commit.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: b74c86fe152845a0
+    severity: P1
+    file: scripts/measure_criterion_gaming.py
+    description: Invoking --refresh-facts without --until replaces the stored upper
+      bound with the current UTC time, silently changing the measured cohort even
+      though the option is described as rewriting mechanical fields.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly focused on reproducibility hazards in generated measurement
+    artifacts: wrong-record joins, silently drifting cohort bounds, and artifact tests
+    too weak to catch changed classifications.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: true
+  cost_usd: 42.6322294
+  dominant_difficulty: Keeping an audit-derived measurement reproducible under offline
+    regeneration while joining multiple cached facts and validating a generated report.

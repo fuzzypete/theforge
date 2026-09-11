@@ -1,0 +1,76 @@
+schema_version: 2
+run_id: 84637d6effde
+authoritative_run_record: .forge/audits/runs/84637d6effde.json
+generated_at: '2026-09-07T19:37:35.906326+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0034927499999999998
+story:
+  slug: issue-2907
+  name: A document that policy requires a semantic review for is left unevaluated
+    until an operator runs the evaluator by hand, so the gate withholds admission
+    for work nothing has been scheduled to do
+  github_issue: 2907
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- docs/reference/semantic-readiness.md
+- src/theforge/cli/sprint.py
+- src/theforge/eval/semantic_auto.py
+- src/theforge/eval/semantic_readiness.py
+- src/theforge/eval/semantic_runner.py
+- src/theforge/eval/semantic_storage.py
+- src/theforge/ready_queue.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/sources.py
+- src/theforge/task/story.py
+- tests/conftest.py
+- tests/test_semantic_auto_scheduling.py
+what_changed:
+  description: This run added automatic semantic-evaluation scheduling for documents
+    that policy marks as requiring review but that lack an evaluation for the current
+    revision, while preserving the existing admission and ratification semantics.
+    It also documented the automatic path and kept manual invocation available on
+    the same recording terms.
+  approach: The change introduced a dedicated automatic-evaluation path that hooks
+    into readiness/admission flow, keys evaluation records to document revision plus
+    prompt contract version, reuses existing records when that key is unchanged, and
+    treats failed or unrecognised invocation outcomes as unevaluated failures rather
+    than as clean results.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- revision-scoped-evaluation
+- admission-triggered-background-check
+- failure-defaults-to-unevaluated
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the first pass without surfacing blocking issues; the main verification
+    focus was revision binding, failure handling, ratification preservation, and bounded
+    re-invocation.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 16.1222386
+  dominant_difficulty: Threading automatic invocation into the admission path without
+    changing the meaning of semantic results or ratification state.
