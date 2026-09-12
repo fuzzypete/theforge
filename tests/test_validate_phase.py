@@ -1653,7 +1653,7 @@ def test_skipped_gate_is_not_counted_as_a_gate_run(tmp_path: Path) -> None:
     with (
         patch("theforge.coordinator.validate_phase.run_gate_full") as gate_full,
         patch(
-            "theforge.coordinator.validate_phase._get_raw_dev_notes",
+            "theforge.coordinator.validate_phase.get_dev_handoff_summary",
             return_value="summary: done",
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),

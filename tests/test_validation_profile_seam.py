@@ -254,6 +254,37 @@ class TestProvenanceSurvivesResumeAndAudit:
 
         assert restored.validation_runs == state.validation_runs
 
+    def test_post_gate_sweeps_round_trip_through_the_resume_sidecar(self, tmp_path: Path) -> None:
+        state = CoordinatorState()
+        state.post_gate_sweeps = [
+            {
+                "dev_iteration": 2,
+                "files": ["src/theforge/coordinator/validate_phase.py"],
+                "commit_subject": "chore: coordinator swept 1 post-gate file",
+                "handoff_summary": "Capture sweep provenance.",
+            }
+        ]
+        (tmp_path / ".forge").mkdir()
+        save_trajectory_state(tmp_path, state)
+
+        restored = CoordinatorState()
+        load_trajectory_state(tmp_path, restored)
+
+        assert restored.post_gate_sweeps == state.post_gate_sweeps
+
+    def test_audit_extracts_post_gate_sweeps_from_validation_runs(self) -> None:
+        from theforge.sprint.audit import _post_gate_sweeps
+
+        sweep = {
+            "dev_iteration": 2,
+            "files": ["src/theforge/coordinator/validate_phase.py"],
+            "commit_subject": "chore: coordinator swept 1 post-gate file",
+        }
+
+        assert _post_gate_sweeps(
+            {"validation_runs": [{"result": "PASS", "post_gate_sweeps": [sweep]}]}
+        ) == [sweep]
+
     def test_an_older_sidecar_without_profiles_still_loads(self, tmp_path: Path) -> None:
         """A resume record written before profiles existed keeps legacy meaning."""
         import yaml

@@ -51,9 +51,6 @@ from .state import (
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
 
-# Backward-compat seam for tests and callers that patch the legacy helper name.
-_get_raw_dev_notes = get_dev_handoff_summary
-
 
 class _ValidateOutcome(Enum):
     """Routing outcome of one VALIDATE run.
