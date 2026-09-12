@@ -30,6 +30,7 @@ from theforge.coordinator.review_context import (
     _get_handoff_content,
     _get_raw_dev_notes,
     _latest_forge_handoff_path,
+    get_dev_handoff_summary,
 )
 from theforge.coordinator.state import CoordinatorState
 from theforge.task import TaskStory
@@ -263,3 +264,17 @@ class TestReviewContextForgePreference:
         raw = _get_raw_dev_notes(forge_handoff_path=None)
 
         assert raw is None
+
+    def test_get_dev_handoff_summary_uses_only_the_structured_summary(self, tmp_path):
+        forge_path = self._write_forge_artifact(tmp_path, _sample_handoff_dict())
+
+        summary = get_dev_handoff_summary(forge_handoff_path=forge_path)
+
+        assert summary == "Implemented the feature end-to-end."
+
+    def test_get_dev_handoff_summary_rejects_non_string_summary(self, tmp_path):
+        forge_path = self._write_forge_artifact(
+            tmp_path, {"summary": {"not": "free text"}, "acceptance_criteria": []}
+        )
+
+        assert get_dev_handoff_summary(forge_handoff_path=forge_path) is None

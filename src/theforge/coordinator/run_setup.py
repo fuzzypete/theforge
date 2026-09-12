@@ -172,6 +172,9 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         # run that kept the verdict but lost the profile behind it could no
         # longer say what the verdict was worth.
         "validation_runs": state.validation_runs,
+        # The review and landing paths still need to distinguish residue that
+        # VALIDATE committed after the gate from work the gate actually saw.
+        "post_gate_sweeps": state.post_gate_sweeps,
         "hygiene_escalation_dev_commit_sha": state.hygiene_escalation_dev_commit_sha,
         "hygiene_escalation_prior_approve_count": state.hygiene_escalation_prior_approve_count,
         "hygiene_escalation_total_count": state.hygiene_escalation_total_count,
@@ -252,6 +255,10 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
     if isinstance(data.get("validation_runs"), list):
         state.validation_runs = [
             entry for entry in data["validation_runs"] if isinstance(entry, dict)
+        ]
+    if isinstance(data.get("post_gate_sweeps"), list):
+        state.post_gate_sweeps = [
+            entry for entry in data["post_gate_sweeps"] if isinstance(entry, dict)
         ]
     if data.get("escalate_kind") in ("hygiene", "content", "decompose"):
         state.escalate_kind = data["escalate_kind"]
