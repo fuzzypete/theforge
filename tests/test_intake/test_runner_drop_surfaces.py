@@ -302,14 +302,31 @@ def test_live_status_detail_for_dropped_shape_includes_problem_string():
     assert "agent_attempted=no" in detail
 
 
-def _build_intake_dropped_entry(canonical_ref: str) -> dict:
+def test_live_status_detail_for_intake_operator_review_keeps_intake_context():
+    detail_dict = _live_intake_detail_dict()
+    detail_dict["final_outcome"] = "INTAKE_OPERATOR_REVIEW"
+    detail_dict["intake_kind"] = "operator_review"
+    story = {
+        "status": "intake-operator-review",
+        "outcome": "intake_operator_review",
+        "phase": None,
+        "blocked_by": [],
+        "detail": detail_dict,
+    }
+    _, detail, _ = _stage_and_detail_from_live_story(story)
+    assert "INTAKE_OPERATOR_REVIEW" in detail
+    assert "groom_how_shaped_ac" in detail
+    assert "agent_attempted=yes" in detail
+
+
+def _build_intake_operator_review_entry(canonical_ref: str) -> dict:
     """Mirror the dict shape that runner._record_current_story_entry writes for
-    a DROPPED_AFTER_FIX story so the audit + summary writers can be tested in
+    an INTAKE_OPERATOR_REVIEW story so the audit + summary writers can be tested in
     isolation from the runner."""
     f = _finding("groom_how_shaped_ac", "ACs prescribe implementation steps")
     outcome = IntakeOutcome(
         slug="task-1",
-        kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+        kind=IntakeOutcomeKind.OPERATOR_REVIEW,
         findings=(f,),
         detail="rerun gate still failing; did not edit issue",
         audit={
@@ -323,7 +340,7 @@ def _build_intake_dropped_entry(canonical_ref: str) -> dict:
     return {
         "path": f"Issue #{canonical_ref.split(':')[1]}",
         "slug": "task-1",
-        "outcome": "DROPPED_AFTER_FIX",
+        "outcome": "INTAKE_OPERATOR_REVIEW",
         "verdict": None,
         "cost_usd": 0.0,
         "story_run_id": "run-test",
@@ -359,9 +376,9 @@ def _empty_manifest() -> ResolvedSprint:
     return ResolvedSprint(name="test-sprint", budget_usd=10.0, stories=[], max_parallel=1)
 
 
-def test_audit_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path):
+def test_audit_yaml_carries_intake_finding_for_operator_review(tmp_path: Path):
     canonical_ref = "issue:1473"
-    entry = _build_intake_dropped_entry(canonical_ref)
+    entry = _build_intake_operator_review_entry(canonical_ref)
     now = datetime.datetime.now(datetime.timezone.utc)
 
     _write_sprint_audit(
@@ -377,8 +394,7 @@ def test_audit_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path)
 
     audit_yaml = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
     spec = audit_yaml["specs"][0]
-    # Outcome must be DROPPED_AFTER_FIX, not the silent SKIPPED of today.
-    assert spec["outcome"] == "DROPPED_AFTER_FIX"
+    assert spec["outcome"] == "INTAKE_OPERATOR_REVIEW"
     # error/error_type must carry the rule code + problem so operators can act
     # without re-deriving with a Python snippet.
     assert "groom_how_shaped_ac" in spec["error"]
@@ -387,7 +403,7 @@ def test_audit_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path)
     assert spec["outcome_code"] == "groom_how_shaped_ac"
     # Structured intake block must round-trip so the full agent attempt
     # context is on disk for postmortem.
-    assert spec["intake"]["kind"] == "dropped_after_fix"
+    assert spec["intake"]["kind"] == "operator_review"
     assert spec["intake"]["codes"] == ["groom_how_shaped_ac"]
     assert spec["intake"]["audit"]["agent"]["attempted"] is True
     assert spec["intake"]["audit"]["agent"]["cost_usd"] == 0.083
@@ -398,9 +414,9 @@ def test_audit_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path)
     assert "$0.0830" in spec["intake"]["agent_summary"]
 
 
-def test_sprint_summary_yaml_carries_intake_finding_for_dropped_after_fix(tmp_path: Path):
+def test_sprint_summary_yaml_carries_intake_finding_for_operator_review(tmp_path: Path):
     canonical_ref = "issue:1473"
-    entry = _build_intake_dropped_entry(canonical_ref)
+    entry = _build_intake_operator_review_entry(canonical_ref)
     now = datetime.datetime.now(datetime.timezone.utc)
     log_dir = tmp_path / "logs"
 
@@ -417,7 +433,7 @@ def test_sprint_summary_yaml_carries_intake_finding_for_dropped_after_fix(tmp_pa
 
     summary = yaml.safe_load((log_dir / "sprint-summary.yaml").read_text())
     story = summary["stories"][0]
-    assert story["outcome"] == "DROPPED_AFTER_FIX"
+    assert story["outcome"] == "INTAKE_OPERATOR_REVIEW"
     assert "groom_how_shaped_ac" in story["error"]
     assert story["error_type"] == "groom_how_shaped_ac"
     assert story["outcome_code"] == "groom_how_shaped_ac"
@@ -456,7 +472,7 @@ def _make_runner_config(tmp_path: Path):
     )
 
 
-def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runner_path(
+def test_run_sprint_operator_review_propagates_intake_detail_through_full_runner_path(
     tmp_path: Path,
     capfd,
 ):
@@ -495,7 +511,7 @@ def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runn
     )
     intake_outcome = IntakeOutcome(
         slug="drop-me",
-        kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+        kind=IntakeOutcomeKind.OPERATOR_REVIEW,
         findings=(finding,),
         detail="rerun gate still failing; did not edit issue",
         audit={
@@ -532,7 +548,7 @@ def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runn
     log_blob = capfd.readouterr().err
 
     # ── Run log: rule code + finding problem + agent attempt detail ──
-    assert "DROPPED_AFTER_FIX" in log_blob and "drop-me" in log_blob, log_blob
+    assert "INTAKE_OPERATOR_REVIEW" in log_blob and "drop-me" in log_blob, log_blob
     assert "groom_how_shaped_ac" in log_blob
     assert "ACs prescribe implementation steps" in log_blob
     assert "agent_attempted=yes" in log_blob
@@ -548,12 +564,12 @@ def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runn
     spec_entry = next(
         s for s in audit["specs"] if s.get("slug") == "drop-me" or "drop-me" in str(s)
     )
-    assert spec_entry["outcome"] == "DROPPED_AFTER_FIX"
+    assert spec_entry["outcome"] == "INTAKE_OPERATOR_REVIEW"
     assert "groom_how_shaped_ac" in (spec_entry.get("error") or "")
     assert spec_entry["error_type"] == "groom_how_shaped_ac"
     assert spec_entry["outcome_code"] == "groom_how_shaped_ac"
     intake = spec_entry["intake"]
-    assert intake["kind"] == "dropped_after_fix"
+    assert intake["kind"] == "operator_review"
     assert intake["codes"] == ["groom_how_shaped_ac"]
     assert intake["findings"][0]["problem"] == "ACs prescribe implementation steps"
     assert intake["audit"]["agent"]["attempted"] is True
@@ -566,7 +582,7 @@ def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runn
     assert summary_path.exists(), f"sprint summary YAML missing; result={result}"
     summary = yaml.safe_load(summary_path.read_text())
     story = next(s for s in summary["stories"] if s.get("slug") == "drop-me")
-    assert story["outcome"] == "DROPPED_AFTER_FIX"
+    assert story["outcome"] == "INTAKE_OPERATOR_REVIEW"
     assert "groom_how_shaped_ac" in (story.get("error") or "")
     assert story["error_type"] == "groom_how_shaped_ac"
     assert story["intake"]["findings"][0]["problem"] == "ACs prescribe implementation steps"

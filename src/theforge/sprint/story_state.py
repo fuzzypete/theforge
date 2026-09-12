@@ -131,7 +131,7 @@ class StoryOutcome(str, Enum):
 
     Non-terminal: WAITING, RUNNING, BLOCKED.
     Terminal: DONE, ALREADY_DONE, FAILED, MERGE_FAILED, MERGE_ARMING_FAILED,
-    ESCALATED, SKIPPED, PRESERVED, DROPPED, DECOMPOSED.
+    ESCALATED, SKIPPED, PRESERVED, DROPPED, INTAKE_OPERATOR_REVIEW, DECOMPOSED.
 
     MERGE_FAILED is the post-approval merge-step failure (dev + review succeeded
     but the integration step crashed/refused). It is distinct from FAILED (a
@@ -160,6 +160,10 @@ class StoryOutcome(str, Enum):
     DROPPED_SHAPE = "dropped_shape"
     REMEDIATED = "remediated"
     DROPPED_AFTER_FIX = "dropped_after_fix"
+    # The intake gate survived bounded remediation. This is terminal but not a
+    # failure: the candidate remains available for an operator to decide
+    # whether the gate or the story needs intervention.
+    INTAKE_OPERATOR_REVIEW = "intake_operator_review"
     # operator-action: deliberately not run because the deliverable is human
     # action no dev agent can perform. Distinct from SKIPPED (generic skip) and
     # from FAILED-bucket outcomes — operator paid $0 and the system correctly
@@ -205,6 +209,7 @@ class StoryOutcome(str, Enum):
             StoryOutcome.SKIPPED,
             StoryOutcome.PRESERVED,
             StoryOutcome.OPERATOR_ACTION,
+            StoryOutcome.INTAKE_OPERATOR_REVIEW,
             # Counted with the not-run stories, not the failed ones: the sprint
             # deliberately did not spend on it (#2681).
             StoryOutcome.DECOMPOSED,
@@ -224,6 +229,7 @@ _TERMINAL_OUTCOMES = {
     StoryOutcome.DROPPED_SHAPE,
     StoryOutcome.DROPPED_AFTER_FIX,
     StoryOutcome.OPERATOR_ACTION,
+    StoryOutcome.INTAKE_OPERATOR_REVIEW,
     StoryOutcome.DECOMPOSED,
 }
 
@@ -254,6 +260,7 @@ _CANONICAL_TO_LEGACY_STATUS = {
     StoryOutcome.DROPPED_AFTER_FIX: "failed",
     StoryOutcome.REMEDIATED: "waiting",
     StoryOutcome.OPERATOR_ACTION: "operator-action",
+    StoryOutcome.INTAKE_OPERATOR_REVIEW: "intake-operator-review",
     StoryOutcome.DECOMPOSED: "decomposed",
 }
 
@@ -279,6 +286,8 @@ _STATUS_TO_OUTCOME: dict[str, StoryOutcome] = {
     "dropped_after_fix": StoryOutcome.DROPPED_AFTER_FIX,
     "operator_action": StoryOutcome.OPERATOR_ACTION,
     "operator-action": StoryOutcome.OPERATOR_ACTION,
+    "intake_operator_review": StoryOutcome.INTAKE_OPERATOR_REVIEW,
+    "intake-operator-review": StoryOutcome.INTAKE_OPERATOR_REVIEW,
     "decomposed": StoryOutcome.DECOMPOSED,
 }
 

@@ -91,6 +91,10 @@ class IntakeOutcomeKind(str, Enum):
     REMEDIATED = "remediated"  # auto-fix applied, story stays in sprint
     DROPPED_SHAPE = "dropped_shape"  # gate failed, no auto-fix
     DROPPED_AFTER_FIX = "dropped_after_fix"  # auto-fix attempted but did not resolve
+    # A candidate that still fails the gate that triggered remediation is not
+    # evidence that the story is non-runnable. Preserve the candidate and
+    # route it to a human who can assess an unsatisfiable/false-positive gate.
+    OPERATOR_REVIEW = "operator_review"
 
 
 @dataclass(frozen=True)
@@ -534,7 +538,7 @@ def _remediate_one(
             detail += _grooming_divergence_suffix(rerun_blocking)
             return IntakeOutcome(
                 slug=slug,
-                kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+                kind=IntakeOutcomeKind.OPERATOR_REVIEW,
                 findings=tuple(rerun_blocking),
                 proposed_replacement=proposed_body,
                 detail=detail,
@@ -635,7 +639,7 @@ def _remediate_one(
         detail += _grooming_divergence_suffix(rerun_blocking)
         return IntakeOutcome(
             slug=slug,
-            kind=IntakeOutcomeKind.DROPPED_AFTER_FIX,
+            kind=IntakeOutcomeKind.OPERATOR_REVIEW,
             findings=tuple(rerun_blocking),
             proposed_replacement=proposed_body,
             detail=detail,

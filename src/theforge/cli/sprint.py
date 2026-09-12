@@ -960,6 +960,12 @@ def _emit_shape_skip_events(
         kind = getattr(outcome, "kind", None)
         if kind is IntakeOutcomeKind.REMEDIATED:
             remediated.add(int(num))
+        elif kind is IntakeOutcomeKind.OPERATOR_REVIEW:
+            # The entry gate remains withheld after a candidate was tried, so
+            # retain the taxonomy's response-attempted/verification-failed
+            # classification while the canonical sprint state names the more
+            # precise operator-review outcome.
+            declined.add(int(num))
         elif kind is IntakeOutcomeKind.DROPPED_SHAPE:
             audit = getattr(outcome, "audit", None) or {}
             if isinstance(audit, dict) and audit.get("remediation_source") == "declined":
@@ -1001,6 +1007,7 @@ def _emit_all_skipped_audit(
     """
     import datetime
 
+    from theforge.intake import IntakeOutcomeKind
     from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
     from theforge.sprint.manifest import ResolvedSprint, SprintResult
     from theforge.sprint.shape_gate import skipped_issue_state_fields
@@ -1041,17 +1048,39 @@ def _emit_all_skipped_audit(
         sk_reason, sk_detail = skipped_issue_state_fields(sk)
         sk_codes = sk_dict.get("reason_codes") or []
         is_operator_action = "operator_action" in sk_codes
-        sk_outcome = StoryOutcome.OPERATOR_ACTION if is_operator_action else StoryOutcome.SKIPPED
+        outcome = intake_outcomes.get(sk_num)
+        is_intake_operator_review = (
+            outcome is not None and outcome.kind is IntakeOutcomeKind.OPERATOR_REVIEW
+        )
+        sk_outcome = (
+            StoryOutcome.INTAKE_OPERATOR_REVIEW
+            if is_intake_operator_review
+            else StoryOutcome.OPERATOR_ACTION
+            if is_operator_action
+            else StoryOutcome.SKIPPED
+        )
         sk_detail["final_outcome"] = sk_outcome.name
-        if is_operator_action:
+        if is_intake_operator_review:
+            sk_reason = outcome.detail or (
+                "intake gate survived remediation; operator review required"
+            )
+        elif is_operator_action:
             sk_reason = "operator-action — operator deliverable"
             sk_detail["operator_action"] = True
-        outcome = intake_outcomes.get(sk_num)
         sk_cost = 0.0
         if outcome is not None:
             sk_detail["intake_kind"] = outcome.kind.value
             sk_detail["intake_detail"] = outcome.detail
             sk_detail["intake_findings"] = [f.as_dict() for f in outcome.findings]
+            sk_detail["intake_codes"] = list(
+                dict.fromkeys(f.code for f in outcome.findings if f.code)
+            )
+            codes = sk_detail["intake_codes"]
+            sk_detail["intake_summary"] = (
+                f"[{', '.join(codes)}] {outcome.detail}"
+                if codes and outcome.detail
+                else outcome.detail or outcome.kind.value
+            )
             sk_detail["intake_audit"] = dict(outcome.audit)
             sk_detail["intake_proposed_replacement"] = outcome.proposed_replacement
             agent = outcome.audit.get("agent") if isinstance(outcome.audit, dict) else None
