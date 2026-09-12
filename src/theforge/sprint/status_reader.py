@@ -482,6 +482,11 @@ def _terminal_phase(
 ) -> str | None:
     if outcome == "SKIPPED" and depends_on:
         return "waiting"
+    if outcome == "INTAKE_OPERATOR_REVIEW":
+        # Intake withheld this story before sprint dispatch. There is no sprint
+        # phase to display, and putting the canonical outcome in this fixed
+        # width column obscures the operator-facing detail.
+        return None
     if outcome in _FAILURE_OUTCOMES and last_phase:
         return last_phase
     return outcome or None
