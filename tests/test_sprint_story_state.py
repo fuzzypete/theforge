@@ -138,6 +138,7 @@ def test_coerce_outcome_handles_legacy_status_strings() -> None:
     assert coerce_outcome("FAILED") is StoryOutcome.FAILED
     assert coerce_outcome("preserved") is StoryOutcome.PRESERVED
     assert coerce_outcome("DROPPED") is StoryOutcome.DROPPED
+    assert coerce_outcome("intake-operator-review") is StoryOutcome.INTAKE_OPERATOR_REVIEW
     assert coerce_outcome("unknown") is StoryOutcome.WAITING
     assert coerce_outcome(None) is StoryOutcome.WAITING
 
@@ -156,6 +157,9 @@ def test_outcome_terminal_classification() -> None:
     # and sprint-audit) all treat launch-guard drops as failures.
     assert StoryOutcome.DROPPED.is_failed is True
     assert StoryOutcome.DROPPED.is_skipped is False
+    assert StoryOutcome.INTAKE_OPERATOR_REVIEW.is_terminal is True
+    assert StoryOutcome.INTAKE_OPERATOR_REVIEW.is_failed is False
+    assert StoryOutcome.INTAKE_OPERATOR_REVIEW.is_skipped is True
 
 
 def test_transition_unknown_slug_returns_none() -> None:

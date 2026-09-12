@@ -423,6 +423,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         "skipped": "⊘",
         "blocked": "⊘",
         "operator-action": "⊘",
+        "intake-operator-review": "⚠",
         # Neither ✓ nor ✗: the gate asked and the answer was to split it.
         "decomposed": "⤺",
     }
