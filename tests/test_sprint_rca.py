@@ -1550,8 +1550,8 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    # Bumped by #2427 (agent_ended_without_result rule).
-    assert payload["ruleset_version"] == 13
+    # Bumped by #1759 (intake operator-review rule).
+    assert payload["ruleset_version"] == 14
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -1742,6 +1742,27 @@ def test_operator_action_signal(tmp_path: Path) -> None:
     )
     entry = _build(d)["stories"]["issue-4"]
     assert entry["primary_failure_class"] == "operator_action"
+
+
+def test_intake_operator_review_is_a_known_non_failure_lane(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1759",
+                    "outcome": "INTAKE_OPERATOR_REVIEW",
+                    "error": "rerun gate still failing; operator review required",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-1759"]
+    assert entry["primary_failure_class"] == "intake_operator_review"
+    assert any(
+        "retained intake candidate" in action for action in entry["recommended_next_actions"]
+    )
 
 
 def test_launch_collision_signal(tmp_path: Path) -> None:

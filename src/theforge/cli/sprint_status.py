@@ -17,6 +17,10 @@ from theforge.coordinator.util import _fmt_cost_total
 #: ("interrupted") so a killed story does not push the row out of alignment.
 _STATUS_WIDTH = 11
 
+#: Canonical status values that exceed the fixed table cell are shortened only
+#: for display. The underlying state, audit, and detail retain the full value.
+_STATUS_DISPLAY_LABELS = {"intake-operator-review": "intake-hold"}
+
 _DETAIL_REF_RE = re.compile(r"#(\d+)")
 
 #: Places both sides of the rows-versus-recorded-spend comparison are persisted
@@ -423,6 +427,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         "skipped": "⊘",
         "blocked": "⊘",
         "operator-action": "⊘",
+        "intake-operator-review": "⚠",
         # Neither ✓ nor ✗: the gate asked and the answer was to split it.
         "decomposed": "⤺",
     }
@@ -681,7 +686,7 @@ def _print_story_line(
     )
     for index in range(line_count):
         icon_cell = icon if index == 0 else " "
-        status_cell = status if index == 0 else ""
+        status_cell = _STATUS_DISPLAY_LABELS.get(status, status) if index == 0 else ""
         complexity_cell = complexity_str if index == 0 else ""
         cost_cell = cost_str if index == 0 else ""
         elapsed_cell = elapsed_str if index == 0 else ""

@@ -203,7 +203,7 @@ def test_comment_mode_rerun_failure_persists_candidate_artifact(tmp_path):
         post_comment=post_comment,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert out.proposed_replacement == candidate
     artifact_path = out.audit["candidate_artifact_path"]
     assert artifact_path is not None
@@ -264,7 +264,7 @@ def test_auto_fix_edit_mode_keeps_failing_body_off_issue(tmp_path):
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert edit_calls == []  # never wrote a still-failing body
 
 
@@ -297,7 +297,7 @@ def test_grooming_only_drop_surfaces_shape_check_divergence(tmp_path):
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert edit_calls == []
     assert all(f.code.startswith("groom_") for f in out.findings)
     # The divergence must be spelled out for the operator.
@@ -328,7 +328,7 @@ def test_shape_backed_drop_does_not_claim_divergence(tmp_path):
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert any(not f.code.startswith("groom_") for f in out.findings)
     assert "grooming-gate rejection" not in out.detail
 
@@ -528,7 +528,7 @@ def test_unreadable_diagnosis_retry_stays_bounded_when_second_call_also_fails(tm
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert len(calls) == 2
     assert len(post_calls) == 1
     assert edit_calls == []
@@ -627,7 +627,7 @@ def test_edit_mode_rerun_failure_persists_candidate_as_comment(tmp_path):
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert out.proposed_replacement == candidate
     assert edit_calls == []  # still must not write a failing body
     # Candidate must be posted as a comment so the operator can find it.
@@ -679,7 +679,7 @@ def test_edit_mode_rerun_failure_falls_back_to_artifact_when_post_fails(tmp_path
         edit_body=edit_body,
     )
     out = outcomes[task.slug]
-    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert out.kind is IntakeOutcomeKind.OPERATOR_REVIEW
     assert out.proposed_replacement == candidate
     assert edit_calls == []
     assert out.audit["comment_posted"] is False

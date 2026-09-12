@@ -255,6 +255,8 @@ def _outcome_to_status(outcome: str) -> str:
         return "skipped"
     if outcome == "OPERATOR_ACTION":
         return "operator-action"
+    if outcome == "INTAKE_OPERATOR_REVIEW":
+        return "intake-operator-review"
     if outcome == "DECOMPOSED":
         return "decomposed"
     if outcome in ("ESCALATE", "MERGE_FAILED", "MERGE_ARMING_FAILED"):
@@ -480,6 +482,11 @@ def _terminal_phase(
 ) -> str | None:
     if outcome == "SKIPPED" and depends_on:
         return "waiting"
+    if outcome == "INTAKE_OPERATOR_REVIEW":
+        # Intake withheld this story before sprint dispatch. There is no sprint
+        # phase to display, and putting the canonical outcome in this fixed
+        # width column obscures the operator-facing detail.
+        return None
     if outcome in _FAILURE_OUTCOMES and last_phase:
         return last_phase
     return outcome or None
@@ -831,6 +838,14 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
     if status_val == "operator-action":
         return "", "not sprintable; operator deliverable", complexity
 
+    if status_val == "intake-operator-review":
+        final_outcome = detail_data.get("final_outcome")
+        if isinstance(final_outcome, str):
+            rendered = _render_intake_drop_detail(final_outcome, detail_data)
+            if rendered:
+                return "", rendered, complexity
+        return "", "intake gate survived remediation; operator review required", complexity
+
     if status_val == "decomposed":
         return "", "returned for decomposition", complexity
 
@@ -854,6 +869,7 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
         if isinstance(final_outcome, str) and final_outcome in {
             "DROPPED_AFTER_FIX",
             "DROPPED_SHAPE",
+            "INTAKE_OPERATOR_REVIEW",
         }:
             rendered = _render_intake_drop_detail(final_outcome, detail_data)
             if rendered:
@@ -1101,12 +1117,15 @@ def _stage_and_detail_from_completed_story(
                 or _nonempty_str(story.get("drop_reason"))
                 or outcome
             )
-        elif outcome in {"DROPPED_AFTER_FIX", "DROPPED_SHAPE"}:
+        elif outcome in {"DROPPED_AFTER_FIX", "DROPPED_SHAPE", "INTAKE_OPERATOR_REVIEW"}:
             # Intake-drop entries carry the rule code + problem in ``error``
             # and the structured detail in ``intake``. Render finding problem
             # + agent attempt summary so the operator can act from this row
             # alone — not just see the outcome name.
             intake_block = story.get("intake")
+            if not isinstance(intake_block, dict):
+                state_detail = story.get("detail")
+                intake_block = state_detail if isinstance(state_detail, dict) else None
             synthetic_detail: dict = {}
             if isinstance(intake_block, dict):
                 synthetic_detail = {
