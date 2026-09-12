@@ -1,0 +1,95 @@
+schema_version: 2
+run_id: b485cafbc752
+authoritative_run_record: .forge/audits/runs/b485cafbc752.json
+generated_at: '2026-09-12T16:30:23.617623+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008686250000000001
+story:
+  slug: issue-1759
+  name: "Intake auto-fix loop drops a runnable story when a gate false-positive survives\
+    \ remediation \u2014 no escape hatch from an unsatisfiable gate"
+  github_issue: 1759
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint.py
+- src/theforge/cli/sprint_status.py
+- src/theforge/intake/remediation.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/rca.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/status_reader.py
+- src/theforge/sprint/story_state.py
+- tests/test_cli_sprint_status.py
+- tests/test_intake/test_remediation.py
+- tests/test_intake/test_runner_drop_surfaces.py
+- tests/test_sprint_rca.py
+- tests/test_sprint_story_state.py
+- tests/test_sprint_surface_consistency.py
+what_changed:
+  description: The run separated intake remediation failures that survive rerun from
+    true dropped stories by routing them into a distinct intake operator-review outcome
+    and carrying that outcome through runner, state, RCA, audit, status-reading, and
+    CLI surfaces. It also corrected reporting so the new outcome is represented consistently
+    in summaries and status displays.
+  approach: The change introduced a dedicated terminal lane for surviving gate failures
+    in intake remediation, then threaded that state through canonical/legacy story
+    status handling and operator-facing outputs so downstream tooling treated it as
+    a separate non-failed review path rather than another drop variant.
+  files_modified: *id002
+what_was_learned:
+- claim: When adding a new terminal story outcome, future runs need to verify every
+    presentation layer's width, label, and totals logic individually; canonical state
+    changes do not automatically keep CLI tables and fallback summary aggregation
+    consistent.
+  evidence:
+  - type: review_finding
+    finding_id: 370873fe213bfbc5
+    description: Review found that after introducing the new intake-operator-review
+      status, one CLI row emitted a value longer than the fixed STATUS column, shifting
+      every later column; this shows that adding an outcome requires explicit per-surface
+      formatting checks, not just state wiring.
+  - type: review_finding
+    finding_id: 665ab0e000c4a707
+    description: Review also found that when summary writing lacked canonical story_state,
+      an INTAKE_OPERATOR_REVIEW row was still counted as failed even though the row
+      itself showed a non-failed outcome; this demonstrates that fallback aggregation
+      paths can silently diverge from the primary state model unless checked separately.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 specifically called out that the prior status-column overflow
+      had been resolved with a fixed-width label, confirming that presentation-layer
+      conformance was a distinct problem discovered only through review.
+learned_patterns:
+- terminal-state-surface-audit
+- operator-review-not-failed
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly surfaced downstream consistency issues from the new intake
+    operator-review outcome: display width in status tables and failed/non-failed
+    classification in summary fallback logic.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 12.310888799999999
+  dominant_difficulty: Propagating a new non-failed intake terminal state through
+    all downstream status, audit, and CLI representations without leaving mismatched
+    fallback behavior.
