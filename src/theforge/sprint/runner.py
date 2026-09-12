@@ -6338,7 +6338,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             + _intake_outcome_cost(_outcome)
         )
     if intake_outcomes:
-        terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
+        terminal_kinds = {
+            IntakeOutcomeKind.DROPPED_SHAPE,
+            IntakeOutcomeKind.DROPPED_AFTER_FIX,
+            IntakeOutcomeKind.OPERATOR_REVIEW,
+        }
         dropped_slugs_intake = {
             slug for slug, outcome in intake_outcomes.items() if outcome.kind in terminal_kinds
         }
@@ -6355,10 +6359,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         for slug, outcome in intake_outcomes.items():
             if outcome.kind is IntakeOutcomeKind.PASSED:
                 continue
-            if (
-                outcome.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
-                and outcome.proposed_replacement
-            ):
+            if outcome.kind is IntakeOutcomeKind.OPERATOR_REVIEW and outcome.proposed_replacement:
                 if outcome.audit.get("comment_posted"):
                     _log(
                         f"  Intake candidate for {slug} posted as issue comment "
@@ -6375,6 +6376,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 if outcome.kind is IntakeOutcomeKind.REMEDIATED
                 else StoryOutcome.DROPPED_SHAPE
                 if outcome.kind is IntakeOutcomeKind.DROPPED_SHAPE
+                else StoryOutcome.INTAKE_OPERATOR_REVIEW
+                if outcome.kind is IntakeOutcomeKind.OPERATOR_REVIEW
                 else StoryOutcome.DROPPED_AFTER_FIX
             )
             intake_codes = _intake_finding_codes(outcome)
@@ -6424,6 +6427,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             if outcome.kind in {
                 IntakeOutcomeKind.DROPPED_SHAPE,
                 IntakeOutcomeKind.DROPPED_AFTER_FIX,
+                IntakeOutcomeKind.OPERATOR_REVIEW,
             }:
                 _record_current_story_entry(
                     slug,
@@ -7322,18 +7326,32 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
             _sk_codes = _sk_dict.get("reason_codes") or []
             _is_operator_action = "operator_action" in _sk_codes
-            _sk_outcome = (
-                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
+            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
+            _is_intake_operator_review = (
+                _sk_intake is not None and _sk_intake.kind is IntakeOutcomeKind.OPERATOR_REVIEW
             )
-            if _is_operator_action:
+            _sk_outcome = (
+                StoryOutcome.INTAKE_OPERATOR_REVIEW
+                if _is_intake_operator_review
+                else StoryOutcome.OPERATOR_ACTION
+                if _is_operator_action
+                else StoryOutcome.SKIPPED
+            )
+            if _is_intake_operator_review:
+                _sk_reason = _sk_intake.detail or (
+                    "intake gate survived remediation; operator review required"
+                )
+            elif _is_operator_action:
                 _sk_reason = "operator-action — operator deliverable"
                 _sk_detail["operator_action"] = True
             _sk_detail["final_outcome"] = _sk_outcome.name
-            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
             if _sk_intake is not None:
                 _sk_detail["intake_kind"] = _sk_intake.kind.value
                 _sk_detail["intake_detail"] = _sk_intake.detail
                 _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
+                _sk_detail["intake_codes"] = _intake_finding_codes(_sk_intake)
+                _sk_detail["intake_summary"] = _intake_outcome_summary(_sk_intake)
+                _sk_detail["intake_agent_summary"] = _intake_agent_summary(_sk_intake)
                 _sk_detail["intake_audit"] = dict(_sk_intake.audit)
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _sprint_state.state_writer.register(
@@ -7357,18 +7375,32 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _sk_reason, _sk_detail = skipped_issue_state_fields(_sk)
             _sk_codes = _sk_dict.get("reason_codes") or []
             _is_operator_action = "operator_action" in _sk_codes
-            _sk_outcome = (
-                StoryOutcome.OPERATOR_ACTION if _is_operator_action else StoryOutcome.SKIPPED
+            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
+            _is_intake_operator_review = (
+                _sk_intake is not None and _sk_intake.kind is IntakeOutcomeKind.OPERATOR_REVIEW
             )
-            if _is_operator_action:
+            _sk_outcome = (
+                StoryOutcome.INTAKE_OPERATOR_REVIEW
+                if _is_intake_operator_review
+                else StoryOutcome.OPERATOR_ACTION
+                if _is_operator_action
+                else StoryOutcome.SKIPPED
+            )
+            if _is_intake_operator_review:
+                _sk_reason = _sk_intake.detail or (
+                    "intake gate survived remediation; operator review required"
+                )
+            elif _is_operator_action:
                 _sk_reason = "operator-action — operator deliverable"
                 _sk_detail["operator_action"] = True
             _sk_detail["final_outcome"] = _sk_outcome.name
-            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
             if _sk_intake is not None:
                 _sk_detail["intake_kind"] = _sk_intake.kind.value
                 _sk_detail["intake_detail"] = _sk_intake.detail
                 _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
+                _sk_detail["intake_codes"] = _intake_finding_codes(_sk_intake)
+                _sk_detail["intake_summary"] = _intake_outcome_summary(_sk_intake)
+                _sk_detail["intake_agent_summary"] = _intake_agent_summary(_sk_intake)
                 _sk_detail["intake_audit"] = dict(_sk_intake.audit)
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
             _sprint_state.stories.register(

@@ -856,6 +856,32 @@ def test_display_sprint_status_row_shows_status_and_detail(tmp_path: Path) -> No
     assert "ESCALATE" in output
 
 
+def test_display_sprint_status_shortens_intake_operator_review_for_its_fixed_column(
+    tmp_path: Path,
+) -> None:
+    """The full canonical outcome remains in detail, not the fixed status cell."""
+    stories = [
+        {
+            "slug": "issue-1759",
+            "path": "Issue #1759",
+            "outcome": "INTAKE_OPERATOR_REVIEW",
+            "cost_usd": 0.0,
+        }
+    ]
+    _make_summary_file(tmp_path, "intake-review-sprint", "run-intake-review", stories)
+
+    code, output = _run_sprint_status(tmp_path, "run-intake-review")
+
+    assert code == 0
+    header = next(line for line in output.splitlines() if "STATUS" in line)
+    story_line = next(line for line in output.splitlines() if "Issue #1759" in line)
+    status_start = header.index("STATUS")
+    phase_start = header.index("PHASE")
+    assert story_line[status_start:phase_start].strip() == "intake-hold"
+    assert story_line[phase_start : phase_start + len("PHASE")].strip() == "—"
+    assert "INTAKE_OPERATOR_REVIEW" in story_line
+
+
 def test_display_sprint_status_live_row_shows_phase_and_status(tmp_path: Path) -> None:
     """Live sprint rows include both status and phase columns."""
     runs_dir = tmp_path / ".forge" / "runs"

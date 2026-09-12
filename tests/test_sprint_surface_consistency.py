@@ -332,6 +332,105 @@ def test_all_skipped_shape_gate_path_uses_canonical_state(tmp_path: Path) -> Non
     assert {"issue-42", "issue-43"}.issubset(slugs)
 
 
+def test_all_skipped_intake_operator_review_keeps_distinct_outcome(tmp_path: Path) -> None:
+    """Entry intake remediation can end every selected story before run_sprint.
+    Its audit path must preserve the review outcome instead of flattening it to
+    SKIPPED.
+    """
+    from theforge.cli.sprint import _emit_all_skipped_audit
+    from theforge.intake import IntakeOutcome, IntakeOutcomeKind
+    from theforge.sprint.shape_gate import SkippedIssue
+    from theforge.sprint.status_reader import (
+        _outcome_to_status,
+        _stage_and_detail_from_completed_story,
+    )
+
+    config = MagicMock_with_root(tmp_path)
+    skipped = [
+        SkippedIssue(
+            issue_number=1759,
+            reason_codes=("implementation_plan_in_body",),
+            source="local_check",
+            title="Rerun gate survives remediation",
+            detail="local shape check rejected",
+        )
+    ]
+    intake_outcomes = {
+        1759: IntakeOutcome(
+            slug="issue-1759",
+            kind=IntakeOutcomeKind.OPERATOR_REVIEW,
+            detail="rerun gate still failing; candidate retained for operator review",
+        )
+    }
+    _emit_all_skipped_audit(
+        config=config,
+        sprint_name="sprint-intake-operator-review",
+        budget_usd=10.0,
+        skipped_issues=skipped,
+        intake_outcomes=intake_outcomes,
+    )
+
+    log_dir = tmp_path / ".forge" / "logs" / "sprint-intake-operator-review"
+    summary = yaml.safe_load((log_dir / "sprint-summary.yaml").read_text(encoding="utf-8"))
+    story = summary["stories"][0]
+    assert story["outcome"] == "INTAKE_OPERATOR_REVIEW"
+    assert summary["sprint"]["specs_failed"] == 0
+    assert summary["sprint"]["specs_skipped"] == 1
+    assert story["detail"]["intake_kind"] == "operator_review"
+    assert story["intake"]["kind"] == "operator_review"
+    assert _outcome_to_status(story["outcome"]) == "intake-operator-review"
+    _, detail, _ = _stage_and_detail_from_completed_story(story, None)
+    assert "INTAKE_OPERATOR_REVIEW" in detail
+    assert "rerun gate still failing" in detail
+
+    audit = yaml.safe_load(
+        (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+    )
+    assert audit["specs"][0]["outcome"] == "INTAKE_OPERATOR_REVIEW"
+    assert audit["specs"][0]["intake"]["kind"] == "operator_review"
+
+
+def test_entry_operator_review_is_emitted_as_attempted_remediation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape-skip taxonomy must retain that remediation was attempted,
+    even though the canonical sprint outcome is operator review rather than a
+    confirmed drop.
+    """
+    from theforge.cli.sprint import _emit_shape_skip_events
+    from theforge.intake import IntakeOutcome, IntakeOutcomeKind
+    from theforge.sprint.shape_gate import SkippedIssue
+
+    captured: dict = {}
+
+    def record(_project_root, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("theforge.sprint.skip_report.emit_shape_skip_events", record)
+    _emit_shape_skip_events(
+        config=MagicMock_with_root(tmp_path),
+        run_id="run-1759",
+        sprint_name="sprint-1759",
+        milestone=None,
+        original_skips=[
+            SkippedIssue(
+                issue_number=1759,
+                reason_codes=("implementation_plan_in_body",),
+                source="local_check",
+            )
+        ],
+        original_advisories=[],
+        intake_outcomes={
+            1759: IntakeOutcome(
+                slug="issue-1759",
+                kind=IntakeOutcomeKind.OPERATOR_REVIEW,
+            )
+        },
+    )
+    assert captured["declined_numbers"] == {1759}
+    assert captured["remediated_numbers"] == set()
+
+
 def MagicMock_with_root(tmp_path: Path):
     """Tiny config stub providing only ``project_root`` for the all-skipped
     helper. Avoids pulling in the full ForgeConfig fixture."""

@@ -51,7 +51,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 13
+RULESET_VERSION = 14
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -85,7 +85,9 @@ SKIP_REASON_UNRECORDED_CLASS = "skip_reason_unrecorded"
 # rather than failed. Keep in sync with ``StoryOutcome.is_skipped`` in
 # ``sprint.story_state`` — this module is a pure function over on-disk artifacts
 # and deliberately imports no coordinator/sprint runtime modules.
-SKIPPED_OUTCOMES = frozenset({"SKIPPED", "PRESERVED", "OPERATOR_ACTION", "DECOMPOSED"})
+SKIPPED_OUTCOMES = frozenset(
+    {"SKIPPED", "PRESERVED", "OPERATOR_ACTION", "INTAKE_OPERATOR_REVIEW", "DECOMPOSED"}
+)
 
 # Per-story accounting status the coordinator records when a story's spend could
 # not be measured. Keep in sync with ``coordinator.story_budget.STATUS_UNKNOWN``.
@@ -397,6 +399,14 @@ RULES: tuple[RcaRule, ...] = (
         description="Deliverable is a human action no dev agent can perform.",
     ),
     RcaRule(
+        rule_id="intake_operator_review_required",
+        failure_class="intake_operator_review",
+        role="primary",
+        description=(
+            "An intake gate survived bounded remediation; the candidate requires operator review."
+        ),
+    ),
+    RcaRule(
         rule_id="sprint_state_stranded",
         failure_class="sprint_state_stranded",
         role="primary",
@@ -604,6 +614,7 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "dev_gate_evidence_missing",
     "review_rejected",
     "operator_action",
+    "intake_operator_review",
     "sprint_state_stranded",
     "launch_collision",
     # Run-level stop decisions the sprint took *about itself* before it dispatched
@@ -2070,6 +2081,10 @@ def _signal_rule_hits(
         hits.append(("merge_arming_failed", summary_source, _outcome_excerpt(), "structured"))
     if outcome == "OPERATOR_ACTION":
         hits.append(("operator_action_required", summary_source, _outcome_excerpt(), "structured"))
+    if outcome == "INTAKE_OPERATOR_REVIEW":
+        hits.append(
+            ("intake_operator_review_required", summary_source, _outcome_excerpt(), "structured")
+        )
     drop_reason = _nonempty(story.get("drop_reason"))
     if drop_reason == _STRANDED_WORKTREE_REASON:
         # A prior-generation worktree left unfinished sprint state — a distinct,
@@ -2612,6 +2627,10 @@ def _recommend_actions(
             "gate (or re-sprint) before trusting any earlier review verdict"
         ),
         "operator_action": f"perform the operator action described in {ref} (no dev agent can)",
+        "intake_operator_review": (
+            f"review {ref}'s retained intake candidate and the surviving gate finding; "
+            "correct the gate or apply an operator-approved rewrite before re-sprinting"
+        ),
         "launch_collision": _launch_collision_action(story, ref),
         "sprint_state_stranded": (
             f"re-resume/reconcile the sprint so {ref}'s prior-generation state is "

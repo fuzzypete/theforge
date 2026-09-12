@@ -34,6 +34,29 @@ def _optional_cost(value: object) -> float | None:
     return None
 
 
+def _intake_block_from_detail(detail: object) -> dict | None:
+    """Project canonical intake detail into the audit/summary intake block.
+
+    Entry-gate outcomes are sometimes represented only by ``SprintStoryState``
+    (for example, when every queried issue is withheld). Keep their structured
+    finding and candidate context as visible as in-runner intake outcomes.
+    """
+    if not isinstance(detail, dict):
+        return None
+    kind = detail.get("intake_kind")
+    if not isinstance(kind, str) or not kind:
+        return None
+    return {
+        "kind": kind,
+        "detail": detail.get("intake_detail"),
+        "codes": detail.get("intake_codes") or [],
+        "findings": detail.get("intake_findings") or [],
+        "agent_summary": detail.get("intake_agent_summary"),
+        "audit": detail.get("intake_audit") or {},
+        "proposed_replacement": detail.get("intake_proposed_replacement"),
+    }
+
+
 #: Story-row key → key of the same fact in the per-story audit ``preflight``
 #: block (#2346). The row spells the fields flat, matching the surrounding
 #: ``preflight*`` fields, so a reader of sprint-summary.yaml can count degraded
@@ -1306,25 +1329,31 @@ def _write_sprint_audit(
         for canonical_entry in story_state.stories():
             if canonical_entry.slug in _emitted:
                 continue
-            spec_entries.append(
-                {
-                    "path": canonical_entry.path,
-                    "slug": canonical_entry.slug,
-                    "outcome": canonical_entry.outcome.name,
-                    "outcome_source": "carried_from_accumulated_state",
-                    "cost_usd": canonical_entry.cost_usd,
-                    "preflight": None,
-                    "error": canonical_entry.reason,
-                    "error_type": None,
-                    "outcome_code": canonical_entry.outcome.name.lower(),
-                    "merge": False,
-                    "reviews": [],
-                    "depends_on": list(canonical_entry.depends_on),
-                    "started_at": None,
-                    "finished_at": None,
-                    "batch": 0,
-                }
-            )
+            canonical_detail = dict(canonical_entry.detail) if canonical_entry.detail else {}
+            intake_block = _intake_block_from_detail(canonical_detail)
+            intake_codes = intake_block["codes"] if intake_block is not None else []
+            intake_error_type = intake_codes[0] if intake_codes else None
+            entry = {
+                "path": canonical_entry.path,
+                "slug": canonical_entry.slug,
+                "outcome": canonical_entry.outcome.name,
+                "outcome_source": "carried_from_accumulated_state",
+                "cost_usd": canonical_entry.cost_usd,
+                "preflight": None,
+                "error": canonical_entry.reason,
+                "error_type": intake_error_type,
+                "outcome_code": intake_error_type or canonical_entry.outcome.name.lower(),
+                "merge": False,
+                "reviews": [],
+                "depends_on": list(canonical_entry.depends_on),
+                "started_at": None,
+                "finished_at": None,
+                "batch": 0,
+                "detail": canonical_detail or None,
+            }
+            if intake_block is not None:
+                entry["intake"] = intake_block
+            spec_entries.append(entry)
             spec_slugs.append(canonical_entry.slug)
 
     usage_distribution = []
@@ -1836,23 +1865,29 @@ def _write_sprint_summary(
             if entry.slug in canonical_slugs_in_entries:
                 continue
             outcome_name = entry.outcome.name
-            spec_entries.append(
-                {
-                    "path": entry.path,
-                    "slug": entry.slug,
-                    "outcome": outcome_name,
-                    "verdict": None,
-                    "cost_usd": entry.cost_usd,
-                    "preflight": None,
-                    "error": entry.reason,
-                    "error_type": None,
-                    "merge": False,
-                    "batch": 0,
-                    "depends_on": list(entry.depends_on),
-                    "drop_reason": entry.reason,
-                    "detail": dict(entry.detail) if entry.detail else None,
-                }
-            )
+            canonical_detail = dict(entry.detail) if entry.detail else {}
+            intake_block = _intake_block_from_detail(canonical_detail)
+            intake_codes = intake_block["codes"] if intake_block is not None else []
+            intake_error_type = intake_codes[0] if intake_codes else None
+            summary_entry = {
+                "path": entry.path,
+                "slug": entry.slug,
+                "outcome": outcome_name,
+                "verdict": None,
+                "cost_usd": entry.cost_usd,
+                "preflight": None,
+                "error": entry.reason,
+                "error_type": intake_error_type,
+                "outcome_code": intake_error_type or outcome_name.lower(),
+                "merge": False,
+                "batch": 0,
+                "depends_on": list(entry.depends_on),
+                "drop_reason": entry.reason,
+                "detail": canonical_detail or None,
+            }
+            if intake_block is not None:
+                summary_entry["intake"] = intake_block
+            spec_entries.append(summary_entry)
     else:
         effective_specs_total = len(spec_entries)
         _entry_costs = [e.get("cost_usd", 0.0) for e in spec_entries]
