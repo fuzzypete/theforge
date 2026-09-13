@@ -461,7 +461,7 @@ def _waiting_detail(blocked_by: list[str]) -> str:
     if all(item.startswith("issue-") for item in blocked_by):
         refs = [f"#{item[len('issue-') :]}" for item in blocked_by]
         return f"depends on {', '.join(refs)}"
-    return "; ".join(blocked_by)
+    return f"depends on {', '.join(blocked_by)}"
 
 
 _FAILURE_OUTCOMES = {
