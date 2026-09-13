@@ -424,6 +424,25 @@ def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
     return exit_detail
 
 
+_RETRY_GUIDANCE_HEADING = "Additional retry guidance:"
+
+
+def _retry_guidance_notes(existing_feedback: str) -> list[str]:
+    """The notes previous appends stored, read by append boundary.
+
+    Each append writes one note: the first onto empty feedback goes in bare,
+    every later one under its own ``Additional retry guidance:`` heading and
+    ending at the next blank line. Reading the boundaries rather than scanning
+    the whole body is what keeps a note that unrelated feedback merely quotes —
+    gate output echoing a prior prompt, say — from being mistaken for a note
+    this feedback already carries.
+    """
+    segments = existing_feedback.split(f"\n\n{_RETRY_GUIDANCE_HEADING}\n")
+    notes = [segments[0]]
+    notes.extend(segment.split("\n\n")[0] for segment in segments[1:])
+    return [" ".join(note.split()) for note in notes]
+
+
 def _append_retry_guidance(existing_feedback: str | None, guidance: str) -> str:
     """Preserve prior feedback while appending a retry note only once.
 
@@ -436,11 +455,10 @@ def _append_retry_guidance(existing_feedback: str | None, guidance: str) -> str:
     """
     if not existing_feedback:
         return guidance
-    normalized_existing = " ".join(existing_feedback.split())
     normalized_guidance = " ".join(guidance.split())
-    if normalized_guidance and normalized_guidance in normalized_existing:
+    if normalized_guidance and normalized_guidance in _retry_guidance_notes(existing_feedback):
         return existing_feedback
-    return f"{existing_feedback}\n\nAdditional retry guidance:\n{guidance}"
+    return f"{existing_feedback}\n\n{_RETRY_GUIDANCE_HEADING}\n{guidance}"
 
 
 def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
@@ -1534,6 +1552,11 @@ def _run_dev_phase(
     _dev_handoff_before = len(state.dev_handoff_snapshots)
     _runner_failure = None
     _current_session_id = state.dev_session_id
+    # True once an attempt in this iteration ended without model output, which
+    # leaves whatever session it ran in unproven (#2652). Remembered across the
+    # in-place retries so a later attempt that produces output but returns no
+    # replacement session id cannot leave the invalidated stored id behind.
+    _session_invalidated = False
     _dev_retry_events: list[dict] = []
     _max_transport_retries = max(0, config.retry.max_dev_transport_retries)
 
@@ -1564,6 +1587,8 @@ def _run_dev_phase(
             ):
                 retry_count = len(_dev_retry_events) + 1
                 _failure_summary = _summarize_dev_transport_failure(dev_result)
+                _attempt_produced_output = produced_model_output(dev_result)
+                _session_invalidated = _session_invalidated or not _attempt_produced_output
                 _dev_results_this_iteration.append(dev_result)
                 _dev_durations_this_iteration.append(_attempt_elapsed)
                 _dev_retry_events.append(
@@ -1571,6 +1596,11 @@ def _run_dev_phase(
                         "iteration": state.dev_iteration,
                         "retry": retry_count,
                         "error": _failure_summary,
+                        # The value that decided what the retry resumes into,
+                        # recorded so the decision is readable in the audit
+                        # rather than reconstructed from the failure text.
+                        "produced_model_output": _attempt_produced_output,
+                        "resume_session_invalidated": _session_invalidated,
                     }
                 )
                 _log(
@@ -1594,7 +1624,7 @@ def _run_dev_phase(
                 # into the session that just failed.
                 _current_session_id = (
                     dev_result.session_id
-                    if _dev_profile.mode == "cli" and produced_model_output(dev_result)
+                    if _dev_profile.mode == "cli" and _attempt_produced_output
                     else None
                 )
                 _backoff_s = _dev_transport_retry_backoff_seconds(retry_count)
@@ -1637,13 +1667,20 @@ def _run_dev_phase(
     _capture_dev_handoff(state, config, task, workspace_path, dev_result)
     if _dev_profile.mode == "cli" and dev_result.transport_used == "api":
         state.dev_session_id = None
-    elif not produced_model_output(dev_result):
+    elif not produced_model_output(dev_result) or (
+        _session_invalidated and not dev_result.session_id
+    ):
         # An attempt that ended without model output is not evidence that the
         # session it ran in is still usable — including a session established
         # by an earlier iteration of this story (#2652). Failing to refresh the
         # stored id is not enough: the stale value would be handed to the next
         # iteration as a resume target, so invalidate it explicitly and let the
         # next iteration start fresh.
+        #
+        # The same holds when an earlier in-place attempt invalidated the stored
+        # session and the attempt that finally produced output returned no
+        # replacement id: nothing here re-proved the stored session, so it is
+        # cleared rather than left behind for the next iteration to resume.
         state.dev_session_id = None
     elif dev_result.session_id:
         state.dev_session_id = dev_result.session_id

@@ -473,6 +473,30 @@ def test_identical_retry_guidance_is_recorded_once():
     assert _append_retry_guidance(with_gate_feedback, guidance) == with_gate_feedback
 
 
+def test_guidance_quoted_by_unrelated_feedback_is_still_appended():
+    """Dedup reads append boundaries, not any occurrence of the text.
+
+    Gate output that echoes a prior prompt can quote the note verbatim. That is
+    not the coordinator having already told the agent this — suppressing the
+    append there would drop guidance the retry is supposed to carry.
+    """
+    from theforge.coordinator.dev_phase import _append_retry_guidance
+
+    guidance = "Narrow scope, stabilize the worktree, and submit a structured result promptly."
+    gate_feedback = (
+        "Gate output:\nFAIL: tests failed\n"
+        "The prompt under test contained: 'Narrow scope, stabilize the worktree, and submit "
+        "a structured result promptly.' — assertion failed."
+    )
+
+    appended = _append_retry_guidance(gate_feedback, guidance)
+
+    assert appended != gate_feedback
+    assert appended.endswith(f"Additional retry guidance:\n{guidance}")
+    # Still appended only once on a repeat.
+    assert _append_retry_guidance(appended, guidance) == appended
+
+
 @patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")

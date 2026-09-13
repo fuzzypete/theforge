@@ -981,6 +981,88 @@ class TestCoordinatorSessionResume:
         assert result.success is True
         assert dev_session_ids == [None, "sess-live"]
 
+    @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_retry_that_produced_output_without_a_session_id_does_not_revive_the_stored_one(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, _mock_sleep, tmp_path
+    ):
+        """A mixed in-place retry must not leave the invalidated session behind (#2652).
+
+        Iteration 2 resumes the stored session and fails without model output,
+        so that session is unproven. Its fresh retry then produces output but
+        returns no replacement id — nothing re-proved the stored session, so the
+        third iteration must still start fresh rather than resume it.
+        """
+        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            config, retry=dataclasses.replace(config.retry, max_dev_iterations=3)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        dev_session_ids: list[str | None] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
+            dev_session_ids.append(session_id)
+            if len(dev_session_ids) == 1:
+                return _make_agent_result(
+                    success=True,
+                    output="Implemented.",
+                    session_id="dev-sess-1",
+                    profile_name="dev",
+                )
+            if len(dev_session_ids) == 2:
+                # Resumed the stored session and produced nothing: transient, so
+                # it is retried in place.
+                return AgentResult(
+                    success=False,
+                    output="http 429 rate limited",
+                    session_id="dev-sess-1",
+                    cost_usd=0.0,
+                    exit_code=1,
+                    raw={},
+                    profile_name="dev",
+                    failure_code="rate_limit",
+                )
+            if len(dev_session_ids) == 3:
+                # The retry ran and produced output, but the runner returned no
+                # session id for it.
+                return _make_agent_result(
+                    success=True, output="Retried.", session_id=None, profile_name="dev"
+                )
+            return _make_agent_result(
+                success=True, output="Fixed.", session_id="dev-sess-4", profile_name="dev"
+            )
+
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert dev_session_ids == [None, "dev-sess-1", None, None]
+        assert result.state.dev_session_id == "dev-sess-4"
+        # The decision that dropped the stored session is readable in the run
+        # record rather than reconstructed from the failure text.
+        retry_events = [
+            event
+            for telemetry in result.state.dev_iteration_telemetry
+            for event in telemetry.transport_retry_events
+        ]
+        assert len(retry_events) == 1
+        assert retry_events[0]["produced_model_output"] is False
+        assert retry_events[0]["resume_session_invalidated"] is True
+
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
