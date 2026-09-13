@@ -295,22 +295,34 @@ def test_publish_reports_reconcile_failure_distinctly(
 
 
 @pytest.mark.parametrize(
-    ("failure_command", "failure_output", "expected_detail"),
+    (
+        "failure_command",
+        "failure_output",
+        "expected_label",
+        "expected_path",
+        "write_summary",
+    ),
     [
         (
-            "git status --porcelain -- .forge/audits/runs",
+            "git status --porcelain -- .forge/knowledge/summaries",
             "fatal: status failed",
-            "Failed to inspect story run audits",
+            "knowledge summaries",
+            ".forge/knowledge/summaries",
+            True,
         ),
         (
             "git add -- .forge/audits/runs",
             "fatal: add failed",
-            "Failed to stage story run audits",
+            "story run audits",
+            ".forge/audits/runs",
+            False,
         ),
         (
             'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
             "fatal: commit failed",
-            "Failed to commit story run audits",
+            "story run audits",
+            ".forge/audits/runs",
+            False,
         ),
     ],
 )
@@ -319,10 +331,14 @@ def test_publish_records_commit_failed_state_for_each_commit_step(
     origin_and_clone: tuple[Path, Path],
     failure_command: str,
     failure_output: str,
-    expected_detail: str,
+    expected_label: str,
+    expected_path: str,
+    write_summary: bool,
 ) -> None:
     _origin, clone = origin_and_clone
     _write_audit(clone, "run-k.json")
+    if write_summary:
+        _write_summary(clone, "run-k")
     state_path = clone / _STORY_RUN_AUDIT_PUBLISH_STATE_PATH
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
@@ -345,11 +361,13 @@ def test_publish_records_commit_failed_state_for_each_commit_step(
         _commit_story_run_audits(clone, BASE, publish=True)
 
     assert excinfo.value.state == AUDIT_PUBLISH_COMMIT_FAILED
-    assert expected_detail in str(excinfo.value)
+    assert expected_label in str(excinfo.value)
+    assert expected_path in str(excinfo.value)
     state = _read_state(clone)
     assert state["state"] == AUDIT_PUBLISH_COMMIT_FAILED
     assert state["recorded_at"] != "2000-01-01T00:00:00+00:00"
-    assert expected_detail in state["detail"]
+    assert expected_label in state["detail"]
+    assert expected_path in state["detail"]
 
 
 def test_publish_aborts_a_conflicted_rebase_before_raising(
