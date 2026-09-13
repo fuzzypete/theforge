@@ -294,19 +294,49 @@ def test_publish_reports_reconcile_failure_distinctly(
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_RECONCILE_FAILED
 
 
-def test_publish_reports_which_artifact_dir_failed_inspection(
-    monkeypatch: pytest.MonkeyPatch, origin_and_clone: tuple[Path, Path]
+@pytest.mark.parametrize(
+    ("failure_command", "failure_output", "expected_detail"),
+    [
+        (
+            "git status --porcelain -- .forge/audits/runs",
+            "fatal: status failed",
+            "Failed to inspect story run audits",
+        ),
+        (
+            "git add -- .forge/audits/runs",
+            "fatal: add failed",
+            "Failed to stage story run audits",
+        ),
+        (
+            'git commit -m "chore(audit): record sprint run audits" -- .forge/audits/runs',
+            "fatal: commit failed",
+            "Failed to commit story run audits",
+        ),
+    ],
+)
+def test_publish_records_commit_failed_state_for_each_commit_step(
+    monkeypatch: pytest.MonkeyPatch,
+    origin_and_clone: tuple[Path, Path],
+    failure_command: str,
+    failure_output: str,
+    expected_detail: str,
 ) -> None:
     _origin, clone = origin_and_clone
-    _write_summary(clone, "run-k")
+    _write_audit(clone, "run-k.json")
+    state_path = clone / _STORY_RUN_AUDIT_PUBLISH_STATE_PATH
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps({"state": AUDIT_PUBLISH_CLEAN, "recorded_at": "2000-01-01T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
 
     from theforge.coordinator import util as _cu
 
     real_run_shell = _cu._run_shell
 
     def fake_run_shell(cmd: str, cwd: Path, *args: object, **kwargs: object):
-        if cmd == "git status --porcelain -- .forge/knowledge/summaries":
-            return False, "fatal: status failed"
+        if cmd == failure_command:
+            return False, failure_output
         return real_run_shell(cmd, cwd, *args, **kwargs)
 
     monkeypatch.setattr(_cu, "_run_shell", fake_run_shell)
@@ -315,8 +345,11 @@ def test_publish_reports_which_artifact_dir_failed_inspection(
         _commit_story_run_audits(clone, BASE, publish=True)
 
     assert excinfo.value.state == AUDIT_PUBLISH_COMMIT_FAILED
-    assert "knowledge summaries" in str(excinfo.value)
-    assert ".forge/knowledge/summaries" in str(excinfo.value)
+    assert expected_detail in str(excinfo.value)
+    state = _read_state(clone)
+    assert state["state"] == AUDIT_PUBLISH_COMMIT_FAILED
+    assert state["recorded_at"] != "2000-01-01T00:00:00+00:00"
+    assert expected_detail in state["detail"]
 
 
 def test_publish_aborts_a_conflicted_rebase_before_raising(
@@ -369,6 +402,37 @@ def test_publish_records_clean_state_when_no_audits_are_pending(
     _commit_story_run_audits(clone, BASE, publish=True)
 
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_CLEAN
+
+
+def test_publish_failure_log_does_not_claim_the_marker_was_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from theforge.sprint import audit_publish
+
+    failure = StoryRunAuditPublishError(
+        "Failed to commit story run audits",
+        state=AUDIT_PUBLISH_COMMIT_FAILED,
+    )
+    logs: list[str] = []
+
+    def fail_publish(*args: object, **kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(audit_publish, "publish_story_run_artifacts_for_config", fail_publish)
+    monkeypatch.setattr(audit_publish, "_log", logs.append)
+
+    with pytest.raises(StoryRunAuditPublishError, match="Failed to commit"):
+        publish_story_run_audits(
+            SimpleNamespace(context=SimpleNamespace(config=object())),
+            lands_locally=False,
+        )
+
+    assert logs == [
+        "✗ SPRINT  canonical story run audit publish failed: "
+        "Failed to commit story run audits [state=commit_failed]"
+    ]
 
 
 # ── the write half: terminal audit + summary, called directly ─────────────
