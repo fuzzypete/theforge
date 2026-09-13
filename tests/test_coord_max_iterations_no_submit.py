@@ -443,3 +443,79 @@ def test_max_iterations_retry_completing_met_without_pass_delegates_not_escalate
     assert all(
         t.gate_result != "HANDOFF_NO_GATE_EVIDENCE" for t in result.state.dev_iteration_telemetry
     )
+
+
+def test_identical_retry_guidance_is_recorded_once():
+    """The same note twice is the same instruction, not an escalated second one (#2652).
+
+    The first append onto empty feedback stores the note bare, so a dedup check
+    that only recognizes the ``Additional retry guidance:`` heading never sees
+    the second, identical append.
+    """
+    from theforge.coordinator.dev_phase import _append_retry_guidance
+
+    guidance = (
+        "The previous dev iteration exhausted its iteration budget without calling the "
+        "submit tool, so there is no structured handoff to continue from."
+    )
+
+    once = _append_retry_guidance(None, guidance)
+    twice = _append_retry_guidance(once, guidance)
+
+    assert once == guidance
+    assert twice == once
+    assert twice.count("submit tool") == 1
+    assert "Additional retry guidance:" not in twice
+
+    # And the heading-carrying shape stays deduplicated too.
+    with_gate_feedback = _append_retry_guidance("Gate output: FAIL", guidance)
+    assert with_gate_feedback.count("Additional retry guidance:") == 1
+    assert _append_retry_guidance(with_gate_feedback, guidance) == with_gate_feedback
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.dev_phase.build_dev_prompt")
+@patch_gate_shell()
+def test_consecutive_no_submit_retries_do_not_repeat_the_submit_pressure_note(
+    mock_shell, mock_build_dev_prompt, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    """Two no-submit iterations in a row: the agent is told the same thing once."""
+    import dataclasses
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        dev_profile=dataclasses.replace(config.dev_profile, budget_usd=20.0),
+        retry=dataclasses.replace(config.retry, max_dev_iterations=3),
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace, ["PASS"])
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_build_dev_prompt.return_value = "dev prompt"
+    # No gate runs between the two no-submit iterations, so nothing else is
+    # written into human_feedback in between — the second append sees exactly
+    # the bare note the first one stored.
+    mock_dev.side_effect = [
+        _max_iter_no_submit_result(),
+        _max_iter_no_submit_result(),
+        _make_agent_result(profile_name="dev"),
+    ]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    assert result.success is True
+    assert mock_build_dev_prompt.call_count == 3
+    retry_feedback = mock_build_dev_prompt.call_args_list[2].kwargs["human_feedback"]
+    assert retry_feedback is not None
+    assert retry_feedback.count("without calling the submit tool") == 1
+    assert "Additional retry guidance:" not in retry_feedback

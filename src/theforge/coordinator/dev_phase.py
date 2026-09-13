@@ -425,13 +425,22 @@ def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
 
 
 def _append_retry_guidance(existing_feedback: str | None, guidance: str) -> str:
-    """Preserve prior feedback while appending a retry note only once."""
+    """Preserve prior feedback while appending a retry note only once.
+
+    Deduplication is by the guidance text itself, not by the heading it would
+    be filed under (#2652). The first append of a note onto empty feedback
+    stores it bare, so a suffix match against ``Additional retry guidance:``
+    never recognizes the second, identical append — and the agent reads the
+    same instruction twice under different framing as a distinct, escalated
+    requirement rather than as the same one.
+    """
     if not existing_feedback:
         return guidance
-    appended_block = f"Additional retry guidance:\n{guidance}"
-    if existing_feedback.endswith(appended_block):
+    normalized_existing = " ".join(existing_feedback.split())
+    normalized_guidance = " ".join(guidance.split())
+    if normalized_guidance and normalized_guidance in normalized_existing:
         return existing_feedback
-    return f"{existing_feedback}\n\n{appended_block}"
+    return f"{existing_feedback}\n\nAdditional retry guidance:\n{guidance}"
 
 
 def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
@@ -1577,7 +1586,17 @@ def _run_dev_phase(
                         ),
                         dev_result.output or "",
                     )
-                _current_session_id = dev_result.session_id if _dev_profile.mode == "cli" else None
+                # A session id is a resume target only while there is reason to
+                # believe the session is usable (#2652). The attempt that just
+                # failed is the least reliable witness to its own
+                # recoverability: when it produced no model output, its session
+                # is unproven, so the retry starts fresh rather than resuming
+                # into the session that just failed.
+                _current_session_id = (
+                    dev_result.session_id
+                    if _dev_profile.mode == "cli" and produced_model_output(dev_result)
+                    else None
+                )
                 _backoff_s = _dev_transport_retry_backoff_seconds(retry_count)
                 _log_verbose(f"  DEV retry backoff: {_backoff_s}s")
                 time.sleep(_backoff_s)
@@ -1618,7 +1637,15 @@ def _run_dev_phase(
     _capture_dev_handoff(state, config, task, workspace_path, dev_result)
     if _dev_profile.mode == "cli" and dev_result.transport_used == "api":
         state.dev_session_id = None
-    elif dev_result.session_id and produced_model_output(dev_result):
+    elif not produced_model_output(dev_result):
+        # An attempt that ended without model output is not evidence that the
+        # session it ran in is still usable — including a session established
+        # by an earlier iteration of this story (#2652). Failing to refresh the
+        # stored id is not enough: the stale value would be handed to the next
+        # iteration as a resume target, so invalidate it explicitly and let the
+        # next iteration start fresh.
+        state.dev_session_id = None
+    elif dev_result.session_id:
         state.dev_session_id = dev_result.session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
