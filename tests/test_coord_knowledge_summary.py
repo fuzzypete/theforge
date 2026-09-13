@@ -1046,3 +1046,122 @@ def test_audit_schema_version_exposes_knowledge_summary_status() -> None:
     # survive later fields being added (#2525 bumped to v31).
     assert CURRENT_RECORD_SCHEMA_VERSION >= 30
     assert 29 in MIGRATION_HELPERS
+
+
+class TestRunIdentityReentry:
+    """A durable prior outcome does not own this run_id forever (#2520).
+
+    The sprint calls the story-audit writer several times for one finished
+    story, so an attempted-but-not-written outcome must not re-bill on each of
+    those. It must also not become a permanent block on a run that legitimately
+    re-enters under the same run_id carrying new evidence — eligibility for the
+    run in front of us is what decides.
+    """
+
+    @staticmethod
+    def _persist_outcome(project_root: Path, audit: dict) -> None:
+        """Mirror the recorded outcome into the canonical run record.
+
+        This is what ``_write_native_story_record`` does immediately after
+        generation, and it is the only reason a later, freshly-generated audit
+        payload can see the prior outcome at all.
+        """
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    def test_repeated_terminal_writes_of_an_unchanged_run_dispatch_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            calls.append(dict(kwargs))
+            return _FakeAgentResult(output=UNEVIDENCED_OUTPUT)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), first_audit
+        )
+        assert first.attempted is True
+        assert first.written is False
+        self._persist_outcome(tmp_path, first_audit)
+
+        # The sprint's later writes regenerate the audit payload from the same
+        # unchanged run — same evidence, so the same attempt.
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert second.attempted is True
+        assert second.written is False
+
+    def test_a_run_re_entered_with_new_evidence_is_attempted_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            calls.append(dict(kwargs))
+            return _FakeAgentResult(output=UNEVIDENCED_OUTPUT)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        # The run re-entered and did more work: another review cycle, another
+        # finding, another file. The prior attempted outcome must not block it.
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        reentered["finding_registry"].append(
+            {
+                "finding_id": "f-009",
+                "cycle_first_seen": 2,
+                "cycle_last_seen": 2,
+                "file": "src/retry.py",
+                "severity": "P2",
+                "description": "backoff ceiling unbounded",
+                "disposition": "resolved",
+            }
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert len(calls) == 2
+        assert outcome.attempted is True
+
+    def test_an_ineligible_run_still_reports_its_recorded_outcome(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Eligibility-first must not regress the attempted/not_attempted split."""
+        monkeypatch.setattr(
+            knowledge_summary_flow,
+            "run_agent",
+            lambda **_: _FakeAgentResult(output=UNEVIDENCED_OUTPUT),
+        )
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), first_audit
+        )
+        self._persist_outcome(tmp_path, first_audit)
+
+        # Summaries switched off: the run is no longer eligible, but the outcome
+        # it already reached is still the truth about it.
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), _audit()
+        )
+
+        assert outcome.attempted is True
+        assert outcome.status != "not_attempted"

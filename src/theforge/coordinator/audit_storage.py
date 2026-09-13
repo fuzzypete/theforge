@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 48
+CURRENT_RECORD_SCHEMA_VERSION = 49
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -279,16 +279,33 @@ def _preserved_story_run_roots(project_root: Path) -> list[Path]:
     return sorted(path for path in root.iterdir() if path.is_dir())
 
 
-def _run_record_paths(project_root: Path) -> list[Path]:
-    paths: list[Path] = []
+# Source tiers for a per-run JSON record. Lower sorts first and wins when the
+# same ``run_id`` is carried by more than one tree: the canonical record under
+# ``.forge/audits/runs`` is the run's own statement about itself, and a
+# preserved copy under ``.forge/unpublished-story-run-artifacts`` is a rescue
+# of that statement. Precedence is stated here so it is never decided by glob
+# or traversal order (#2624).
+_TIER_CANONICAL = 0
+_TIER_PRESERVED = 1
+
+
+def _run_record_sources(project_root: Path) -> list[tuple[Path, int]]:
+    """Return ``(path, tier)`` for every per-run JSON record on disk."""
+    sources: list[tuple[Path, int]] = []
     canonical_runs = runs_dir(project_root)
     if canonical_runs.exists():
-        paths.extend(sorted(canonical_runs.glob("*.json")))
+        sources.extend((path, _TIER_CANONICAL) for path in sorted(canonical_runs.glob("*.json")))
     for preserved_root in _preserved_story_run_roots(project_root):
         preserved_runs = preserved_root.joinpath(*RUNS_RELPATH)
         if preserved_runs.exists():
-            paths.extend(sorted(preserved_runs.glob("*.json")))
-    return paths
+            sources.extend(
+                (path, _TIER_PRESERVED) for path in sorted(preserved_runs.glob("*.json"))
+            )
+    return sources
+
+
+def _run_record_paths(project_root: Path) -> list[Path]:
+    return [path for path, _tier in _run_record_sources(project_root)]
 
 
 def secrets_env_path(project_root: Path) -> Path:
@@ -2854,6 +2871,20 @@ def _migrate_v47_to_v48(record: dict) -> dict:
     return record
 
 
+def _migrate_v48_to_v49(record: dict) -> dict:
+    """Advance v48 records across ``knowledge_summary.evidence_digest`` (#2520).
+
+    v49 records the digest of the citable evidence a knowledge-summary outcome
+    was reached from, which is what tells a repeated terminal write for one
+    unchanged run apart from a re-entry carrying new evidence. A v48 record
+    predates the digest, so it carries none — and an outcome with no digest is
+    correctly treated as unable to vouch for any particular evidence state.
+    Leaving the key absent says exactly that; synthesising one would assert a
+    match the old record never made.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2910,6 +2941,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     45: _migrate_v45_to_v46,
     46: _migrate_v46_to_v47,
     47: _migrate_v47_to_v48,
+    48: _migrate_v48_to_v49,
 }
 
 
@@ -3189,7 +3221,15 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     summary = RebuildSummary()
     env_file = secrets_env_path(project_root)
     env_file_arg: Path | None = env_file if env_file.exists() else None
-    for run_file in _run_record_paths(project_root):
+    # Reconcile by run_id *before* any upsert. A run whose record exists in both
+    # the canonical and the preserved tree is one run, and which copy keys the
+    # substrate is decided by the explicit source tier — not by whichever file
+    # the walk happened to visit last, which is how the canonical path stopped
+    # matching its own indexed row (#2624). Note this is rebuild-time
+    # reconciliation only: ``upsert_run_record``'s incremental ON CONFLICT
+    # behaviour is unchanged.
+    winners: dict[str, tuple[int, Path, Path, dict]] = {}
+    for run_file, tier in _run_record_sources(project_root):
         summary.runs_seen += 1
         relpath = run_file.relative_to(project_root)
         try:
@@ -3203,6 +3243,18 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
             summary.failed += 1
             summary.failures.append(f"{relpath}: missing run_id")
             continue
+        run_id = str(record["run_id"])
+        candidate = (tier, relpath, run_file, record)
+        incumbent = winners.get(run_id)
+        # Deterministic tie-break inside a tier by relative path, so two
+        # preserved copies of one run resolve the same way on every rebuild.
+        if incumbent is None or (candidate[0], str(candidate[1])) < (
+            incumbent[0],
+            str(incumbent[1]),
+        ):
+            winners[run_id] = candidate
+
+    for _run_id, (_tier, relpath, run_file, record) in sorted(winners.items()):
         try:
             stat = run_file.stat()
             upsert_run_record(

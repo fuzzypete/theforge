@@ -659,6 +659,34 @@ def _without_negative_landing_claim(incoming: dict, existing: dict | None) -> di
     return safe
 
 
+def _is_empty_value(value: object) -> bool:
+    """Report whether *value* says nothing — absent, null, or an empty container."""
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _merge_canonical_record(existing: dict, incoming: dict) -> dict:
+    """Fold *incoming* into *existing* without losing what *existing* already knew.
+
+    A rewrite of the canonical per-run record is a later statement about the
+    same run, not a replacement run. A later write that happens to carry less —
+    a key absent, null, or emptied — is not authoritative over the fuller record
+    already on disk merely by being later (#2519), so an empty incoming value
+    leaves a non-empty existing value in place. Concrete incoming values still
+    win, and keys the existing record never had are added.
+
+    The landing fields are deliberately exempt: a negative landing claim is
+    resolved separately by :func:`_without_negative_landing_claim`, which runs on
+    the merged payload so demotion to "a landing was owed" still works.
+    """
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key not in _LANDING_CLAIM_FIELDS and _is_empty_value(value):
+            if not _is_empty_value(merged.get(key)):
+                continue
+        merged[key] = value
+    return merged
+
+
 def _write_native_story_record(
     project_root: Path,
     audit_data: dict,
@@ -708,6 +736,10 @@ def _write_native_story_record(
         existing = _read_canonical_run_file(project_root, run_file)
         if existing is None or force_replace:
             # Absent, unreadable, not a mapping, or a deliberate replacement.
+            # A replacement over an existing record merges rather than clobbers,
+            # so a thinner later payload cannot blank data the record carries.
+            if existing is not None:
+                redacted = _merge_canonical_record(existing, redacted)
             redacted = _without_negative_landing_claim(redacted, existing)
             _replace_canonical_run_file(run_file, redacted)
             persisted = redacted

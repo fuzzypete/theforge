@@ -546,6 +546,11 @@ def _print_entry_notes(entry: dict) -> None:
         note = str(consistency.get("note") or "").strip()
         if note:
             print(f"       inconsistent: {note}")
+    ownership = entry.get("artifact_ownership")
+    if isinstance(ownership, dict) and ownership.get("resolved") is False:
+        note = str(ownership.get("note") or "").strip()
+        if note:
+            print(f"       ownership:    {note}")
 
 
 def _print_partial_value(non_done: list[dict], rca_stories: dict) -> None:
