@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from theforge.agent_types import FAILURE_KILLED_BEFORE_OUTPUT
+from theforge.agent_types import FAILURE_ENDED_WITHOUT_RESULT, FAILURE_KILLED_BEFORE_OUTPUT
 
 from .trust_status import CHECK_FAIL, make_trust_check
 
@@ -281,6 +281,15 @@ def produced_model_output(result: Any) -> bool:
     extra no-judgment heuristic is a failed non-zero process result that billed
     exactly $0.00 and carries no runner/provider/model artifacts at all: that
     shape is a runner/process failure, not a silent model judgment.
+
+    Telemetry outranks text (#2652). Consumed tokens, a billed cost, or a
+    model-execution ``failure_code`` are records of what the invocation *did*;
+    the output text is only what it happened to leave behind. An invocation
+    whose stream carried no agent text still ran the model when its own usage
+    says so, so those checks are asked before the empty-text, startup and
+    no-output-marker answers rather than after them — deciding this from the
+    text discards the distinction between a call that never reached the model
+    and one that reached it and failed.
     """
     if result is None:
         return False
@@ -294,6 +303,11 @@ def produced_model_output(result: Any) -> bool:
         return True
     if getattr(result, "dev_handoff", None):
         return True
+    failure_code = str(getattr(result, "failure_code", "") or "").lower()
+    if _has_model_usage_evidence(result):
+        return True
+    if failure_code in _MODEL_EXECUTION_FAILURE_CODES:
+        return True
     text = _text_of(result)
     if not text:
         return False
@@ -301,11 +315,6 @@ def produced_model_output(result: Any) -> bool:
         return False
     if _matches(text, _NO_OUTPUT_MARKERS):
         return False
-    if _has_model_usage_evidence(result):
-        return True
-    failure_code = str(getattr(result, "failure_code", "") or "").lower()
-    if failure_code in _MODEL_EXECUTION_FAILURE_CODES:
-        return True
     if _looks_like_auth_failure(text) or _looks_like_transport_failure(text):
         return False
     if _has_runner_artifacts(result):
@@ -396,6 +405,26 @@ class AgentInvocationFailure:
         return " ".join(parts)
 
 
+def _is_textless_no_result_ending(result: Any) -> bool:
+    """True when the agent ended without a result event and said nothing at all.
+
+    Salvaged content (agent text, partial output, a tool trace, structured data,
+    a parsed handoff) is a report about the story even when the result event
+    never arrived, so any of it disqualifies this shape.
+    """
+    if str(getattr(result, "failure_code", "") or "").lower() != FAILURE_ENDED_WITHOUT_RESULT:
+        return False
+    if carries_agent_text(getattr(result, "output", None)):
+        return False
+    if str(getattr(result, "partial_output", "") or "").strip():
+        return False
+    if getattr(result, "tool_trace", ()):
+        return False
+    if getattr(result, "structured_data", None):
+        return False
+    return not getattr(result, "dev_handoff", None)
+
+
 def classify_agent_failure(
     result: Any,
     *,
@@ -408,8 +437,15 @@ def classify_agent_failure(
     Returns ``None`` whenever the invocation produced model output — including
     a failed invocation that still left partial text or a tool trace behind.
     Only a genuine "no model answered" event yields a record.
+
+    The one invocation that produced model output and is still recorded is a
+    text-less ended-without-result ending (#2652): its model executed, which is
+    why :func:`produced_model_output` now says True, but it reported nothing at
+    all about the story. "A model ran" and "a judgment exists to act on" are
+    different questions, and the run record has to keep answering the second
+    one for this shape or a no-result ending silently becomes a story verdict.
     """
-    if produced_model_output(result):
+    if produced_model_output(result) and not _is_textless_no_result_ending(result):
         return None
     _detail = detail
     if _detail is None:
