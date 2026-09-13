@@ -6545,6 +6545,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     if synthetic_edges:
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
     augmented_tasks = inject_synthetic_deps(normalized.tasks, synthetic_edges)
+    augmented_tasks_by_slug = {task.slug: task for task in augmented_tasks}
     blocked_slugs = dict(normalized.blocked)
     if _ctx.run_id:
         from .state_writer import update_state_phase as _update_state_phase
@@ -7142,7 +7143,26 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _display_key = story_title(
                 getattr(_task, "name", None), canonical_ref=_canonical_ref, slug=_slug
             )
-            _blocked_by = list(blocked_slugs.get(_slug, []))
+            # Project the same augmented task graph that gates dispatch into
+            # live state. Synthetic collision edges are soft DAG dependencies,
+            # but while their parent is unfinished they are still a concrete
+            # reason this story cannot run and must be visible to operators.
+            # Intake-terminal stories were deliberately removed from the
+            # runnable/augmented plan, but still need a live-state row. They
+            # have no scheduling edge left to project, so retain their source
+            # task for the row without querying the DAG for a missing node.
+            _scheduled_task = augmented_tasks_by_slug.get(_slug, _task)
+            _depends_on = list(
+                dict.fromkeys((*_scheduled_task.depends_on, *_scheduled_task.collision_deps))
+            )
+            _unmet_dependencies = (
+                set(_sprint_state.dag.unmet_deps(_slug))
+                if _slug in augmented_tasks_by_slug
+                else set()
+            )
+            _blocked_by = list(blocked_slugs.get(_slug, [])) or [
+                _dependency for _dependency in _depends_on if _dependency in _unmet_dependencies
+            ]
             _drop_reason = _dropped_slugs.get(_slug)
             # reconcile (resume or re-exec): surface the merged/skip triage state
             # in the initial live status file so `forge sprint-status` shows a
@@ -7263,6 +7283,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "batch_group": batch_group_by_slug.get(_slug),
                     "blocked_by": _blocked_by,
+                    "depends_on": _depends_on,
                     "complexity": None,
                     "detail": _detail,
                 }

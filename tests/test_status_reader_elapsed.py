@@ -120,6 +120,14 @@ def test_completed_skipped_story_with_dependencies_keeps_waiting_detail() -> Non
     assert detail == "depends on #1"
 
 
+def test_waiting_detail_keeps_in_flight_reason_outside_dependency_clause() -> None:
+    from theforge.sprint.status_reader import _waiting_detail
+
+    assert _waiting_detail(["story-a", "in flight: in-flight-unresolved"]) == (
+        "depends on story-a; in flight: in-flight-unresolved"
+    )
+
+
 def test_live_skipped_story_uses_reason_detail() -> None:
     from theforge.sprint.status_reader import _stage_and_detail_from_live_story
 

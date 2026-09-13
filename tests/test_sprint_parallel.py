@@ -491,6 +491,58 @@ class TestParallelIndependentStories:
 
 
 class TestParallelDependencyGating:
+    def test_live_status_names_synthetic_collision_gater(self, tmp_path: Path) -> None:
+        """A collision-soft-edge wait is persisted as its actual DAG blocker."""
+        from theforge.sprint.status_reader import read_live_status
+
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+        observed: dict[str, object] = {}
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            if task.slug != "story-a":
+                return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+            entries = read_live_status("run-synthetic-edge", tmp_path)
+            assert entries is not None
+            story_b = next(entry for entry in entries if entry.slug == "story-b")
+            state = yaml.safe_load(
+                (tmp_path / ".forge" / "runs" / "run-synthetic-edge.state").read_text()
+            )
+            state_story_b = next(story for story in state["stories"] if story["slug"] == "story-b")
+            observed.update(
+                status=story_b.status,
+                stage=story_b.stage,
+                detail=story_b.detail,
+                blocked_by=state_story_b["blocked_by"],
+                depends_on=state_story_b["depends_on"],
+            )
+            return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        with (
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-b": ["story-a"]},
+            ),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+        ):
+            run_sprint_ctx(config, manifest_path, run_id="run-synthetic-edge")
+
+        assert observed == {
+            "status": "blocked",
+            "stage": "dependency",
+            "detail": "depends on story-a",
+            "blocked_by": ["story-a"],
+            "depends_on": ["story-a"],
+        }
+
     def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:
         """Story B is skipped when A's landing fails — landing failure is now fatal."""
         _make_spec_file(tmp_path, "Story A", "story-a")
