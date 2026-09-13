@@ -664,26 +664,61 @@ def _is_empty_value(value: object) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+# The only top-level fields a later write may blank. Everything else is merged
+# under the "a later write that knows less is not authoritative" rule below, so
+# this list is where a deliberate reset goes: a field named here is replaced by
+# whatever the later write carries, including ``None``. Today it holds exactly
+# the landing claim, whose clearing is a real transition the run makes —
+# :func:`_without_negative_landing_claim` then resolves what the record is
+# allowed to say about it. A future field that must be clearable belongs here
+# rather than in a special case at the call site.
+_MERGE_CLEARABLE_FIELDS = _LANDING_CLAIM_FIELDS
+
+
+def _merge_value(existing_value: object, incoming_value: object) -> object:
+    """Reconcile one field's existing and incoming values, keeping the fuller.
+
+    Mappings merge key-by-key all the way down, so a later payload that carries
+    a *partial* ``outcome`` or ``changed_files`` block updates the keys it names
+    and leaves the rest of the block standing. Lists are taken whole — they have
+    no key to merge on — but only when the later one is not shorter than what is
+    stored: within one run these collections (reviews, findings, changed files)
+    only ever grow, so a shorter later list is a thinner payload rather than a
+    retraction. Scalars follow the same rule at their own level: a concrete
+    incoming value wins, an empty one leaves a non-empty existing value alone.
+    """
+    if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
+        merged = dict(existing_value)
+        for key, value in incoming_value.items():
+            merged[key] = _merge_value(merged[key], value) if key in merged else value
+        return merged
+    if isinstance(existing_value, list) and isinstance(incoming_value, list):
+        return incoming_value if len(incoming_value) >= len(existing_value) else existing_value
+    if _is_empty_value(incoming_value) and not _is_empty_value(existing_value):
+        return existing_value
+    return incoming_value
+
+
 def _merge_canonical_record(existing: dict, incoming: dict) -> dict:
     """Fold *incoming* into *existing* without losing what *existing* already knew.
 
     A rewrite of the canonical per-run record is a later statement about the
     same run, not a replacement run. A later write that happens to carry less —
-    a key absent, null, or emptied — is not authoritative over the fuller record
-    already on disk merely by being later (#2519), so an empty incoming value
-    leaves a non-empty existing value in place. Concrete incoming values still
-    win, and keys the existing record never had are added.
+    a key absent, null, emptied, or a nested block naming only some of its keys —
+    is not authoritative over the fuller record already on disk merely by being
+    later (#2519). Concrete incoming values still win, and keys the existing
+    record never had are added.
 
-    The landing fields are deliberately exempt: a negative landing claim is
-    resolved separately by :func:`_without_negative_landing_claim`, which runs on
-    the merged payload so demotion to "a landing was owed" still works.
+    ``_MERGE_CLEARABLE_FIELDS`` is the stated exception, so a negative landing
+    claim still reaches :func:`_without_negative_landing_claim`, which runs on
+    the merged payload and decides what the record may say about it.
     """
     merged = dict(existing)
     for key, value in incoming.items():
-        if key not in _LANDING_CLAIM_FIELDS and _is_empty_value(value):
-            if not _is_empty_value(merged.get(key)):
-                continue
-        merged[key] = value
+        if key in _MERGE_CLEARABLE_FIELDS or key not in merged:
+            merged[key] = value
+            continue
+        merged[key] = _merge_value(merged[key], value)
     return merged
 
 

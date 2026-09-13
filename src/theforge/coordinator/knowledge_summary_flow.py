@@ -109,11 +109,15 @@ class RunSummaryOutcome:
     reason: str | None = None
     path: "Path | None" = None
     index_rebuild: KnowledgeIndexMaintenanceOutcome | None = None
-    # Digest of the citable evidence this outcome was reached from. It is what
-    # tells a repeated terminal write for an unchanged run apart from a genuine
-    # re-entry carrying new evidence, so the first reuses the outcome and the
-    # second is allowed a fresh attempt (#2520).
-    evidence_digest: str | None = None
+    # Digest of the exact generation input this outcome was reached from — the
+    # rendered summary prompt, which is the whole of what a dispatch would see.
+    # It is what tells a repeated terminal write for an unchanged run apart from
+    # a genuine re-entry carrying different material, so the first reuses the
+    # outcome and the second is allowed a fresh attempt (#2520). ``None`` means
+    # "this outcome cannot say what it was generated from" — a pre-digest record
+    # — and is never backfilled from a later payload, which would assert a match
+    # the outcome never made.
+    generation_input_digest: str | None = None
 
     def to_audit_dict(self) -> dict:
         payload: dict[str, object] = {
@@ -121,8 +125,8 @@ class RunSummaryOutcome:
             "attempted": self.attempted,
             "written": self.written,
         }
-        if self.evidence_digest:
-            payload["evidence_digest"] = self.evidence_digest
+        if self.generation_input_digest:
+            payload["generation_input_digest"] = self.generation_input_digest
         if self.reason:
             payload["reason"] = self.reason
         if self.path is not None:
@@ -158,7 +162,7 @@ class RunSummaryOutcome:
             payload.get("index_rebuild")
         )
 
-        digest = payload.get("evidence_digest")
+        digest = payload.get("generation_input_digest")
         if not isinstance(digest, str) or not digest:
             digest = None
 
@@ -169,36 +173,48 @@ class RunSummaryOutcome:
             reason=reason,
             path=path,
             index_rebuild=index_rebuild,
-            evidence_digest=digest,
+            generation_input_digest=digest,
         )
 
 
-def _evidence_digest(audit: dict) -> str:
-    """Return a stable digest of the citable evidence this run offers.
+def _generation_input_digest(audit: dict) -> str:
+    """Return a stable digest of exactly what a dispatch for this run would see.
 
-    Generation reads the run through its anchors, so the anchors are the whole
-    of the eligibility-relevant evidence. Two terminal writes of the same
-    unchanged run digest the same; a run re-entered after doing more work does
-    not.
+    The digest is taken over the rendered prompt rather than over the anchor
+    labels alone. The anchors are only the *citable* references; the prompt also
+    carries the story text, the plan steps, the finding descriptions, the review
+    cycles and the run signals — material that can change substantively while
+    every id, path and ref stays identical. Digesting the prompt is therefore
+    the honest question: is a second dispatch the same dispatch?
+
+    ``build_run_summary_prompt`` is a pure function of the audit and its
+    anchors, and the run's own cost accounting is closed before a summary is
+    generated (the summary's spend lands on the artifact, not in the run
+    ledger), so the sprint's repeated terminal writes for one unchanged story
+    render byte-identical prompts.
     """
-    anchors = extract_anchors(audit)
-    material = json.dumps(
-        {
-            "finding_ids": sorted(anchors.finding_ids),
-            "plan_step_ids": sorted(anchors.plan_step_ids),
-            "review_cycles": sorted(anchors.review_cycles),
-            "file_paths": sorted(anchors.file_paths),
-            "diff_refs": sorted(anchors.diff_refs),
-        },
-        sort_keys=True,
-    )
+    material = build_run_summary_prompt(audit, extract_anchors(audit))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _record_summary_outcome(audit: dict, outcome: RunSummaryOutcome) -> RunSummaryOutcome:
-    """Persist the generation outcome onto the audit payload in place."""
-    if outcome.evidence_digest is None:
-        outcome = replace(outcome, evidence_digest=_evidence_digest(audit))
+    """Persist an outcome *this call produced* onto the audit payload in place.
+
+    Only outcomes reached by this call come through here, and they are stamped
+    with the generation input they were reached from. A previously-recorded
+    outcome being carried onto a fresh audit payload goes through
+    :func:`_echo_existing_outcome` instead, so a pre-digest record is never
+    backfilled with today's digest — that would have it assert it matched a
+    generation input it was never compared against.
+    """
+    if outcome.generation_input_digest is None:
+        outcome = replace(outcome, generation_input_digest=_generation_input_digest(audit))
+    audit["knowledge_summary"] = outcome.to_audit_dict()
+    return outcome
+
+
+def _echo_existing_outcome(audit: dict, outcome: RunSummaryOutcome) -> RunSummaryOutcome:
+    """Carry a previously-recorded outcome onto this audit payload, verbatim."""
     audit["knowledge_summary"] = outcome.to_audit_dict()
     return outcome
 
@@ -227,22 +243,22 @@ def _existing_summary_outcome(
     return RunSummaryOutcome.from_audit_dict(payload.get("knowledge_summary"))
 
 
-def _reuse_existing_outcome(outcome: RunSummaryOutcome | None, evidence_digest: str) -> bool:
-    """Report whether a durable prior outcome should block redispatch.
+def _reuse_existing_outcome(outcome: RunSummaryOutcome | None, digest: str) -> bool:
+    """Report whether a durable prior outcome describes *this* dispatch.
 
-    A prior outcome blocks only a *repeat* of the write it was recorded for —
-    one sprint calls the story-audit writer several times for the same finished
-    story, and each of those must not re-bill the same generation. It does not
-    block a run re-entered under the same run_id with different evidence: that
-    is a fresh eligibility state and gets a fresh attempt (#2520). Outcomes
-    recorded before the digest existed carry none, and are treated as the
-    unknown-provenance case they are — eligibility decides.
+    A prior outcome stands in for a fresh attempt only when it was reached from
+    the same generation input — which is what one sprint's repeated terminal
+    writes for a finished story are, and what a run re-entered under the same
+    run_id with different material is not (#2520). An outcome recorded before
+    the digest existed carries ``None`` and therefore never matches; it cannot
+    say what it was generated from, and the caller resolves that case against
+    whether a summary artifact actually exists rather than by assuming.
     """
-    if outcome is None:
+    if outcome is None or outcome.generation_input_digest is None:
         return False
     if not (outcome.attempted or outcome.written):
         return False
-    return outcome.evidence_digest == evidence_digest
+    return outcome.generation_input_digest == digest
 
 
 def _not_attempted_reason(
@@ -372,15 +388,27 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
     return (base_profile, None)
 
 
-def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
-    """Report whether this terminal run is one that gets summarised."""
+def _is_eligible_run(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
+    """Report whether this terminal run is one that gets summarised at all.
+
+    Deliberately does *not* consult the persisted summary artifact. Whether a
+    summary already exists answers "has this generation input been summarised?",
+    which is the digest comparison's question, not "is this the kind of run we
+    summarise?" — conflating them is what let an artifact written from earlier
+    evidence permanently disqualify a run that re-entered and did more (#2520).
+    """
     if not getattr(getattr(config, "knowledge", None), "run_summaries", False):
         return False
     if not result.success or result.phase.name != "DONE":
         return False
-    if not run_id:
-        return False
-    return not summary_exists(config.project_root, run_id)
+    return bool(run_id)
+
+
+def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
+    """Report whether this terminal run is one that gets summarised."""
+    return _is_eligible_run(config, result, run_id) and not summary_exists(
+        config.project_root, run_id
+    )
 
 
 def _refresh_knowledge_index(project_root: Path) -> KnowledgeIndexMaintenanceOutcome:
@@ -406,14 +434,15 @@ def maybe_generate_run_summary(
     try:
         run_id = str(audit.get("run_id") or "")
         existing = _existing_summary_outcome(config, run_id, audit)
-        # Eligibility for the run in front of us is consulted first. A durable
-        # prior outcome is only allowed to stand in for a fresh evaluation once
-        # the run is otherwise eligible, and then only when it describes the
-        # same evidence — otherwise a stale attempted/written record for this
-        # run_id silently blocks a re-entered run forever (#2520).
-        if not _should_generate(config, result, run_id):
+        # Eligibility for the run in front of us is consulted first, and it is
+        # eligibility only — not "has a summary ever been written for this
+        # run_id". A durable prior outcome stands in for a fresh attempt only
+        # once the run is eligible AND the outcome was reached from this same
+        # generation input; otherwise a record made from earlier material
+        # silently blocks a re-entered run forever (#2520).
+        if not _is_eligible_run(config, result, run_id):
             if existing is not None:
-                return _record_summary_outcome(audit, existing)
+                return _echo_existing_outcome(audit, existing)
             return _record_summary_outcome(
                 audit,
                 RunSummaryOutcome(
@@ -424,10 +453,33 @@ def maybe_generate_run_summary(
                 ),
             )
 
-        if _reuse_existing_outcome(existing, _evidence_digest(audit)):
-            # Same run, same evidence, already attempted: this is one of the
-            # sprint's repeated terminal writes, not a new attempt.
-            return _record_summary_outcome(audit, existing)
+        digest = _generation_input_digest(audit)
+        if _reuse_existing_outcome(existing, digest):
+            # Same run, same generation input, already attempted: this is one of
+            # the sprint's repeated terminal writes, not a new attempt.
+            return _echo_existing_outcome(audit, existing)
+
+        if summary_exists(config.project_root, run_id) and (
+            existing is None or existing.generation_input_digest is None
+        ):
+            # A summary artifact is on disk and nothing durable records what it
+            # was generated from — a pre-digest record, or one whose outcome was
+            # never mirrored. There is no change to detect, so re-billing on
+            # every subsequent write would be the old duplicate-dispatch bug in
+            # a new place. Report the artifact instead — and echo the prior
+            # outcome untouched rather than backfilling it with a digest it
+            # never earned.
+            if existing is not None:
+                return _echo_existing_outcome(audit, existing)
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="not_attempted",
+                    attempted=False,
+                    written=False,
+                    reason=_not_attempted_reason(config, result, run_id),
+                ),
+            )
 
         anchors = extract_anchors(audit)
         if anchors.is_empty():

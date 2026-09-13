@@ -2872,15 +2872,15 @@ def _migrate_v47_to_v48(record: dict) -> dict:
 
 
 def _migrate_v48_to_v49(record: dict) -> dict:
-    """Advance v48 records across ``knowledge_summary.evidence_digest`` (#2520).
+    """Advance v48 records across ``knowledge_summary.generation_input_digest`` (#2520).
 
-    v49 records the digest of the citable evidence a knowledge-summary outcome
-    was reached from, which is what tells a repeated terminal write for one
-    unchanged run apart from a re-entry carrying new evidence. A v48 record
-    predates the digest, so it carries none — and an outcome with no digest is
-    correctly treated as unable to vouch for any particular evidence state.
-    Leaving the key absent says exactly that; synthesising one would assert a
-    match the old record never made.
+    v49 records the digest of the generation input a knowledge-summary outcome
+    was reached from — the rendered summary prompt — which is what tells a
+    repeated terminal write for one unchanged run apart from a re-entry carrying
+    different material. A v48 record predates the digest, so it carries none,
+    and an outcome with no digest is correctly treated as unable to vouch for
+    any particular input. Leaving the key absent says exactly that; synthesising
+    one would assert a match the old record never made.
     """
     return record
 

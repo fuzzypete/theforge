@@ -1278,7 +1278,7 @@
   "knowledge_receipts.unaddressed": "list",
   "knowledge_summary": "dict",
   "knowledge_summary.attempted": "bool",
-  "knowledge_summary.evidence_digest": "str",
+  "knowledge_summary.generation_input_digest": "str",
   "knowledge_summary.reason": "str",
   "knowledge_summary.status": "str",
   "knowledge_summary.written": "bool",

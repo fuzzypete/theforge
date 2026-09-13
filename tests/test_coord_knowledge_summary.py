@@ -1165,3 +1165,127 @@ class TestRunIdentityReentry:
 
         assert outcome.attempted is True
         assert outcome.status != "not_attempted"
+
+
+class TestWrittenSummaryReentry:
+    """A written artifact is not a permanent disqualification (#2520).
+
+    ``summary_exists`` answers "has this generation input been summarised?",
+    which only the recorded digest can actually decide. Treating it as "is this
+    the kind of run we summarise?" is what let an artifact written from earlier
+    material block a run that re-entered and did more.
+    """
+
+    @staticmethod
+    def _persist_outcome(project_root: Path, audit: dict) -> None:
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    def test_a_written_summary_does_not_block_re_entry_with_new_material(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), first_audit
+        )
+        assert first.status == "written"
+        assert summary_path(tmp_path, RUN_ID).exists()
+        self._persist_outcome(tmp_path, first_audit)
+
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        reentered["iterations"]["review_cycles_total"] = 2
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert len(calls) == 2
+        assert second.status == "written"
+
+    def test_prompt_material_changing_without_new_anchors_still_re_attempts(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """Same finding ids, cycles, paths and refs — different finding prose."""
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        reentered = _audit()
+        reentered["finding_registry"][0]["description"] = (
+            "the retry path drops the read timeout when the connect timeout fires first"
+        )
+        assert (
+            knowledge_summary_flow.extract_anchors(reentered).finding_ids
+            == knowledge_summary_flow.extract_anchors(first_audit).finding_ids
+        )
+
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), reentered)
+
+        assert len(calls) == 2
+
+    def test_an_unchanged_run_with_a_written_summary_is_still_not_billed_again(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert second.written is True
+
+    def test_a_pre_digest_outcome_is_never_backfilled_by_an_ineligible_pass(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The legacy (v48) record keeps its unknown digest through an ineligible write.
+
+        Stamping it during the ineligible pass would have it claim it matched
+        today's generation input, which it was never compared against — and the
+        next eligible pass would then reuse it instead of re-attempting.
+        """
+        # A v48-shaped durable outcome: attempted, no digest recorded.
+        path = tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "run_id": RUN_ID,
+                    "knowledge_summary": {
+                        "status": "rejected",
+                        "attempted": True,
+                        "written": False,
+                        "reason": "legacy",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ineligible_audit = _audit()
+        echoed = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), ineligible_audit
+        )
+        assert echoed.attempted is True
+        assert "generation_input_digest" not in ineligible_audit["knowledge_summary"]
+        assert calls == []
+
+        # Eligibility restored: the undigested outcome must not suppress it.
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert outcome.status == "written"

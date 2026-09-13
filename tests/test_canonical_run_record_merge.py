@@ -85,3 +85,98 @@ def test_a_concrete_later_value_still_wins(tmp_path: Path) -> None:
     _write_native_story_record(tmp_path, later, force_replace=True)
 
     assert _record(tmp_path)["last_model"] == "claude-sonnet-5"
+
+
+def test_a_partial_nested_block_updates_its_keys_without_dropping_the_rest(
+    tmp_path: Path,
+) -> None:
+    """A later payload naming some of `outcome`'s keys must not shed the others."""
+    _write_native_story_record(tmp_path, _full_audit())
+
+    later = {
+        "run_id": "run-1",
+        # Non-empty, but only part of what the stored block carries.
+        "outcome": {"final_phase": "DONE", "landing_note": "queued"},
+        "changed_files": {"head_ref": "bbb222"},
+    }
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    record = _record(tmp_path)
+    assert record["outcome"] == {
+        "success": True,
+        "final_phase": "DONE",
+        "cost_usd": 4.25,
+        "landing_note": "queued",
+    }
+    assert record["changed_files"] == {
+        "files": [{"path": "src/client.py"}],
+        "head_ref": "bbb222",
+    }
+
+
+def test_nested_merging_goes_all_the_way_down(tmp_path: Path) -> None:
+    audit = dict(_full_audit())
+    audit["phases"] = {"dev": {"cost_usd": 3.0, "duration_s": 90.0, "outcome": "success"}}
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["phases"] = {"dev": {"cost_usd": 3.5}}
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert _record(tmp_path)["phases"]["dev"] == {
+        "cost_usd": 3.5,
+        "duration_s": 90.0,
+        "outcome": "success",
+    }
+
+
+def test_a_shorter_non_empty_list_does_not_truncate_the_stored_one(tmp_path: Path) -> None:
+    """Within one run these collections only grow, so a shorter later list is thinner."""
+    audit = dict(_full_audit())
+    audit["reviews"] = [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+        {"cycle": 2, "verdict": "APPROVE"},
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["reviews"] = [{"cycle": 1, "verdict": "REQUEST_CHANGES"}]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert _record(tmp_path)["reviews"] == [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+        {"cycle": 2, "verdict": "APPROVE"},
+    ]
+
+
+def test_a_longer_list_is_authoritative(tmp_path: Path) -> None:
+    _write_native_story_record(tmp_path, _full_audit())
+
+    later = dict(_full_audit())
+    later["reviews"] = [
+        {"cycle": 1, "verdict": "APPROVE"},
+        {"cycle": 2, "verdict": "APPROVE"},
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert len(_record(tmp_path)["reviews"]) == 2
+
+
+def test_the_landing_fields_remain_the_one_clearable_exception(tmp_path: Path) -> None:
+    """`_MERGE_CLEARABLE_FIELDS` is where a deliberate reset is allowed to live."""
+    from theforge.sprint.audit import _LANDING_CLAIM_FIELDS, _MERGE_CLEARABLE_FIELDS
+
+    assert _MERGE_CLEARABLE_FIELDS == _LANDING_CLAIM_FIELDS
+
+    audit = dict(_full_audit())
+    audit["landing_status"] = "landed"
+    audit["landing"] = {"outcome": "merged"}
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["landing_status"] = "landed"
+    later["landing"] = None
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    # Cleared, not preserved — the exemption is doing its job.
+    assert _record(tmp_path)["landing"] is None
