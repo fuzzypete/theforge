@@ -1,0 +1,105 @@
+schema_version: 2
+run_id: 45efb31c12fd
+authoritative_run_record: .forge/audits/runs/45efb31c12fd.json
+generated_at: '2026-09-13T23:09:26.744253+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.010392499999999999
+story:
+  slug: issue-2596
+  name: An audit publish that fails to commit reports an end state it never records,
+    so the file built to identify the failure mode still shows the previous run's
+    outcome
+  github_issue: 2596
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/controller-runbook.md
+- src/theforge/sprint/audit_publish.py
+- tests/test_sprint_audit_publish.py
+what_changed:
+  description: The run aligned audit-publish failure reporting with durable state
+    by recording the commit_failed terminal state on commit-step failures and by removing
+    a misleading log assertion that had claimed the state file was recorded when it
+    was not. It also updated the controller runbook and related verification to cover
+    the commit_failed outcome.
+  approach: The change handled the terminal-state contract at the failure sites inside
+    audit publish, then tightened surrounding operator documentation and regression
+    checks so the emitted diagnostics, persisted state, and documented interpretation
+    matched across commit-step failure paths.
+  files_modified: *id002
+what_was_learned:
+- claim: When a diagnostic artifact is used to distinguish terminal failure modes,
+    review and verification need to treat operator documentation as part of the behavior
+    surface, not as ancillary text; otherwise a newly persisted state can still leave
+    readers without the mapping needed to interpret it.
+  evidence:
+  - type: review_finding
+    finding_id: ec2853ab8d7192f6
+    description: Review flagged that the runbook's audit-publish state table lacked
+      a commit_failed row even after the code began writing that value, showing that
+      persisting a state is insufficient if the operator-facing interpretation table
+      is not updated in parallel.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly notes that the prior documentation finding was
+      resolved, demonstrating that the review considered the runbook update necessary
+      to complete the behavioral fix rather than optional polish.
+  - type: file
+    path: docs/guides/controller-runbook.md
+    description: This was the documented source operators consult to infer publish
+      failure mode, so its inclusion in the final change set shows the failure contract
+      spans both persisted state and its documented interpretation.
+- claim: Regression checks for multi-part failure messages should preserve assertions
+    about the specific contextual payloads, not just the coarse error category, because
+    broad prefix-only checks can miss a loss of the location detail operators use
+    to diagnose which artifact operation failed.
+  evidence:
+  - type: review_finding
+    finding_id: 6bc3a83377ba306f
+    description: Review identified that rewriting the commit-failure test to assert
+      only an error-label prefix dropped verification of the artifact-directory path,
+      demonstrating that category-level assertions alone were too weak to protect
+      the diagnostic detail contract.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 records that the prior test-related finding was resolved,
+      showing the review loop treated restoration of message-detail verification as
+      required for confidence in the failure-path diagnostics.
+  - type: file
+    path: tests/test_sprint_audit_publish.py
+    description: The test file was where the weakened assertion surfaced, making it
+      the direct evidence that failure-path verification in this area depends on checking
+      both the state label and the path-specific context.
+learned_patterns:
+- diagnostic-contract-includes-runbook
+- failure-message-context-must-be-asserted
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly focused on the full diagnostic contract around failure paths:
+    persisted state, operator-facing documentation, and path-specific error text all
+    had to stay aligned.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 2.8476179999999998
+  dominant_difficulty: Keeping multiple diagnostic surfaces consistent across terminal
+    failure paths, so the recorded state, emitted log text, tests, and runbook all
+    described the same outcome.
