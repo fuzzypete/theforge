@@ -1,0 +1,64 @@
+schema_version: 2
+run_id: 7f2d4ca9a2f6
+authoritative_run_record: .forge/audits/runs/7f2d4ca9a2f6.json
+generated_at: '2026-09-13T23:24:27.059793+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00521125
+story:
+  slug: issue-1802
+  name: "bug: synthetic collision edges gate scheduling but are never persisted to\
+    \ state \u2014 collision-serialized stories show as bare waiting/PREFLIGHT with\
+    \ no reason"
+  github_issue: 1802
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/status_reader.py
+- tests/test_sprint_parallel.py
+- tests/test_status_reader_elapsed.py
+what_changed:
+  description: The run made synthetic scheduling edges visible in persisted sprint
+    state and in the status-reading path, so stories gated by collision- or serializer-injected
+    dependencies no longer appear as unexplained waiting/PREFLIGHT entries. It also
+    added regression coverage around parallel sprint behavior and elapsed/status reading
+    for these persisted blocking relationships.
+  approach: "The change aligned operator-facing state with the scheduler\u2019s augmented\
+    \ dependency graph by threading synthesized blockers into the state-writing and\
+    \ status-reading flow instead of relying only on author-declared dependency maps,\
+    \ then verified the behavior through targeted sprint and status-reader tests."
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- state-must-follow-augmented-dag
+- scheduler-status-source-alignment
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the fix as making synthetic scheduling constraints persist and
+    render coherently, with no further findings recorded.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.77336
+  dominant_difficulty: The scheduler and the operator status surface were driven from
+    different dependency representations, so the real gating graph and the persisted
+    visible state could diverge.
