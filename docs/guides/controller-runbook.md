@@ -740,6 +740,7 @@ of the failure modes you hit — the `state` field says which:
 | --- | --- | --- |
 | `published` | Commit reached `origin/<base>`. | none |
 | `clean` | Nothing was pending this run. | none |
+| `commit_failed` | Audit records could not be inspected, staged, or committed in the base-branch checkout. | inspect `detail`, correct the reported checkout or git failure, then rerun publish |
 | `local_only` | Publish deliberately skipped (`auto_push` off on a locally-landing run). | push `<base>` yourself before any run that diffs against `origin/<base>` |
 | `committed_unpublished` | The run died between the commit and the push. | fetch, rebase, push |
 | `branch_mismatch` | Publish refused because the project-root checkout was on a different branch than `<base>`. | check out `<base>` and rerun publish, or move the pending audit records off the unrelated branch first |

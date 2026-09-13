@@ -263,11 +263,17 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
             project_root,
         )
         if not ok_status:
-            raise StoryRunAuditPublishError(
+            message = (
                 f"Failed to inspect {_story_run_artifact_label(artifact_dir)} "
-                f"at {artifact_dir}: {status_out}",
-                state=AUDIT_PUBLISH_COMMIT_FAILED,
+                f"at {artifact_dir}: {status_out}"
             )
+            _record_audit_publish_state(
+                project_root,
+                base_branch,
+                AUDIT_PUBLISH_COMMIT_FAILED,
+                detail=message,
+            )
+            raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_COMMIT_FAILED)
         if status_out.strip():
             dirty_dirs.append(artifact_dir)
     if not dirty_dirs:
@@ -282,10 +288,14 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         artifact_list = ", ".join(
             f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
         )
-        raise StoryRunAuditPublishError(
-            f"Failed to stage {artifact_list}: {add_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
+        message = f"Failed to stage {artifact_list}: {add_out}"
+        _record_audit_publish_state(
+            project_root,
+            base_branch,
+            AUDIT_PUBLISH_COMMIT_FAILED,
+            detail=message,
         )
+        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_COMMIT_FAILED)
 
     commit_cmd = f'git commit -m "{_STORY_RUN_AUDIT_COMMIT_MESSAGE}" -- {quoted_dirty_dirs}'
     ok_commit, commit_out = _cu._run_shell(commit_cmd, project_root)
@@ -293,10 +303,14 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         artifact_list = ", ".join(
             f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
         )
-        raise StoryRunAuditPublishError(
-            f"Failed to commit {artifact_list}: {commit_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
+        message = f"Failed to commit {artifact_list}: {commit_out}"
+        _record_audit_publish_state(
+            project_root,
+            base_branch,
+            AUDIT_PUBLISH_COMMIT_FAILED,
+            detail=message,
         )
+        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_COMMIT_FAILED)
     _log("Committed canonical story run audit records to the base branch checkout.")
     # Written before the push so that a crash mid-publish is distinguishable
     # from a run that never reached this function at all.
@@ -674,11 +688,7 @@ def publish_story_run_audits(
         publish_story_run_artifacts_for_config(config, lands_locally=lands_locally)
     except RuntimeError as exc:
         end_state = getattr(exc, "state", None)
-        state_suffix = (
-            f" [state={end_state}; recorded in {_STORY_RUN_AUDIT_PUBLISH_STATE_PATH}]"
-            if end_state
-            else ""
-        )
+        state_suffix = f" [state={end_state}]" if end_state else ""
         _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}{state_suffix}")
         raise
 

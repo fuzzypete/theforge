@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: b485cafbc752
 authoritative_run_record: .forge/audits/runs/b485cafbc752.json
-generated_at: '2026-09-12T16:30:23.617623+00:00'
+generated_at: '2026-09-12T16:35:34.878599+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.008686250000000001
+  cost_usd: 0.01087625
 story:
   slug: issue-1759
   name: "Intake auto-fix loop drops a runnable story when a gate false-positive survives\
@@ -42,54 +42,75 @@ changed_files: &id002
 - tests/test_sprint_story_state.py
 - tests/test_sprint_surface_consistency.py
 what_changed:
-  description: The run separated intake remediation failures that survive rerun from
-    true dropped stories by routing them into a distinct intake operator-review outcome
-    and carrying that outcome through runner, state, RCA, audit, status-reading, and
-    CLI surfaces. It also corrected reporting so the new outcome is represented consistently
-    in summaries and status displays.
-  approach: The change introduced a dedicated terminal lane for surviving gate failures
-    in intake remediation, then threaded that state through canonical/legacy story
-    status handling and operator-facing outputs so downstream tooling treated it as
-    a separate non-failed review path rather than another drop variant.
+  description: The run separated intake remediation failures that survive their triggering
+    gate from confirmed drop outcomes, routing them into a distinct intake operator-review
+    terminal state instead of treating them as DROPPED_AFTER_FIX. It also updated
+    RCA, status-reading, audit, runner, and CLI surfaces so that this new intake outcome
+    is represented consistently across sprint reporting.
+  approach: The change introduced a new canonical story outcome for intake operator
+    review, threaded it through the intake/remediation and sprint state pipeline,
+    and then aligned downstream presentation and summary paths so the outcome is carried
+    end-to-end rather than collapsing back into generic failure handling.
   files_modified: *id002
 what_was_learned:
-- claim: When adding a new terminal story outcome, future runs need to verify every
-    presentation layer's width, label, and totals logic individually; canonical state
-    changes do not automatically keep CLI tables and fallback summary aggregation
-    consistent.
+- claim: When introducing a new canonical story outcome, future runs should verify
+    both per-story rendering and aggregate summary paths, because this codebase has
+    multiple fallback routes that can silently reclassify the new state differently
+    across surfaces.
+  evidence:
+  - type: review_finding
+    finding_id: 665ab0e000c4a707
+    description: Review found that when sprint summary generation lacked canonical
+      story_state, an INTAKE_OPERATOR_REVIEW row was still counted as failed even
+      though the story row showed a non-failed operator-review outcome, demonstrating
+      that aggregate fallback logic can diverge from row-level state handling.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: This file was part of the fix because summary-writing logic is one
+      of the places that derives status totals, showing that adding a new outcome
+      requires checking not only canonical state definitions but also audit-time aggregation
+      behavior.
+  - type: file
+    path: src/theforge/sprint/status_reader.py
+    description: This file was updated alongside audit and story state, showing that
+      status interpretation is distributed and that downstream readers may need explicit
+      handling to avoid collapsing a new outcome back into existing buckets.
+- claim: Future runs adding user-visible status labels should check fixed-width CLI
+    tables explicitly, because a semantically correct new state can still break operational
+    readability by overflowing established column widths.
   evidence:
   - type: review_finding
     finding_id: 370873fe213bfbc5
-    description: Review found that after introducing the new intake-operator-review
-      status, one CLI row emitted a value longer than the fixed STATUS column, shifting
-      every later column; this shows that adding an outcome requires explicit per-surface
-      formatting checks, not just state wiring.
-  - type: review_finding
-    finding_id: 665ab0e000c4a707
-    description: Review also found that when summary writing lacked canonical story_state,
-      an INTAKE_OPERATOR_REVIEW row was still counted as failed even though the row
-      itself showed a non-failed outcome; this demonstrates that fallback aggregation
-      paths can silently diverge from the primary state model unless checked separately.
+    description: Review caught that the status label for intake-operator-review exceeded
+      the STATUS column width and shifted every subsequent column, showing that adding
+      a longer outcome name can create presentation regressions even when the state
+      plumbing is otherwise correct.
+  - type: file
+    path: src/theforge/cli/sprint_status.py
+    description: This file was the surface where the overflow occurred, demonstrating
+      that CLI status rendering uses fixed-width formatting that must be validated
+      whenever a new status string is introduced.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 specifically called out that the prior status-column overflow
-      had been resolved with a fixed-width label, confirming that presentation-layer
-      conformance was a distinct problem discovered only through review.
+    description: Cycle 2 specifically notes that the prior status-column overflow
+      was resolved by rendering the new outcome with a fixed-width label, confirming
+      that display-width compatibility was a required verification dimension for this
+      kind of change.
 learned_patterns:
-- terminal-state-surface-audit
-- operator-review-not-failed
+- outcome-surface-consistency
+- fixed-width-status-labels
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - 'Review repeatedly surfaced downstream consistency issues from the new intake
-    operator-review outcome: display width in status tables and failed/non-failed
-    classification in summary fallback logic.'
+  - 'Review repeatedly surfaced downstream representation issues: the new intake operator-review
+    state needed explicit handling in both fixed-width CLI output and summary aggregation,
+    not just in canonical state plumbing.'
 complexity_signal:
   actual_iterations: 3
   review_cycles: 2
   plan_regenerations: false
   cost_usd: 12.310888799999999
-  dominant_difficulty: Propagating a new non-failed intake terminal state through
-    all downstream status, audit, and CLI representations without leaving mismatched
-    fallback behavior.
+  dominant_difficulty: Keeping a newly introduced intake terminal state semantically
+    consistent across remediation control flow, canonical story state, fallback status
+    readers, summaries, and CLI presentation.
