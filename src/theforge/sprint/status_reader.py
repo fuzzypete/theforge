@@ -458,10 +458,21 @@ def _classify_wait_reason(blocked_by: list[str]) -> str:
 def _waiting_detail(blocked_by: list[str]) -> str:
     if not blocked_by:
         return "waiting"
-    if all(item.startswith("issue-") for item in blocked_by):
-        refs = [f"#{item[len('issue-') :]}" for item in blocked_by]
-        return f"depends on {', '.join(refs)}"
-    return f"depends on {', '.join(blocked_by)}"
+    dependency_refs: list[str] = []
+    reasons: list[str] = []
+    for item in blocked_by:
+        # Scheduling edges carry bare slugs. Diagnostic wait reasons instead
+        # carry prose such as ``in flight: in-flight-unresolved`` and must not
+        # be presented as dependencies.
+        if item and not any(char.isspace() for char in item) and ":" not in item:
+            reference = f"#{item[len('issue-') :]}" if item.startswith("issue-") else item
+            dependency_refs.append(reference)
+        else:
+            reasons.append(item)
+
+    parts = [f"depends on {', '.join(dependency_refs)}"] if dependency_refs else []
+    parts.extend(reasons)
+    return "; ".join(parts)
 
 
 _FAILURE_OUTCOMES = {
