@@ -24,6 +24,7 @@ from theforge.eval.semantic_runner import (
     semantic_model_id,
 )
 from theforge.eval.semantic_storage import (
+    BASELINE_PROVENANCE_HUMAN,
     SEMANTIC_RAW_OUTPUT_TAIL_CHARS,
     FrozenSemanticBaseline,
     SemanticEvaluationRecord,
@@ -194,6 +195,40 @@ class TestSemanticRunner:
             )
 
         assert called is False
+
+    def test_review_can_freeze_empty_baseline_only_when_missing(self, tmp_path: Path) -> None:
+        calls = 0
+
+        def agent_runner(**kwargs):
+            nonlocal calls
+            calls += 1
+            return _agent_result('{"outcome":"NO_FINDINGS"}')
+
+        first = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+            freeze_empty_baseline_if_missing=True,
+        )
+        second = review_issue_semantically(
+            issue_number=1,
+            project_root=tmp_path,
+            secrets={},
+            profile=_profile(),
+            gh_issue_view=_issue_view(),
+            agent_runner=agent_runner,
+            freeze_empty_baseline_if_missing=True,
+        )
+
+        assert first.baseline.defect_ids == ()
+        assert first.baseline.provenance == BASELINE_PROVENANCE_HUMAN
+        assert first.baseline_created is True
+        assert second.baseline == first.baseline
+        assert second.baseline_created is False
+        assert calls == 1
 
     def test_review_records_success_and_stores_identity_components(self, tmp_path: Path) -> None:
         seen_profile: ModelProfile | None = None
