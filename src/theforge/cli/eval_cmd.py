@@ -269,6 +269,7 @@ def cmd_review_semantic(args: object) -> int:
                 getattr(args, "prompt_contract_version", None) or PROMPT_CONTRACT_VERSION
             ),
             baseline_defect_ids=baseline_input,
+            freeze_empty_baseline_if_missing=baseline_input is None,
         )
     except SemanticBaselineRequiredError as exc:
         print(
@@ -494,7 +495,7 @@ def register_parser(subparsers: object) -> None:
     review.add_argument(
         "--freeze-empty-baseline",
         action="store_true",
-        help="Freeze an empty human baseline before revealing evaluator output",
+        help="Explicitly freeze an empty human baseline before revealing evaluator output",
     )
     review.add_argument(
         "--config",

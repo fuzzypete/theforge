@@ -107,7 +107,38 @@ def test_cmd_review_semantic_prints_findings_and_uses_default_profile(capsys) ->
     assert "prompt_contract_version=semantic-review.v1" in out
     assert "Semantic defect" in out
     assert mock_review.call_args.kwargs["profile"] == config.preflight_profile
+    assert mock_review.call_args.kwargs["baseline_defect_ids"] == ("d1",)
+    assert mock_review.call_args.kwargs["freeze_empty_baseline_if_missing"] is False
     assert "use_cache" not in mock_review.call_args.kwargs
+
+
+def test_cmd_review_semantic_freezes_empty_baseline_when_none_exists(capsys) -> None:
+    config = SimpleNamespace(
+        preflight_profile=_profile(),
+        project_root=Path("/tmp/project"),
+        secrets={},
+    )
+    args = SimpleNamespace(
+        issue_number="2681",
+        profile=None,
+        prompt_contract_version=None,
+        baseline_defect_ids=(),
+        freeze_empty_baseline=False,
+        config=None,
+    )
+
+    with (
+        patch("theforge.cli.eval_cmd._load_checked_config", return_value=config),
+        patch(
+            "theforge.eval.semantic_runner.review_issue_semantically",
+            return_value=_review_result(),
+        ) as mock_review,
+    ):
+        rc = eval_cmd.cmd_review_semantic(args)
+
+    assert rc == 0
+    assert mock_review.call_args.kwargs["baseline_defect_ids"] is None
+    assert mock_review.call_args.kwargs["freeze_empty_baseline_if_missing"] is True
 
 
 def test_cmd_review_semantic_parse_failure_points_to_retained_raw_output(capsys) -> None:

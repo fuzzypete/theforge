@@ -261,6 +261,7 @@ def review_issue_semantically(
     profile: ModelProfile,
     prompt_contract_version: str = PROMPT_CONTRACT_VERSION,
     baseline_defect_ids: tuple[str, ...] | None = None,
+    freeze_empty_baseline_if_missing: bool = False,
     baseline_provenance: str = BASELINE_PROVENANCE_HUMAN,
     store: SemanticReviewStore | None = None,
     gh_issue_view: Callable[[int, Path], subprocess.CompletedProcess[str]] = _gh_issue_view,
@@ -282,10 +283,13 @@ def review_issue_semantically(
     baseline_created = False
     if baseline is None:
         if baseline_defect_ids is None:
-            raise SemanticBaselineRequiredError(
-                issue_ref=issue.issue_ref,
-                input_digest=evaluation_input.input_digest,
-            )
+            if freeze_empty_baseline_if_missing:
+                baseline_defect_ids = ()
+            else:
+                raise SemanticBaselineRequiredError(
+                    issue_ref=issue.issue_ref,
+                    input_digest=evaluation_input.input_digest,
+                )
         baseline, baseline_created = semantic_store.freeze_baseline(
             issue_ref=issue.issue_ref,
             input_digest=evaluation_input.input_digest,
