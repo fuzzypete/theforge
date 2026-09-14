@@ -3719,7 +3719,12 @@ def establish_sprint_config(
     snapshot: SprintConfigSnapshot | None = None
     if resolved_sprint_id:
         try:
-            snapshot = capture_or_load(config.project_root, resolved_sprint_id)
+            source_path = getattr(getattr(config, "provenance", None), "source_path", None)
+            snapshot = capture_or_load(
+                config.project_root,
+                resolved_sprint_id,
+                source_path=Path(source_path) if source_path else None,
+            )
         except Exception:  # pragma: no cover - snapshot capture remains best effort
             snapshot = None
     config_snapshot_mod.activate(snapshot)
@@ -3737,7 +3742,16 @@ def establish_sprint_config(
     if _snapshot_source_matches(config, snapshot):
         return config, resolved_sprint_id, snapshot
 
-    pinned = config_snapshot_mod.load_pinned_config(snapshot, project_root=config.project_root)
+    try:
+        pinned = config_snapshot_mod.load_pinned_config(snapshot, project_root=config.project_root)
+    except ValueError as exc:
+        # A stale pin is still this sprint's operative forge.yaml, so falling
+        # back to bootstrap config would silently change routing. Preserve the
+        # standard structural-config error and exit status instead.
+        from theforge.cli.shared import print_config_load_error  # noqa: PLC0415
+
+        print_config_load_error(snapshot.pinned_path, exc)
+        raise SystemExit(2) from exc
     return _preserve_runtime_config_overrides(config, pinned), resolved_sprint_id, snapshot
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -599,3 +600,91 @@ def test_establish_sprint_config_keeps_runtime_parallelism_on_resume(tmp_path: P
         operative.provenance.resolved_value_sources["sprint.max_parallel"] == VALUE_SOURCE_DERIVED
     )
     assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_establish_sprint_config_pins_the_explicit_config_source(tmp_path: Path) -> None:
+    """A named --config source wins over a same-directory forge.yaml."""
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    explicit_config = tmp_path / "release-forge.yaml"
+    explicit_config.write_text(_PINNED_CONFIG, encoding="utf-8")
+
+    operative, sprint_id, snapshot = establish_sprint_config(
+        load_config(explicit_config), "sprint-a"
+    )
+
+    assert sprint_id is not None
+    assert snapshot is not None and snapshot.pinned_path is not None
+    assert snapshot.source == str(explicit_config)
+    assert snapshot.pinned_path.read_text(encoding="utf-8") == _PINNED_CONFIG
+    assert operative.provenance.source_path == str(snapshot.pinned_path.resolve())
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_invalid_reused_pin_uses_the_structural_config_exit(capsys, tmp_path: Path) -> None:
+    """A pin that no longer validates fails like any other unreadable config."""
+    from theforge.config import load_config
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    first_config = load_config(tmp_path / "forge.yaml")
+    _operative, _sprint_id, snapshot = establish_sprint_config(first_config, "sprint-a")
+    assert snapshot is not None and snapshot.pinned_path is not None
+    snapshot.pinned_path.write_text("dev: []\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        establish_sprint_config(load_config(tmp_path / "forge.yaml"), "sprint-a")
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "forge.yaml is invalid" in err
+    assert "dev" in err
+
+
+def test_query_startup_warnings_use_the_snapshot_backed_config(tmp_path: Path) -> None:
+    """Credential warnings describe the same model set that query routing uses."""
+    from theforge.cli import sprint as sprint_cli
+    from theforge.config import load_config
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    bootstrap_config = load_config(tmp_path / "forge.yaml")
+
+    with (
+        patch(
+            "theforge.sprint.runner.establish_sprint_config",
+            return_value=(pinned_config, "sprint-a", None),
+        ),
+        patch("theforge.cli.sprint._print_startup_auth_warnings") as warn,
+        patch(
+            "theforge.sprint.query.fetch_issues_for_milestone",
+            side_effect=RuntimeError("offline"),
+        ),
+    ):
+        rc = sprint_cli._run_query_mode(
+            args=SimpleNamespace(name=None),
+            config=bootstrap_config,
+            config_path=tmp_path / "forge.yaml",
+            milestone="release-a",
+            label=None,
+            issues_arg=None,
+            budget_str="1",
+            dry_run=False,
+            max_parallel=None,
+            auto_merge=False,
+            interactive=False,
+            resume=True,
+            no_pull=False,
+            force=False,
+            reexec=False,
+            accept_unmeasured_spend=None,
+            accept_unmeasured_reason=None,
+            _daemon=SimpleNamespace(),
+            _detach=SimpleNamespace(),
+            _generate_run_id=lambda: "run-a",
+        )
+
+    assert rc == 1
+    warn.assert_called_once_with(pinned_config)

@@ -137,7 +137,12 @@ def load_audit_record(project_root: Path, sprint_id: str | None) -> dict | None:
     return _load_record(Path(project_root), sprint_id)
 
 
-def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
+def capture_or_load(
+    project_root: Path,
+    sprint_id: str,
+    *,
+    source_path: Path | None = None,
+) -> SprintConfigSnapshot:
     """Return this sprint's pinned configuration, capturing it on first entry.
 
     Capture happens once per logical sprint. On re-entry — ``--resume`` or the
@@ -146,9 +151,13 @@ def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
     pin exists for; the difference is reported by :func:`check_drift`, not
     absorbed by a fresh capture.
 
-    A missing or unreadable project-root ``forge.yaml`` yields a snapshot with
-    ``present=False`` rather than an error: callers fall back to their previous
-    behaviour of reading the project root directly.
+    ``source_path`` is the configuration file the invocation actually loaded.
+    It defaults to the project-root ``forge.yaml`` for existing callers, but a
+    ``forge sprint --config`` invocation must pin the supplied file rather than
+    silently substituting a same-directory default. A missing or unreadable
+    source yields a snapshot with ``present=False`` rather than an error:
+    callers fall back to their previous behaviour of reading the project root
+    directly.
     """
     project_root = Path(project_root)
     pinned = snapshot_config_path(project_root, sprint_id)
@@ -167,7 +176,7 @@ def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
             drift_events=list(record.get("drift_events") or []),
         )
 
-    src = project_config_path(project_root)
+    src = Path(source_path) if source_path is not None else project_config_path(project_root)
     text = _read_text(src)
     if text is None:
         return SprintConfigSnapshot(

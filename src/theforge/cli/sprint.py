@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from theforge.cli.overrides import apply_base_branch_override
-from theforge.cli.shared import _find_config, load_config_checked
+from theforge.cli.shared import _find_config, _print_startup_auth_warnings, load_config_checked
 from theforge.config import load_config
 from theforge.config.provenance import (
     VALUE_SOURCE_CLI_OVERRIDE,
@@ -177,7 +177,14 @@ def _cmd_sprint(args: object) -> int:
         return 1
 
     config = apply_base_branch_override(
-        load_config_checked(config_path, loader=load_config),
+        load_config_checked(
+            config_path,
+            loader=load_config,
+            # A non-preview sprint replaces this bootstrap config with its pin
+            # before dispatch. Warn for the operative config below, not for
+            # models that root-file drift added or removed.
+            emit_startup_auth_warnings=bool(getattr(args, "dry_run", False)),
+        ),
         getattr(args, "base_branch", None),
     )
 
@@ -398,26 +405,26 @@ def _cmd_sprint(args: object) -> int:
     outcome = "failed"
     cause: str | None = _UNKNOWN_END_CAUSE
     try:
-        result = run_sprint(
-            SprintRunContext.for_sprint(
-                config,
-                manifest_path,
-                auto_merge=auto_merge,
-                interactive=interactive,
-                notify=not args.no_notify,
-                resume=resume,
-                reexec=reexec,
-                no_pull=no_pull,
-                run_id=run_id,
-                dropped_slugs=dropped_slugs,
-                force=force,
-                live_story_slugs=set(liveness.live_slugs),
-                unresolved_live_slugs=set(liveness.unresolved_slugs),
-                registered_live_slugs=set(liveness.registered_slugs),
-                accept_unmeasured_spend=accept_unmeasured_spend,
-                accept_unmeasured_reason=accept_unmeasured_reason,
-            )
+        context = SprintRunContext.for_sprint(
+            config,
+            manifest_path,
+            auto_merge=auto_merge,
+            interactive=interactive,
+            notify=not args.no_notify,
+            resume=resume,
+            reexec=reexec,
+            no_pull=no_pull,
+            run_id=run_id,
+            dropped_slugs=dropped_slugs,
+            force=force,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
+            registered_live_slugs=set(liveness.registered_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend,
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
+        _print_startup_auth_warnings(context.config)
+        result = run_sprint(context)
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.
@@ -1237,6 +1244,7 @@ def _run_query_mode(
                 issues_arg=issues_arg,
             ),
         )
+        _print_startup_auth_warnings(config)
 
     # Fetch issue list (lightweight — just numbers and titles)
     try:
@@ -1743,28 +1751,28 @@ def _run_query_mode(
     )
 
     try:
-        result = run_sprint(
-            SprintRunContext.for_sprint(
-                runtime_config,
-                resolved,
-                auto_merge=auto_merge,
-                interactive=interactive,
-                notify=not args.no_notify,
-                resume=resume,
-                reexec=reexec,
-                no_pull=no_pull,
-                run_id=run_id,
-                dropped_slugs=dropped_slugs,
-                skipped_issues=skipped_issues,
-                entry_intake_outcomes=entry_intake_outcomes,
-                force=force,
-                live_story_slugs=set(liveness.live_slugs),
-                unresolved_live_slugs=set(liveness.unresolved_slugs),
-                registered_live_slugs=set(liveness.registered_slugs),
-                accept_unmeasured_spend=accept_unmeasured_spend or [],
-                accept_unmeasured_reason=accept_unmeasured_reason,
-            )
+        context = SprintRunContext.for_sprint(
+            runtime_config,
+            resolved,
+            auto_merge=auto_merge,
+            interactive=interactive,
+            notify=not args.no_notify,
+            resume=resume,
+            reexec=reexec,
+            no_pull=no_pull,
+            run_id=run_id,
+            dropped_slugs=dropped_slugs,
+            skipped_issues=skipped_issues,
+            entry_intake_outcomes=entry_intake_outcomes,
+            force=force,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
+            registered_live_slugs=set(liveness.registered_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend or [],
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
+        _print_startup_auth_warnings(context.config)
+        result = run_sprint(context)
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.

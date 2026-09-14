@@ -281,6 +281,7 @@ class DaemonServer:
         state_update_fn: Callable[[dict], None],
     ) -> None:
         """Execute a sprint in a thread executor. Called via run_in_executor."""
+        from .cli.shared import _print_startup_auth_warnings
         from .config import load_config
         from .sprint import SprintRunContext, run_sprint
         from .sprint.lock import SprintConflictError, acquire_story_locks, release_story_locks
@@ -312,6 +313,7 @@ class DaemonServer:
             manifest_name = None
         if manifest_name is not None:
             config, _sprint_id, _snapshot = establish_sprint_config(config, manifest_name)
+        _print_startup_auth_warnings(config)
 
         # Acquire per-story locks before execution to guard against concurrent runs
         slugs = parse_manifest_slugs(config, manifest_path)
