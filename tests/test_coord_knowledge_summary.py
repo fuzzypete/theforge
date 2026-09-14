@@ -1484,3 +1484,83 @@ class TestStaleArtifactAfterAFailedReentry:
 
         assert len(dispatches) == 2
         assert outcome.status == "written"
+
+
+class TestOutcomeRecordingIsTotalAndLazy:
+    """Recording an outcome is bookkeeping and must not become a failure mode.
+
+    This module is a side effect of a run that already finished, so it never
+    raises — and that has to hold for the reuse bookkeeping as much as for the
+    dispatch. A run that was never eligible also has no dispatch to compare
+    against, so it renders no prompt to reach that conclusion.
+    """
+
+    def test_an_ineligible_run_renders_no_summary_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, calls: list[dict]
+    ) -> None:
+        renders: list[dict] = []
+        real_prompt = knowledge_summary_flow.build_run_summary_prompt
+
+        def _spy(audit: dict, anchors: object) -> str:
+            renders.append(audit)
+            return real_prompt(audit, anchors)
+
+        monkeypatch.setattr(knowledge_summary_flow, "build_run_summary_prompt", _spy)
+
+        audit = _audit()
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), audit
+        )
+
+        assert outcome.status == "not_attempted"
+        assert renders == []
+        assert calls == []
+        # An outcome that never attempted anything cannot vouch for a
+        # generation input, so it claims none.
+        assert "generation_input_digest" not in audit["knowledge_summary"]
+
+    def test_an_attempted_outcome_records_the_input_it_was_reached_from(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), audit
+        )
+
+        assert audit["knowledge_summary"]["attempted"] is True
+        assert audit["knowledge_summary"]["generation_input_digest"] == (
+            knowledge_summary_flow._generation_input_digest(_audit())
+        )
+
+    def test_an_unrenderable_audit_yields_an_unknown_digest_rather_than_raising(
+        self, tmp_path: Path
+    ) -> None:
+        malformed = {"run_id": RUN_ID, "task": ["not", "a", "mapping"]}
+
+        assert knowledge_summary_flow._generation_input_digest(malformed) is None
+
+    def test_an_unrenderable_audit_does_not_escape_the_summary_flow(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The audit write path must not inherit a failure from its side effect."""
+        malformed = {"run_id": RUN_ID, "task": ["not", "a", "mapping"]}
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), malformed
+        )
+
+        assert outcome.written is False
+        assert isinstance(malformed["knowledge_summary"], dict)
+
+    def test_an_unknown_digest_never_matches_a_run_with_no_artifact(self, tmp_path: Path) -> None:
+        """`None == None` must not read as 'already summarised'."""
+        assert knowledge_summary_flow.summary_generation_input_digest(tmp_path, RUN_ID) is None
+        assert (
+            knowledge_summary_flow._reuse_existing_outcome(
+                knowledge_summary_flow.RunSummaryOutcome(
+                    status="rejected", attempted=True, written=False
+                ),
+                None,
+            )
+            is False
+        )
