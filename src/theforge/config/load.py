@@ -1131,19 +1131,27 @@ def _resolve_project_root(config_path: Path) -> Path:
     return parent
 
 
-def load_config(config_path: Path) -> ForgeConfig:
+def load_config(config_path: Path, *, project_root: Path | None = None) -> ForgeConfig:
     """Load forge.yaml and return a typed ForgeConfig.
 
     The config file path is used to derive the project root (its parent directory),
     except when ``config_path`` lives inside a forge-created worktree at
     ``<root>/.forge/worktrees/<slug>/``, in which case the project root is
     resolved to the parent checkout so project-scoped secrets remain accessible.
+    Callers loading a sprint-pinned snapshot may pass the logical
+    ``project_root`` explicitly: the snapshot supplies the configuration bytes,
+    while project-scoped secrets and root-relative validation remain anchored to
+    the checkout that owns the sprint.
     Missing sections fall back to sensible defaults.
 
     Raises ValueError for invalid configurations (empty pool, duplicate names,
     unsupported CLI, missing synthesis profile when pool size > 1).
     """
-    project_root = _resolve_project_root(config_path)
+    project_root = (
+        Path(project_root).resolve()
+        if project_root is not None
+        else _resolve_project_root(config_path)
+    )
 
     # Load project-scoped secrets before profile validation so _resolve_secret() works.
     env_path = project_root / ".forge" / ".env"

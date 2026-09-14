@@ -11,6 +11,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -25,10 +26,13 @@ from theforge.coordinator import config_snapshot as cs
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import Phase
 from theforge.coordinator.workspace import _create_workspace
+from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
     BASELINE_DIAGNOSTIC_MAX_LINES,
+    SprintRunContext,
     _baseline_failure_diagnostic,
     _run_baseline_gate,
+    establish_sprint_config,
 )
 
 
@@ -142,7 +146,7 @@ def test_reentry_reuses_the_pin_and_reports_drift(tmp_path: Path) -> None:
     event = cs.check_drift(second, story="issue-1945")
     assert event is not None
     assert event["pinned_digest"] == first.digest
-    assert event["project_root_digest"] == cs.digest_text("project: two\n")
+    assert event["source_config_digest"] == cs.digest_text("project: two\n")
     assert event["story"] == "issue-1945"
     assert event["pinned_config_in_effect"] is True
     assert "forge.yaml" in cs.describe_drift(event)
@@ -470,3 +474,255 @@ def test_sprint_audit_records_the_config_snapshot(tmp_path: Path) -> None:
     block = audit["config_snapshot"]
     assert block["digest"] == snap.digest
     assert [e["story"] for e in block["drift_events"]] == ["issue-9"]
+
+
+# --------------------------------------------------------------------------
+# 5. Seam: routing config is reloaded from the pin, not only worktree config
+# --------------------------------------------------------------------------
+
+
+_PINNED_CONFIG = """\
+project: pinned
+models:
+  enabled:
+    - openai/gpt-5.5/cli
+assignment:
+  exploration:
+    explore_every_n: 17
+    per_sprint_cap: 0
+validation:
+  gate_timeout: 120
+conventions:
+  hard:
+    package_roots: [src]
+"""
+
+_DRIFTED_CONFIG = """\
+project: pinned
+models:
+  enabled:
+    - openai/gpt-5.5/cli
+    - provider: anthropic
+      model: fable
+      transport: {kind: cli}
+      routing: {tier: strong, capability: 10, cost_rank: 3, phase_eligibility: [dev]}
+      cost: {rate_basis: provider_reported}
+assignment:
+  exploration:
+    explore_every_n: 2
+    per_sprint_cap: 3
+validation:
+  gate_timeout: 120
+conventions:
+  hard:
+    package_roots: [src]
+"""
+
+
+def test_resumed_sprint_context_routes_from_the_pinned_config(tmp_path: Path) -> None:
+    """A root-only model cannot enter the context's routing candidate pool."""
+    from theforge.assignment import _reviewer_candidate_pool
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / ".env").write_text("TEST_TOKEN=project-secret\n", encoding="utf-8")
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _operative, sprint_id, first = establish_sprint_config(pinned_config, "sprint-a")
+    assert sprint_id is not None
+    assert first is not None and first.pinned_path is not None
+
+    # The post-pin config adds both a new inline model and altered exploration.
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    live_config = load_config(tmp_path / "forge.yaml")
+    assert "anthropic-fable-cli" in {agent.name for agent in live_config.agents}
+
+    resolved = ResolvedSprint(name="sprint-a", budget_usd=1.0, stories=[])
+    context = SprintRunContext.for_sprint(live_config, resolved)
+
+    assert context.config.project_root == tmp_path.resolve()
+    assert context.config.secrets["TEST_TOKEN"] == "project-secret"
+    assert context.config.provenance.source_path == str(first.pinned_path.resolve())
+    assert context.config.assignment.exploration.explore_every_n == 17
+    assert context.config.assignment.exploration.per_sprint_cap == 0
+    assert "anthropic-fable-cli" not in {agent.name for agent in context.config.agents}
+
+    candidate_pool = _reviewer_candidate_pool(
+        context.config.agents,
+        selected_names=set(),
+        exclude_model=None,
+        locked=False,
+        secrets=context.config.secrets,
+    )
+    assert "anthropic-fable-cli" not in {entry["name"] for entry in candidate_pool}
+
+
+def test_establish_sprint_config_keeps_cli_base_branch_and_reloads_the_pin(tmp_path: Path) -> None:
+    """The pin reload happens before runner startup without losing CLI intent."""
+    from theforge.cli.overrides import apply_base_branch_override
+    from theforge.config import load_config
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _operative, expected_sprint_id, _snapshot = establish_sprint_config(pinned_config, "sprint-a")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+
+    live_config = apply_base_branch_override(load_config(tmp_path / "forge.yaml"), "release/test")
+    operative, sprint_id, snapshot = establish_sprint_config(live_config, "sprint-a")
+
+    assert sprint_id == expected_sprint_id
+    assert snapshot is not None and snapshot.reused is True
+    assert operative.workspace.base_branch == "release/test"
+    assert operative.validation.gate_timeout == 120
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_establish_sprint_config_keeps_runtime_parallelism_on_resume(tmp_path: Path) -> None:
+    """A query-mode parallelism choice does not become live-config drift."""
+    from theforge.config import load_config
+    from theforge.config.provenance import VALUE_SOURCE_DERIVED, refresh_provenance
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    first_config = load_config(tmp_path / "forge.yaml")
+    establish_sprint_config(first_config, "sprint-a")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+
+    live_config = load_config(tmp_path / "forge.yaml")
+    runtime_config = refresh_provenance(
+        replace(live_config, sprint=replace(live_config.sprint, max_parallel=3)),
+        source_updates={"sprint.max_parallel": VALUE_SOURCE_DERIVED},
+    )
+    operative, _sprint_id, _snapshot = establish_sprint_config(runtime_config, "sprint-a")
+
+    assert operative.sprint.max_parallel == 3
+    assert (
+        operative.provenance.resolved_value_sources["sprint.max_parallel"] == VALUE_SOURCE_DERIVED
+    )
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_establish_sprint_config_pins_the_explicit_config_source(tmp_path: Path) -> None:
+    """A named --config source wins over a same-directory forge.yaml."""
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    explicit_config = tmp_path / "release-forge.yaml"
+    explicit_config.write_text(_PINNED_CONFIG, encoding="utf-8")
+
+    operative, sprint_id, snapshot = establish_sprint_config(
+        load_config(explicit_config), "sprint-a"
+    )
+
+    assert sprint_id is not None
+    assert snapshot is not None and snapshot.pinned_path is not None
+    assert snapshot.source == str(explicit_config)
+    assert snapshot.pinned_path.read_text(encoding="utf-8") == _PINNED_CONFIG
+    assert operative.provenance.source_path == str(snapshot.pinned_path.resolve())
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_invalid_reused_pin_raises_a_typed_config_error(tmp_path: Path) -> None:
+    """A pin that no longer validates stays catchable by the daemon queue."""
+    from theforge.config import load_config
+    from theforge.sprint.runner import SprintConfigError
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    first_config = load_config(tmp_path / "forge.yaml")
+    _operative, _sprint_id, snapshot = establish_sprint_config(first_config, "sprint-a")
+    assert snapshot is not None and snapshot.pinned_path is not None
+    snapshot.pinned_path.write_text("dev: []\n", encoding="utf-8")
+
+    with pytest.raises(SprintConfigError, match="dev") as exc_info:
+        establish_sprint_config(load_config(tmp_path / "forge.yaml"), "sprint-a")
+
+    assert exc_info.value.config_path == snapshot.pinned_path
+
+
+def test_cmd_sprint_renders_a_typed_pinned_config_error(capsys, tmp_path: Path) -> None:
+    """The CLI preserves the structural-config message and exit status."""
+    from theforge.cli import sprint as sprint_cli
+    from theforge.sprint.runner import SprintConfigError
+
+    config_path = tmp_path / "pinned-forge.yaml"
+    with patch(
+        "theforge.cli.sprint._cmd_sprint",
+        side_effect=SprintConfigError(config_path, ValueError("missing dev profile")),
+    ):
+        assert sprint_cli.cmd_sprint(SimpleNamespace()) == 2
+
+    assert "forge.yaml is invalid: missing dev profile" in capsys.readouterr().err
+
+
+def test_query_startup_warnings_use_the_snapshot_backed_config(tmp_path: Path) -> None:
+    """Credential warnings describe the same model set that query routing uses."""
+    from theforge.cli import sprint as sprint_cli
+    from theforge.config import load_config
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    bootstrap_config = load_config(tmp_path / "forge.yaml")
+
+    with (
+        patch(
+            "theforge.sprint.runner.establish_sprint_config",
+            return_value=(pinned_config, "sprint-a", None),
+        ),
+        patch("theforge.cli.sprint._print_startup_auth_warnings") as warn,
+        patch(
+            "theforge.sprint.query.fetch_issues_for_milestone",
+            side_effect=RuntimeError("offline"),
+        ),
+    ):
+        rc = sprint_cli._run_query_mode(
+            args=SimpleNamespace(name=None),
+            config=bootstrap_config,
+            config_path=tmp_path / "forge.yaml",
+            milestone="release-a",
+            label=None,
+            issues_arg=None,
+            budget_str="1",
+            dry_run=False,
+            max_parallel=None,
+            auto_merge=False,
+            interactive=False,
+            resume=True,
+            no_pull=False,
+            force=False,
+            reexec=False,
+            accept_unmeasured_spend=None,
+            accept_unmeasured_reason=None,
+            _daemon=SimpleNamespace(),
+            _detach=SimpleNamespace(),
+            _generate_run_id=lambda: "run-a",
+        )
+
+    assert rc == 1
+    warn.assert_not_called()
+
+
+def test_explicit_config_drift_tracks_the_pinned_source(tmp_path: Path) -> None:
+    """An explicit --config pin ignores root drift and reports source drift."""
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    explicit_config = tmp_path / "release-forge.yaml"
+    explicit_config.write_text(_PINNED_CONFIG, encoding="utf-8")
+    _operative, _sprint_id, snapshot = establish_sprint_config(
+        load_config(explicit_config), "sprint-a"
+    )
+    assert snapshot is not None
+
+    # The root has always differed, but it was never the source this sprint pinned.
+    assert cs.check_drift(snapshot, story="issue-1") is None
+
+    explicit_config.write_text(_DRIFTED_CONFIG, encoding="utf-8")
+    event = cs.check_drift(snapshot, story="issue-1")
+
+    assert event is not None
+    assert event["source_config"] == str(explicit_config)
+    assert event["source_config_digest"] == cs.digest_text(_DRIFTED_CONFIG)
+    assert "release-forge.yaml changed" in cs.describe_drift(event)
