@@ -40,6 +40,7 @@ from theforge.coordinator.review_phase import _run_escalate_gate
 from theforge.coordinator.state import (
     ADVICE_ELEVATE,
     ADVICE_LAUNCH_FAILURE,
+    ADVICE_NO_MERGED_REVIEW,
     ADVICE_NO_RECOMMENDATION,
     ADVICE_NOT_PERFORMABLE,
     ADVICE_POLICY_PRESERVE,
@@ -535,8 +536,9 @@ class TestPreservesWhenAdviceCannotBeApplied:
         assert state.advisory_packet == {"cycles": []}
         assert state.review_results == []
         assert state.last_cycle_reviewer_results[0][1].verdict == "APPROVE"
-        assert state.escalate_timeout_advice == ADVICE_NOT_PERFORMABLE
-        assert "cannot perform it" in result.message
+        assert state.escalate_timeout_advice == ADVICE_NO_MERGED_REVIEW
+        assert "operator may still select" in result.message
+        assert "merged reviewer verdict" in result.message
 
 
 # ── a present operator always governs ─────────────────────────────────────────

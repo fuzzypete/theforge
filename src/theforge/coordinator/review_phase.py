@@ -100,6 +100,7 @@ from .state import (
     ADVICE_APPLIED,
     ADVICE_ELEVATE,
     ADVICE_LAUNCH_FAILURE,
+    ADVICE_NO_MERGED_REVIEW,
     ADVICE_NO_RECOMMENDATION,
     ADVICE_NOT_PERFORMABLE,
     ADVICE_POLICY_PRESERVE,
@@ -252,6 +253,10 @@ _TIMEOUT_ADVICE_NOTES: dict[str, str] = {
         "The advisor's recommendation could not be applied because this run cannot "
         "perform it, and no substitute action was chosen in its place."
     ),
+    ADVICE_NO_MERGED_REVIEW: (
+        "The advisor recommended 'accept', which an operator may still select, but an "
+        "unattended expiry cannot bind that action without a merged reviewer verdict."
+    ),
     ADVICE_NO_RECOMMENDATION: (
         "The advisory report recommended no action, so there was nothing to apply — "
         "an absence of advice, not consent to a fallback."
@@ -332,14 +337,14 @@ def _advice_for_expired_gate(
         return None, ADVICE_NO_RECOMMENDATION
     if recommendation == "elevate":
         return None, ADVICE_ELEVATE
+    performable, _omitted = available_escalate_actions(state, ACTION_TAXONOMY)
     # A surviving reviewer's approval from a quorum-collapsed cycle remains
-    # available to an operator who explicitly selects it.  It is not enough
+    # available to an operator who explicitly selects it. It is not enough
     # evidence for an unattended expiry to turn advisory advice into a landing:
     # ``review_results`` contains merged reviewer cycles only, so its absence
     # means this escalation has no merged review verdict to bind automatically.
-    if recommendation == "accept" and not state.review_results:
-        return None, ADVICE_NOT_PERFORMABLE
-    performable, _omitted = available_escalate_actions(state, ACTION_TAXONOMY)
+    if recommendation == "accept" and not state.review_results and recommendation in performable:
+        return None, ADVICE_NO_MERGED_REVIEW
     if recommendation not in performable:
         return None, ADVICE_NOT_PERFORMABLE
     return recommendation, ADVICE_APPLIED
