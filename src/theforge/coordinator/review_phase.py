@@ -332,6 +332,13 @@ def _advice_for_expired_gate(
         return None, ADVICE_NO_RECOMMENDATION
     if recommendation == "elevate":
         return None, ADVICE_ELEVATE
+    # A surviving reviewer's approval from a quorum-collapsed cycle remains
+    # available to an operator who explicitly selects it.  It is not enough
+    # evidence for an unattended expiry to turn advisory advice into a landing:
+    # ``review_results`` contains merged reviewer cycles only, so its absence
+    # means this escalation has no merged review verdict to bind automatically.
+    if recommendation == "accept" and not state.review_results:
+        return None, ADVICE_NOT_PERFORMABLE
     performable, _omitted = available_escalate_actions(state, ACTION_TAXONOMY)
     if recommendation not in performable:
         return None, ADVICE_NOT_PERFORMABLE
