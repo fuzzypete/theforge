@@ -1,0 +1,82 @@
+schema_version: 2
+run_id: 84c324e8198e
+authoritative_run_record: .forge/audits/runs/84c324e8198e.json
+generated_at: '2026-09-14T02:06:23.486293+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.007877499999999999
+story:
+  slug: issue-2976
+  name: A story lands as APPROVE with no review recorded when the only dissenting
+    reviewer is killed at its timeout
+  github_issue: 2976
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/review_phase.py
+- src/theforge/coordinator/state.py
+- tests/test_coord_escalate_timeout_advice.py
+what_changed:
+  description: The run changed escalate-timeout handling so an unattended apply_advice
+    accept is preserved instead of landed when no merged cycle review exists. It also
+    adjusted persisted run state and the targeted timeout-advice checks around that
+    gate behavior.
+  approach: The change inserted a guard in the review/escalation path that distinguishes
+    survivor-only advisory accept from explicit operator accept, and threaded that
+    outcome through stored state and focused regression scenarios.
+  files_modified: *id002
+what_was_learned:
+- claim: Escalation timeout logic must distinguish between operator-selected accept
+    and unattended advisory accept, because blocking the latter on missing merged
+    review evidence does not imply the run cannot perform the former.
+  evidence:
+  - type: review_finding
+    finding_id: ff528cfe207668ac
+    description: Review identified that the preserved-story reason was wrong specifically
+      because the same run would still accept if an operator chose accept at the gate,
+      showing the decision path must track who selected accept, not just the final
+      disposition.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval explicitly states the guard blocks survivor-only
+      advisory accept while preserving explicit operator accept, demonstrating the
+      key behavioral distinction that future changes in this area must maintain.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 again approved on the basis that unattended expiry preserves
+      instead of landing, reinforcing that the important invariant is scoped to timeout-driven
+      advisory accept rather than all accept paths.
+  - type: file
+    path: src/theforge/coordinator/review_phase.py
+    description: This file is the coordination seam where review outcome, escalate
+      timeout, and final disposition meet, so its involvement shows the lesson applies
+      at the decision boundary that interprets missing merged-review evidence.
+learned_patterns:
+- timeout-advice-vs-operator-accept
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on preserving the distinction between unattended timeout advice
+    and explicit operator acceptance when no merged cycle review exists.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.6937747000000005
+  dominant_difficulty: Encoding the gate semantics precisely enough to block evidence-free
+    advisory landing without also blocking valid operator-selected acceptance.
