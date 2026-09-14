@@ -1,0 +1,136 @@
+schema_version: 2
+run_id: 4f93a0e5b5f6
+authoritative_run_record: .forge/audits/runs/4f93a0e5b5f6.json
+generated_at: '2026-09-14T03:06:56.706188+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01265
+story:
+  slug: issue-2985
+  name: Exploration challenger failure ends the story instead of retrying through
+    the winner
+  github_issue: 2985
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/engine.py
+- tests/test_exploration_recovery_seam.py
+what_changed:
+  description: "The run changed challenger-failure handling in the coordinator so\
+    \ a VALIDATE-phase escalation from an exploration challenger flows through the\
+    \ recovery seam and the story is retried through the recorded winner instead of\
+    \ ending on the challenger\u2019s terminal failure. It also corrected recovered-run\
+    \ state so winner retries do not inherit the challenger\u2019s terminal error\
+    \ or session identity."
+  approach: The change centralized this escalation path onto the existing failed-challenger
+    recovery mechanism, then tightened the surrounding coordinator state transitions
+    for recovered retries and exercised the seam against both immediate recovery and
+    post-recovery validation paths.
+  files_modified: *id002
+what_was_learned:
+- claim: When reusing a recovery seam to swap execution from one agent attempt to
+    another, future work should verify that all story-level terminal state from the
+    abandoned attempt is cleared before the replacement attempt runs, or the final
+    record can still reflect the abandoned failure even if the replacement succeeds.
+  evidence:
+  - type: review_finding
+    finding_id: fab6151f9b6ee348
+    description: "Review found that after VALIDATE escalation recovered into a winner\
+      \ retry, a successful winner run could still leave the sprint and audit record\
+      \ carrying the challenger\u2019s terminal gate error, showing that recovery\
+      \ must reset story-level failure state rather than only redirect control flow."
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly verified that recovery now retries through
+      the winner with clean story state, confirming that stale terminal state was
+      a real integration hazard the run had to resolve.
+- claim: When recovery switches a run from a failed challenger to a winner, future
+    work should treat agent session identity as part of the handoff boundary in both
+    in-memory and persisted state; otherwise resumed execution can accidentally continue
+    the challenger session under the winner model.
+  evidence:
+  - type: review_finding
+    finding_id: 4312f93ee4b864ac
+    description: "Review identified that leaving the challenger\u2019s session id\
+      \ in coordinator state caused the winner\u2019s dev invocation to resume the\
+      \ challenger model\u2019s session, demonstrating that session handles must be\
+      \ cleared during cross-agent recovery."
+  - type: review_finding
+    finding_id: 84668d6311601546
+    description: A later review found the same class of leak persisted in the worktree
+      sessions file across interruption and resume, showing that the session-boundary
+      check must cover persisted recovery state, not just live process memory.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approval references the persistence fix for the cleared session
+      handle, confirming that durable session state was part of the recovered-attempt
+      correctness boundary.
+- claim: For one-shot recovery paths, future verification should cover the first failure
+    where recovery pre-empts downstream handling and the later failure where recovery
+    has already been spent, because the reachable coordinator path changes after the
+    first handoff.
+  evidence:
+  - type: review_finding
+    finding_id: 8a90acc0aaded635
+    description: Review flagged that the seam test only exercised the first VALIDATE
+      escalation, where recovery short-circuits gate-green salvage, and missed the
+      second escalation after the winner retry, where salvage becomes reachable again
+      because recovery is no longer available.
+  - type: file
+    path: tests/test_exploration_recovery_seam.py
+    description: The dedicated seam test file is where the omitted phase distinction
+      was surfaced and then expanded, illustrating that this behavior needs scenario
+      coverage across both pre- and post-recovery validation stages.
+learned_patterns:
+- recovery-must-clear-terminal-state
+- cross-agent-session-boundary
+- one-shot-recovery-phase-coverage
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: fab6151f9b6ee348
+    severity: P1
+    file: src/theforge/coordinator/engine.py
+    description: When a VALIDATE challenger escalation is recovered and the winner
+      attempt succeeds, the story can finish successfully while its sprint and audit
+      record still carries the challenger's terminal gate error.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 8a90acc0aaded635
+    severity: P1
+    file: tests/test_exploration_recovery_seam.py
+    description: The new seam test exercises only the first VALIDATE escalation, where
+      recovery pre-empts gate-green salvage, and asserts salvage is not called; no
+      test covers the second VALIDATE escalation after the winner's retry, where the
+      salvage path must still be reachable because recovery is spent.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly surfaced state that survived the challenger-to-winner
+    handoff: first terminal error state, then in-memory session identity, then persisted
+    session identity.'
+  - Validation-path testing needed to distinguish the first escalation, where recovery
+    intercepts, from later escalations after recovery is exhausted.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 10.2841276
+  dominant_difficulty: Making challenger recovery correct required coordinating control-flow
+    redirection with cleanup of both transient and persisted state across retries
+    and resume boundaries.
