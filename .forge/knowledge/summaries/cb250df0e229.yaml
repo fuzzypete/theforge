@@ -1,0 +1,173 @@
+schema_version: 2
+run_id: cb250df0e229
+authoritative_run_record: .forge/audits/runs/cb250df0e229.json
+generated_at: '2026-09-14T03:18:42.445965+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.017640000000000003
+story:
+  slug: issue-2948
+  name: A resumed sprint routes on the live forge.yaml while reporting that stories
+    run under the pinned snapshot
+  github_issue: 2948
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- config
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint.py
+- src/theforge/config/load.py
+- src/theforge/coordinator/config_snapshot.py
+- src/theforge/daemon.py
+- src/theforge/sprint/runner.py
+- tests/test_daemon.py
+- tests/test_sprint_config_snapshot.py
+- tests/test_sprint_crash_terminal_status.py
+what_changed:
+  description: Sprint startup and resume were reworked so a sprint's pinned configuration
+    is reloaded as the operative runtime config before routing and story execution,
+    instead of only syncing the snapshot into worktrees while other components still
+    read the live project-root config.
+  approach: The run introduced a snapshot-backed config reload path at sprint entry,
+    threaded that rebuilt config through sprint context and daemon/query paths, kept
+    drift reporting in place, and iterated through review-found edge cases around
+    invalid pinned configs, alternate config paths, warning surfaces, and terminal-status
+    handling.
+  files_modified: *id002
+what_was_learned:
+- claim: When a run promises that a pinned snapshot is authoritative, future work
+    must trace every config consumer from process entry and rebind all of them to
+    the same loaded config object; patching only the visible workspace copy leaves
+    hidden routing paths on live config.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The plan began by adding a snapshot-backed reload point after sprint
+      config capture/load, which shows the issue was not the worktree file alone but
+      the need to reconstruct the authoritative config at runtime entry.
+  - type: plan_step
+    step_id: '2'
+    description: The explicit step to thread the rebuilt config through sprint context
+      reflects that multiple downstream consumers were otherwise reading different
+      config sources, so consistency required end-to-end propagation.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval notes that the pin feeds operative ForgeConfig at
+      sprint entry paths, demonstrating that the core verification criterion was whether
+      routing/config consumers were actually bound to the pinned config rather than
+      merely informed about it.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: This runner path is where sprint entry and resumed execution are
+      coordinated, so its central role in the change demonstrates that authoritative
+      config selection must happen before per-story routing and execution begin.
+- claim: Config-source fixes must account for non-root and explicitly supplied config
+    files, because code that assumes project-root forge.yaml during pinning or drift
+    checks can silently switch authority away from the operator-selected file.
+  evidence:
+  - type: review_finding
+    finding_id: 7ce509c87561310e
+    description: This finding shows that when a sprint is pointed at a non-root config
+      file, the run could silently adopt the root file's pinned snapshot instead,
+      proving that source-of-truth handling must be defined per supplied config path
+      rather than inferred from project root.
+  - type: review_finding
+    finding_id: b1a034edefa50f6e
+    description: This finding shows drift detection still compared against project-root
+      forge.yaml even when a differently named file was pinned, demonstrating that
+      config-authority bugs recur anywhere root assumptions survive.
+  - type: file
+    path: src/theforge/coordinator/config_snapshot.py
+    description: The snapshot coordinator is the locus for pin creation and drift
+      comparison, so its involvement demonstrates that future config-consistency work
+      must validate path identity, not just file contents.
+- claim: If startup first reloads historical configuration, validation and failure
+    reporting need a typed, catchable error path; otherwise invalid pinned snapshots
+    escape through alternate entrypoints with inconsistent operator-visible failure
+    states.
+  evidence:
+  - type: review_finding
+    finding_id: 51e928f60bb5b773
+    description: This finding shows snapshot reload could raise an uncaught exception
+      at sprint entry when the pinned config no longer parsed or validated, demonstrating
+      that replaying historical config introduces a distinct failure mode that must
+      be normalized.
+  - type: review_finding
+    finding_id: 06701371a81491ef
+    description: This finding shows the same invalid-pin condition escaped the daemon
+      queue loop via SystemExit, leaving no completed entry or crash log, which demonstrates
+      that typed handling must work across all orchestration surfaces, not only the
+      CLI.
+  - type: review_finding
+    finding_id: 204cbe0f26c15cc5
+    description: This finding shows manifest-mode terminal status degraded to a generic
+      placeholder cause on pinned-config failure, demonstrating that once config reload
+      can fail early, status/reporting paths must preserve the specific config error.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approval explicitly cites the move to a catchable typed SprintConfigError,
+      confirming that review treated normalized failure propagation as necessary to
+      make pinned-config reload viable.
+- claim: Warnings and preflight messaging must be generated from the same effective
+    config the run will execute, or operator-facing diagnostics can describe a different
+    model set than the one actually routed.
+  evidence:
+  - type: review_finding
+    finding_id: 3f4ce779e36262b6
+    description: This finding shows credential and binary warnings were computed from
+      live root profiles while execution used the pinned snapshot, proving that messaging
+      surfaces can drift from runtime behavior unless they share the same loaded config.
+  - type: review_finding
+    finding_id: 8ab5f46c2ef8d53a
+    description: This finding shows query-mode startup warnings were emitted twice
+      after config-establishment changes, demonstrating that once effective-config
+      resolution moves earlier, message emission points must also be deduplicated
+      and aligned with that new lifecycle.
+  - type: plan_step
+    step_id: '3'
+    description: The plan explicitly called for preserving operator-facing drift reporting
+      while aligning it with routing behavior, which demonstrates that user-visible
+      diagnostics were part of the consistency problem, not just background execution.
+learned_patterns:
+- single-effective-config
+- config-path-authority
+- typed-config-reload-failures
+- preflight-runtime-alignment
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 06701371a81491ef
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When a daemon-queued sprint's pinned configuration no longer validates,
+      sprint establishment raises SystemExit, which passes straight through the daemon's
+      SprintConflictError and Exception handlers and out of its queue loop, so the
+      sprint is recorded with no completed entry and no crash log while the remaining
+      queued sprints are stranded.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced edge cases where config authority or diagnostics still
+    referenced project-root/live state after runtime routing had been moved onto the
+    pinned snapshot.
+complexity_signal:
+  actual_iterations: 5
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 25.8967299
+  dominant_difficulty: Making one configuration source truly authoritative across
+    all sprint entrypoints, routing consumers, and operator-facing diagnostics.
