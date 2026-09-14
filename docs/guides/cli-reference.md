@@ -453,7 +453,8 @@ forge review-semantic ISSUE [flags]
 **Use this when:** Recording or replaying a manual semantic-review audit for a
 single issue. Exact repeats are keyed by input digest, model identity, and
 prompt contract version; to record an independent rerun, change the prompt
-contract version.
+contract version. On a first manual evaluation, the command freezes an empty
+human baseline automatically before revealing the evaluator output.
 
 You do not need this command to get a policy-required issue evaluated: sprint
 admission performs the missing evaluation itself, once per revision per prompt
@@ -469,7 +470,7 @@ See [semantic readiness](../reference/semantic-readiness.md).
 | `--profile <name>` | Configured `ModelProfile` name to use |
 | `--prompt-contract-version <version>` | Override the semantic prompt contract version |
 | `--baseline-defect-id <id>` | Freeze the human baseline with a defect id (repeatable) |
-| `--freeze-empty-baseline` | Freeze an empty human baseline before revealing output |
+| `--freeze-empty-baseline` | Explicitly freeze an empty human baseline before revealing output |
 | `--config <path>` | Path to `forge.yaml` |
 
 ---
