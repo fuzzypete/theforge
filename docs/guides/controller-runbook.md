@@ -620,6 +620,55 @@ decomposed`, `⤺` on the sprint row, not a failure. Where to look afterwards:
 (`status`, `created`, `source_issue`, `source_issue_closed`, `error`,
 `applied_at`).
 
+### A decision you were asked for is never discarded by a resume (issue #2860)
+
+A decision the gate has put to you is answered, resolved to its stated
+no-decision action, or asked again. Stopping the run across an open pause is
+none of those, so the pause is durable **before** you are polled: the record
+carries "opened, undecided" — both complexity axes, the threshold, and which run
+is holding it — from the moment the question is written, not from the moment it
+is answered.
+
+On the next `--resume`, that outstanding decision is raised again, whatever the
+resumed run's own preflight scores the same story. That matters because it does
+re-score: a story killed before its first dev commit is triaged as a fresh run
+(0 commits ahead of base), so preflight runs live again, and a story that opened
+the gate at 9 can come back at 8. Before this, a re-run was a way to obtain the
+permissive answer on an expensive story — precisely the stories most likely to
+be interrupted.
+
+**The divergence is shown to you, not acted on.** Where the resumed evaluation
+disagrees with the one that raised the decision, the pause says so:
+
+```
+▸ #2684  PREFLIGHT  complexity 8 (impl 8, validation 1)  — awaiting operator
+  unanswered: raised at complexity 9 on an earlier attempt; this attempt scored 8
+```
+
+Neither score decides whether you are asked — the outstanding decision does.
+The recorded decomposition assessment comes back with the pause and is not
+bought a second time.
+
+Three things suppress the re-raise, and none of them is a score:
+
+- **You already answered.** A recorded decision is honoured as before; the
+  question is not outstanding.
+- **The story text changed.** The question was about text that no longer exists,
+  so the story gets a fresh evaluation. Matched on the recorded story content
+  hash; a record with no hash also declines to re-raise.
+- **The gate is off** (`retry.preflight_complexity_gate_threshold` above 10), or
+  preflight did not return PROCEED — which ends the run here anyway.
+
+Where to look afterwards: `preflight_complexity_gate.unresolved` on the audit is
+True exactly when a run ended with its pause still open and unanswered.
+`recovered_score` and `score_divergence` are non-null on a run that raised an
+earlier attempt's decision, and carry both evaluations of the identical story
+content.
+
+One limit worth knowing: an answer cannot be recorded against a run that has
+stopped — `forge decide` sweeps a pending record whose owning process is gone,
+so there is no interim answer to recover. The resumed pause is where you answer.
+
 ### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
 
 A dev agent that reaches an acceptance criterion which does not define the case

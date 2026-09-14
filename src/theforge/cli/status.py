@@ -735,6 +735,18 @@ def _preflight_gate_lines(entry: dict, run_id: str) -> list[str]:
         f"  threshold {payload.get('threshold')}",
         "    nothing has been spent beyond preflight for this story",
     ]
+    # A pause that is being raised again because an earlier attempt's question
+    # was never answered says so, with both evaluations of the same story text
+    # next to each other. The divergence is context for the answer, never a
+    # reason the question was or was not asked (#2860).
+    divergence = payload.get("score_divergence")
+    if isinstance(divergence, dict) and divergence:
+        lines.append(
+            f"    unanswered: raised at complexity {divergence.get('recorded_score')} on an "
+            f"earlier attempt; this attempt scored {divergence.get('resumed_score')}"
+        )
+    elif payload.get("recovered_score") is not None:
+        lines.append("    unanswered: raised on an earlier attempt and never answered")
     # Glossed from the gate's own table so the two surfaces cannot describe the
     # same action differently, and driven by the record's own options so that
     # ``accept`` — the one action that mutates the tracker — is shown only on a

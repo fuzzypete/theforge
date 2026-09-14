@@ -875,6 +875,23 @@ class CoordinatorState:
     # context they were shown when ruling, kept for the audit. None when the
     # score was founded.
     preflight_complexity_gate_score_provenance: str | None = None
+    # ── An opened decision nobody has answered yet (#2860) ────────────────
+    # Written durably *before* the operator is polled, and cleared the moment a
+    # decision is recorded. A process killed inside the pause therefore leaves a
+    # record saying "this story was asked a question that is still outstanding",
+    # which is what lets a resumed attempt honour, default, or re-raise it
+    # instead of discovering only a score it may now compute differently.
+    preflight_complexity_gate_pending: bool = False
+    preflight_complexity_gate_pending_run_id: str | None = None
+    preflight_complexity_gate_pending_opened_at: str | None = None
+    # The score that opened the outstanding decision on the earlier attempt,
+    # when this attempt resumed one. Kept next to the live score rather than
+    # replacing it: a re-evaluation that disagrees with the one that raised the
+    # decision is itself something the operator is shown.
+    preflight_complexity_gate_recovered_score: int | None = None
+    # {"recorded_score", "resumed_score", "threshold", "recorded_run_id",
+    #  "opened_at"} when the two evaluations disagree, else None.
+    preflight_complexity_gate_score_divergence: dict | None = None
     # ── Decomposition assessment carried on the pause (#2686) ─────────────
     # The artifact the operator reads next to the question: candidate slices
     # with scope boundaries, the dependency edges between them, how the
