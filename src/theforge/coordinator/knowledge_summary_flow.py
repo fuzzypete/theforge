@@ -476,12 +476,14 @@ def maybe_generate_run_summary(
                 ),
             )
 
-        if not summary_exists(config.project_root, run_id) and _reuse_existing_outcome(
-            existing, digest
-        ):
-            # No artifact was written, and the recorded outcome says this same
-            # input was already attempted: one of the sprint's repeated terminal
-            # writes for a story whose summary attempt did not produce one.
+        if _reuse_existing_outcome(existing, digest):
+            # The recorded outcome was reached from this same input and produced
+            # no artifact for it — a skipped, failed or rejected attempt. This
+            # write is a repeat of that attempt, not a new one. Any artifact
+            # still on disk necessarily belongs to a *different* input (the
+            # branch above already returned if it matched), so its survival is
+            # not a reason to keep re-dispatching against a run whose current
+            # input has already been tried and did not produce one.
             return _echo_existing_outcome(audit, existing)
 
         # Everything else generates. That deliberately includes an artifact

@@ -685,21 +685,66 @@ _MERGE_CLEARABLE_FIELDS = _LANDING_CLAIM_FIELDS
 # saying nothing is not the same as saying something different.
 _MERGE_ATOMIC_FIELDS = ("knowledge_summary",)
 
-# Keys that identify one element of a list across writes, most specific first.
-# A list is reconciled element-wise when every incoming element names itself
-# with one of these; otherwise elements are matched by position.
-_LIST_IDENTITY_KEYS = ("finding_id", "step_id", "id", "cycle", "path", "ref", "slug")
+# Keys that can name one element of a list across writes. An element's identity
+# is the tuple of *every* one of these it carries, not the first that matches:
+# a run records one reviewer attempt per invocation, so several attempts share a
+# ``cycle`` and the cycle alone names none of them.
+_LIST_IDENTITY_KEYS = (
+    "finding_id",
+    "step_id",
+    "id",
+    "canonical_id",
+    "name",
+    "reviewer",
+    "provider",
+    "model",
+    "cycle",
+    "attempt",
+    "path",
+    "ref",
+    "slug",
+)
 
 
-def _element_identity(element: object) -> tuple[str, object] | None:
-    """Return the (key, value) that identifies *element* across writes, if any."""
+def _element_identity(element: object) -> tuple[tuple[str, object], ...] | None:
+    """Return the composite identity of *element*, or ``None`` if it names none."""
     if not isinstance(element, dict):
         return None
-    for key in _LIST_IDENTITY_KEYS:
-        value = element.get(key)
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool) and value != "":
-            return (key, value)
-    return None
+    identity = tuple(
+        (key, element[key])
+        for key in _LIST_IDENTITY_KEYS
+        if isinstance(element.get(key), (str, int, float))
+        and not isinstance(element.get(key), bool)
+        and element[key] != ""
+    )
+    return identity or None
+
+
+def _identity_index(elements: list) -> dict[tuple, object] | None:
+    """Index *elements* by identity, or ``None`` if identity does not distinguish them.
+
+    Pairing by identity is only sound when every element has one, all of them
+    name themselves with the same keys — otherwise a payload that merely omits a
+    naming field reads as a different element — and no two collide. A run that
+    retries one reviewer inside a cycle produces two attempts with identical
+    names for every key it carries, and that is precisely the case that must not
+    be paired up.
+    """
+    index: dict[tuple, object] = {}
+    key_shape: frozenset | None = None
+    for element in elements:
+        identity = _element_identity(element)
+        if identity is None:
+            return None
+        shape = frozenset(key for key, _value in identity)
+        if key_shape is None:
+            key_shape = shape
+        elif shape != key_shape:
+            return None
+        if identity in index:
+            return None
+        index[identity] = element
+    return index
 
 
 def _merge_list(existing_list: list, incoming_list: list) -> list:
@@ -708,30 +753,28 @@ def _merge_list(existing_list: list, incoming_list: list) -> list:
     A later write that carries the same review or finding with fewer fields on
     it is still a thinner payload — the loss just happens one level further down
     than a missing key (#2519). So elements are paired up before being merged:
-    by their own identity (``finding_id``, ``cycle``, ``path``, …) when they
-    carry one, and by position when they do not. Elements only the existing list
-    has are kept, which is also what makes a shorter later list non-destructive;
-    elements only the incoming list has are added.
+    by their own composite identity (``finding_id``, ``name`` + ``cycle``,
+    ``path``, …) when that identity actually distinguishes them, and by position
+    when it does not. Elements only the existing list has are kept either way,
+    which is what makes a shorter later list non-destructive; elements only the
+    incoming list has are added.
 
     Matching by position is safe here because these collections are appended to
-    across a single run's terminal writes, never reordered.
+    across a single run's terminal writes, never reordered — so pairing index
+    *i* with index *i* pairs an entry with itself, and a shorter later list
+    simply stops short of the tail rather than replacing it.
     """
-    identified = [(_element_identity(element), element) for element in existing_list]
-    existing_by_identity = {
-        identity: element for identity, element in identified if identity is not None
-    }
-    if existing_by_identity and all(
-        _element_identity(element) is not None for element in incoming_list
-    ):
+    existing_by_identity = _identity_index(existing_list)
+    incoming_index = _identity_index(incoming_list)
+    if existing_by_identity is not None and incoming_index is not None:
         merged: list = []
-        seen: set = set()
-        for element in incoming_list:
-            identity = _element_identity(element)
-            seen.add(identity)
+        for identity, element in incoming_index.items():
             prior = existing_by_identity.get(identity)
             merged.append(_merge_value(prior, element) if prior is not None else element)
         merged.extend(
-            element for identity, element in identified if identity is None or identity not in seen
+            element
+            for identity, element in existing_by_identity.items()
+            if identity not in incoming_index
         )
         return merged
 

@@ -1395,3 +1395,92 @@ class TestArtifactProvenanceGovernsReuse:
             config, _done_result(), dict(reentered, knowledge_summary=None)
         )
         assert len(calls) == 1
+
+
+class TestStaleArtifactAfterAFailedReentry:
+    """A stale artifact must not make a failed re-entry bill on every repeat.
+
+    A changed re-entry whose attempt is rejected writes no artifact, so the one
+    from the earlier input survives on disk. That survivor says nothing about
+    the input in front of us — the recorded outcome does, and it says this exact
+    input has already been tried (#2520).
+    """
+
+    @staticmethod
+    def _mirror(project_root: Path, audit: dict) -> None:
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _reentered() -> dict:
+        audit = _audit()
+        audit["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        audit["iterations"]["review_cycles_total"] = 2
+        return audit
+
+    def test_a_rejected_reentry_is_not_re_dispatched_on_every_later_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatches: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            dispatches.append(dict(kwargs))
+            # The first dispatch writes a summary; the re-entry is rejected.
+            output = VALID_OUTPUT if len(dispatches) == 1 else UNEVIDENCED_OUTPUT
+            return _FakeAgentResult(output=output)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._mirror(tmp_path, first_audit)
+        stale = summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8")
+
+        reentry_audit = self._reentered()
+        rejected = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentry_audit
+        )
+        assert rejected.attempted is True
+        assert rejected.written is False
+        self._mirror(tmp_path, reentry_audit)
+
+        # The artifact from the *earlier* input is still on disk. Repeated
+        # terminal writes of the re-entered run must not keep paying for it.
+        for _ in range(3):
+            outcome = knowledge_summary_flow.maybe_generate_run_summary(
+                config, _done_result(), self._reentered()
+            )
+            assert outcome.written is False
+
+        assert len(dispatches) == 2
+        assert summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8") == stale
+
+    def test_the_stale_artifact_is_still_replaced_once_material_changes_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reuse is scoped to the input that was tried, not to the run_id."""
+        dispatches: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            dispatches.append(dict(kwargs))
+            output = UNEVIDENCED_OUTPUT if len(dispatches) == 1 else VALID_OUTPUT
+            return _FakeAgentResult(output=output)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        rejected_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), rejected_audit)
+        self._mirror(tmp_path, rejected_audit)
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), self._reentered()
+        )
+
+        assert len(dispatches) == 2
+        assert outcome.status == "written"

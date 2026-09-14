@@ -291,3 +291,91 @@ def test_an_element_only_the_stored_list_has_survives(tmp_path: Path) -> None:
     _write_native_story_record(tmp_path, later, force_replace=True)
 
     assert [entry["cycle"] for entry in _record(tmp_path)["reviews"]] == [1, 2]
+
+
+def _attempt(name: str, cycle: int, **extra: object) -> dict:
+    """One reviewer-attempt record, shaped as ``review_pool`` writes them."""
+    entry = {
+        "name": name,
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "canonical_id": f"anthropic/{name}",
+        "completed_parseable_verdict": True,
+        "outcome": "completed",
+        "failure_reason": None,
+        "cycle": cycle,
+    }
+    entry.update(extra)
+    return entry
+
+
+def test_two_reviewers_in_one_cycle_do_not_inherit_each_other_s_failure(
+    tmp_path: Path,
+) -> None:
+    """A cycle names a cycle, not a reviewer — several attempts share one."""
+    audit = dict(_full_audit())
+    audit["reviewer_attempts"] = [
+        _attempt("opus", 1, outcome="failed", failure_reason="transport timeout"),
+        _attempt("gpt", 1),
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["reviewer_attempts"] = [
+        _attempt("opus", 1, outcome="failed", failure_reason="transport timeout"),
+        _attempt("gpt", 1),
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    attempts = _record(tmp_path)["reviewer_attempts"]
+    assert len(attempts) == 2
+    by_name = {entry["name"]: entry for entry in attempts}
+    assert by_name["gpt"]["failure_reason"] is None
+    assert by_name["gpt"]["outcome"] == "completed"
+    assert by_name["opus"]["failure_reason"] == "transport timeout"
+
+
+def test_a_retried_reviewer_in_one_cycle_keeps_both_of_its_attempts(
+    tmp_path: Path,
+) -> None:
+    """Same reviewer, same cycle, twice: identity distinguishes neither, so position does."""
+    audit = dict(_full_audit())
+    audit["reviewer_attempts"] = [
+        _attempt("opus", 1, outcome="failed", failure_reason="transport timeout"),
+        _attempt("opus", 1),
+        _attempt("gpt", 1),
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    # A later, shorter payload must not discard the attempts it stops short of.
+    later = dict(_full_audit())
+    later["reviewer_attempts"] = [
+        _attempt("opus", 1, outcome="failed", failure_reason="transport timeout"),
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    attempts = _record(tmp_path)["reviewer_attempts"]
+    assert len(attempts) == 3
+    assert attempts[0]["failure_reason"] == "transport timeout"
+    assert attempts[1] == _attempt("opus", 1)
+    assert attempts[2]["name"] == "gpt"
+
+
+def test_an_element_that_drops_a_naming_field_falls_back_to_position(
+    tmp_path: Path,
+) -> None:
+    """Omitting a naming field is a thinner payload, not a different element."""
+    audit = dict(_full_audit())
+    audit["reviewer_attempts"] = [_attempt("opus", 1), _attempt("gpt", 1)]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["reviewer_attempts"] = [
+        {"cycle": 1, "outcome": "completed"},
+        {"cycle": 1, "outcome": "completed"},
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    attempts = _record(tmp_path)["reviewer_attempts"]
+    assert len(attempts) == 2
+    assert [entry["name"] for entry in attempts] == ["opus", "gpt"]
