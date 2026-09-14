@@ -659,6 +659,188 @@ def _without_negative_landing_claim(incoming: dict, existing: dict | None) -> di
     return safe
 
 
+def _is_empty_value(value: object) -> bool:
+    """Report whether *value* says nothing — absent, null, or an empty container."""
+    return value is None or value == "" or value == [] or value == {}
+
+
+# The only top-level fields a later write may blank. Everything else is merged
+# under the "a later write that knows less is not authoritative" rule below, so
+# this list is where a deliberate reset goes: a field named here is replaced by
+# whatever the later write carries, including ``None``. Today it holds exactly
+# the landing claim, whose clearing is a real transition the run makes —
+# :func:`_without_negative_landing_claim` then resolves what the record is
+# allowed to say about it. A future field that must be clearable belongs here
+# rather than in a special case at the call site.
+_MERGE_CLEARABLE_FIELDS = _LANDING_CLAIM_FIELDS
+
+
+# Top-level blocks that describe one outcome as a unit and are therefore never
+# merged key-by-key. Half of a written knowledge-summary outcome beside half of
+# a rejected one is not a state the run was ever in: ``path`` and
+# ``index_rebuild`` are scoped to the attempt that produced them, so carrying
+# them forward beside a later ``written: false`` invents a record that points at
+# an artifact this outcome did not write. A non-empty incoming block replaces
+# the stored one whole; an absent or empty one still leaves it standing, because
+# saying nothing is not the same as saying something different.
+_MERGE_ATOMIC_FIELDS = ("knowledge_summary",)
+
+# Keys that can name one element of a list across writes. An element's identity
+# is the tuple of *every* one of these it carries, not the first that matches:
+# a run records one reviewer attempt per invocation, so several attempts share a
+# ``cycle`` and the cycle alone names none of them.
+_LIST_IDENTITY_KEYS = (
+    "finding_id",
+    "step_id",
+    "id",
+    "canonical_id",
+    "name",
+    "reviewer",
+    "provider",
+    "model",
+    "cycle",
+    "attempt",
+    "path",
+    "ref",
+    "slug",
+)
+
+
+def _element_identity(element: object) -> tuple[tuple[str, object], ...] | None:
+    """Return the composite identity of *element*, or ``None`` if it names none."""
+    if not isinstance(element, dict):
+        return None
+    identity = tuple(
+        (key, element[key])
+        for key in _LIST_IDENTITY_KEYS
+        if isinstance(element.get(key), (str, int, float))
+        and not isinstance(element.get(key), bool)
+        and element[key] != ""
+    )
+    return identity or None
+
+
+def _identity_index(elements: list) -> dict[tuple, object] | None:
+    """Index *elements* by identity, or ``None`` if identity does not distinguish them.
+
+    Pairing by identity is only sound when every element has one, all of them
+    name themselves with the same keys — otherwise a payload that merely omits a
+    naming field reads as a different element — and no two collide. A run that
+    retries one reviewer inside a cycle produces two attempts with identical
+    names for every key it carries, and that is precisely the case that must not
+    be paired up.
+    """
+    index: dict[tuple, object] = {}
+    key_shape: frozenset | None = None
+    for element in elements:
+        identity = _element_identity(element)
+        if identity is None:
+            return None
+        shape = frozenset(key for key, _value in identity)
+        if key_shape is None:
+            key_shape = shape
+        elif shape != key_shape:
+            return None
+        if identity in index:
+            return None
+        index[identity] = element
+    return index
+
+
+def _merge_list(existing_list: list, incoming_list: list) -> list:
+    """Reconcile two versions of one list, element by element.
+
+    A later write that carries the same review or finding with fewer fields on
+    it is still a thinner payload — the loss just happens one level further down
+    than a missing key (#2519). So elements are paired up before being merged:
+    by their own composite identity (``finding_id``, ``name`` + ``cycle``,
+    ``path``, …) when that identity actually distinguishes them, and by position
+    when it does not. Elements only the existing list has are kept either way,
+    which is what makes a shorter later list non-destructive; elements only the
+    incoming list has are added.
+
+    Matching by position is safe here because these collections are appended to
+    across a single run's terminal writes, never reordered — so pairing index
+    *i* with index *i* pairs an entry with itself, and a shorter later list
+    simply stops short of the tail rather than replacing it.
+    """
+    existing_by_identity = _identity_index(existing_list)
+    incoming_index = _identity_index(incoming_list)
+    if existing_by_identity is not None and incoming_index is not None:
+        merged: list = []
+        for identity, element in incoming_index.items():
+            prior = existing_by_identity.get(identity)
+            merged.append(_merge_value(prior, element) if prior is not None else element)
+        merged.extend(
+            element
+            for identity, element in existing_by_identity.items()
+            if identity not in incoming_index
+        )
+        return merged
+
+    merged = []
+    for index in range(max(len(existing_list), len(incoming_list))):
+        if index >= len(incoming_list):
+            merged.append(existing_list[index])
+        elif index >= len(existing_list):
+            merged.append(incoming_list[index])
+        else:
+            merged.append(_merge_value(existing_list[index], incoming_list[index]))
+    return merged
+
+
+def _merge_value(existing_value: object, incoming_value: object) -> object:
+    """Reconcile one field's existing and incoming values, keeping the fuller.
+
+    Mappings merge key-by-key all the way down, so a later payload that carries
+    a *partial* ``outcome`` or ``changed_files`` block updates the keys it names
+    and leaves the rest of the block standing. Lists are reconciled element-wise
+    by :func:`_merge_list`. Scalars follow the same rule at their own level: a
+    concrete incoming value wins, an empty one leaves a non-empty existing value
+    alone.
+    """
+    if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
+        merged = dict(existing_value)
+        for key, value in incoming_value.items():
+            merged[key] = _merge_value(merged[key], value) if key in merged else value
+        return merged
+    if isinstance(existing_value, list) and isinstance(incoming_value, list):
+        return _merge_list(existing_value, incoming_value)
+    if _is_empty_value(incoming_value) and not _is_empty_value(existing_value):
+        return existing_value
+    return incoming_value
+
+
+def _merge_canonical_record(existing: dict, incoming: dict) -> dict:
+    """Fold *incoming* into *existing* without losing what *existing* already knew.
+
+    A rewrite of the canonical per-run record is a later statement about the
+    same run, not a replacement run. A later write that happens to carry less —
+    a key absent, null, emptied, or a nested block naming only some of its keys —
+    is not authoritative over the fuller record already on disk merely by being
+    later (#2519). Concrete incoming values still win, and keys the existing
+    record never had are added.
+
+    There are two stated exceptions. ``_MERGE_CLEARABLE_FIELDS`` may be blanked,
+    so a negative landing claim still reaches
+    :func:`_without_negative_landing_claim`, which runs on the merged payload
+    and decides what the record may say about it. ``_MERGE_ATOMIC_FIELDS`` are
+    replaced whole when the later write carries them, so a block describing one
+    outcome is never assembled from two different outcomes.
+    """
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key in _MERGE_CLEARABLE_FIELDS or key not in merged:
+            merged[key] = value
+            continue
+        if key in _MERGE_ATOMIC_FIELDS:
+            if not _is_empty_value(value):
+                merged[key] = value
+            continue
+        merged[key] = _merge_value(merged[key], value)
+    return merged
+
+
 def _write_native_story_record(
     project_root: Path,
     audit_data: dict,
@@ -708,6 +890,10 @@ def _write_native_story_record(
         existing = _read_canonical_run_file(project_root, run_file)
         if existing is None or force_replace:
             # Absent, unreadable, not a mapping, or a deliberate replacement.
+            # A replacement over an existing record merges rather than clobbers,
+            # so a thinner later payload cannot blank data the record carries.
+            if existing is not None:
+                redacted = _merge_canonical_record(existing, redacted)
             redacted = _without_negative_landing_claim(redacted, existing)
             _replace_canonical_run_file(run_file, redacted)
             persisted = redacted
