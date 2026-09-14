@@ -3659,6 +3659,20 @@ def _snapshot_source_matches(config: ForgeConfig, snapshot: SprintConfigSnapshot
         return source_path == str(snapshot.pinned_path)
 
 
+class SprintConfigError(ValueError):
+    """A sprint's pinned configuration cannot be loaded as its operative config.
+
+    This stays an ordinary exception so non-CLI callers — especially the daemon
+    queue — can record the failed sprint and continue processing later entries.
+    The CLI translates it to its standard structural-config message and exit
+    status at the command boundary.
+    """
+
+    def __init__(self, config_path: Path, cause: ValueError) -> None:
+        self.config_path = Path(config_path)
+        super().__init__(str(cause))
+
+
 def _preserve_runtime_config_overrides(config: ForgeConfig, pinned: ForgeConfig) -> ForgeConfig:
     """Carry operator and derived invocation choices onto the pinned config.
 
@@ -3746,12 +3760,10 @@ def establish_sprint_config(
         pinned = config_snapshot_mod.load_pinned_config(snapshot, project_root=config.project_root)
     except ValueError as exc:
         # A stale pin is still this sprint's operative forge.yaml, so falling
-        # back to bootstrap config would silently change routing. Preserve the
-        # standard structural-config error and exit status instead.
-        from theforge.cli.shared import print_config_load_error  # noqa: PLC0415
-
-        print_config_load_error(snapshot.pinned_path, exc)
-        raise SystemExit(2) from exc
+        # back to bootstrap config would silently change routing. Let the CLI
+        # render the normal structural-config message, while daemon callers can
+        # account for this failed queue entry and continue.
+        raise SprintConfigError(snapshot.pinned_path, exc) from exc
     return _preserve_runtime_config_overrides(config, pinned), resolved_sprint_id, snapshot
 
 

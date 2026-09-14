@@ -7,7 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from theforge.cli.overrides import apply_base_branch_override
-from theforge.cli.shared import _find_config, _print_startup_auth_warnings, load_config_checked
+from theforge.cli.shared import (
+    _find_config,
+    _print_startup_auth_warnings,
+    load_config_checked,
+    print_config_load_error,
+)
 from theforge.config import load_config
 from theforge.config.provenance import (
     VALUE_SOURCE_CLI_OVERRIDE,
@@ -24,7 +29,7 @@ from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
-from theforge.sprint.runner import parse_manifest_story_refs
+from theforge.sprint.runner import SprintConfigError, parse_manifest_story_refs
 
 # A run's reported disposition must be derived from how it actually ended, not
 # from the absence of a record saying otherwise. ``_BACKSTOP`` carries the
@@ -101,6 +106,10 @@ def cmd_sprint(args: object) -> int:
     except KeyboardInterrupt:
         _BACKSTOP.update({"outcome": "stopped", "cause": "interrupted by operator (SIGINT)"})
         raise
+    except SprintConfigError as exc:
+        print_config_load_error(exc.config_path, exc)
+        _record_run_failure(_exc_cause(exc))
+        return 2
     except BaseException as exc:
         _record_run_failure(_exc_cause(exc))
         raise
@@ -429,6 +438,8 @@ def _cmd_sprint(args: object) -> int:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
+    except SprintConfigError:
         raise
     except Exception as exc:
         import traceback
@@ -1244,8 +1255,6 @@ def _run_query_mode(
                 issues_arg=issues_arg,
             ),
         )
-        _print_startup_auth_warnings(config)
-
     # Fetch issue list (lightweight — just numbers and titles)
     try:
         if milestone:
@@ -1777,6 +1786,8 @@ def _run_query_mode(
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
+    except SprintConfigError:
         raise
     except Exception as exc:
         import traceback

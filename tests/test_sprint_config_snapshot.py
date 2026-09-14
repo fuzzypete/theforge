@@ -146,7 +146,7 @@ def test_reentry_reuses_the_pin_and_reports_drift(tmp_path: Path) -> None:
     event = cs.check_drift(second, story="issue-1945")
     assert event is not None
     assert event["pinned_digest"] == first.digest
-    assert event["project_root_digest"] == cs.digest_text("project: two\n")
+    assert event["source_config_digest"] == cs.digest_text("project: two\n")
     assert event["story"] == "issue-1945"
     assert event["pinned_config_in_effect"] is True
     assert "forge.yaml" in cs.describe_drift(event)
@@ -623,9 +623,10 @@ def test_establish_sprint_config_pins_the_explicit_config_source(tmp_path: Path)
     assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
 
 
-def test_invalid_reused_pin_uses_the_structural_config_exit(capsys, tmp_path: Path) -> None:
-    """A pin that no longer validates fails like any other unreadable config."""
+def test_invalid_reused_pin_raises_a_typed_config_error(tmp_path: Path) -> None:
+    """A pin that no longer validates stays catchable by the daemon queue."""
     from theforge.config import load_config
+    from theforge.sprint.runner import SprintConfigError
 
     _write_root_config(tmp_path, _PINNED_CONFIG)
     first_config = load_config(tmp_path / "forge.yaml")
@@ -633,13 +634,25 @@ def test_invalid_reused_pin_uses_the_structural_config_exit(capsys, tmp_path: Pa
     assert snapshot is not None and snapshot.pinned_path is not None
     snapshot.pinned_path.write_text("dev: []\n", encoding="utf-8")
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(SprintConfigError, match="dev") as exc_info:
         establish_sprint_config(load_config(tmp_path / "forge.yaml"), "sprint-a")
 
-    assert exc_info.value.code == 2
-    err = capsys.readouterr().err
-    assert "forge.yaml is invalid" in err
-    assert "dev" in err
+    assert exc_info.value.config_path == snapshot.pinned_path
+
+
+def test_cmd_sprint_renders_a_typed_pinned_config_error(capsys, tmp_path: Path) -> None:
+    """The CLI preserves the structural-config message and exit status."""
+    from theforge.cli import sprint as sprint_cli
+    from theforge.sprint.runner import SprintConfigError
+
+    config_path = tmp_path / "pinned-forge.yaml"
+    with patch(
+        "theforge.cli.sprint._cmd_sprint",
+        side_effect=SprintConfigError(config_path, ValueError("missing dev profile")),
+    ):
+        assert sprint_cli.cmd_sprint(SimpleNamespace()) == 2
+
+    assert "forge.yaml is invalid: missing dev profile" in capsys.readouterr().err
 
 
 def test_query_startup_warnings_use_the_snapshot_backed_config(tmp_path: Path) -> None:
@@ -687,4 +700,29 @@ def test_query_startup_warnings_use_the_snapshot_backed_config(tmp_path: Path) -
         )
 
     assert rc == 1
-    warn.assert_called_once_with(pinned_config)
+    warn.assert_not_called()
+
+
+def test_explicit_config_drift_tracks_the_pinned_source(tmp_path: Path) -> None:
+    """An explicit --config pin ignores root drift and reports source drift."""
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    explicit_config = tmp_path / "release-forge.yaml"
+    explicit_config.write_text(_PINNED_CONFIG, encoding="utf-8")
+    _operative, _sprint_id, snapshot = establish_sprint_config(
+        load_config(explicit_config), "sprint-a"
+    )
+    assert snapshot is not None
+
+    # The root has always differed, but it was never the source this sprint pinned.
+    assert cs.check_drift(snapshot, story="issue-1") is None
+
+    explicit_config.write_text(_DRIFTED_CONFIG, encoding="utf-8")
+    event = cs.check_drift(snapshot, story="issue-1")
+
+    assert event is not None
+    assert event["source_config"] == str(explicit_config)
+    assert event["source_config_digest"] == cs.digest_text(_DRIFTED_CONFIG)
+    assert "release-forge.yaml changed" in cs.describe_drift(event)
