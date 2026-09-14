@@ -228,14 +228,23 @@ class TestClassification:
         assert classify_agent_failure(result, phase="DEV") is None
 
     def test_agent_ended_without_result_is_not_classified_as_process(self):
+        """The model executed, and the run still records that it reported nothing.
+
+        ``agent_ended_without_result`` is a model-execution code, so the
+        invocation counts as having produced model output (#2652) — that is what
+        keeps its session and its spend from being treated as a call that never
+        reached the model. It reported no judgment about the story, though, so
+        the no-judgment record survives the reclassification.
+        """
         result = _ended_without_result_failure()
-        assert produced_model_output(result) is False
+        assert produced_model_output(result) is True
         failure = classify_agent_failure(result, phase="DEV")
         assert failure is not None
         assert failure.category == CATEGORY_NO_RESULT
         assert classify_failure_category(result) == CATEGORY_NO_RESULT
 
-    def test_no_text_marker_beats_usage_telemetry(self):
+    def test_usage_telemetry_beats_a_no_text_marker(self):
+        """Consumed tokens outrank the text the runner happened to leave (#2652)."""
         result = AgentResult(
             success=False,
             output=(
@@ -257,10 +266,71 @@ class TestClassification:
                 ),
             ),
         )
+        assert produced_model_output(result) is True
+        assert classify_agent_failure(result, phase="DEV") is None
+
+    def test_empty_output_with_usage_telemetry_is_model_output(self):
+        """No text at all still means a model ran when its own usage says so."""
+        result = AgentResult(
+            success=False,
+            output="",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="dev",
+            model_usage=(
+                ModelUsage(
+                    model="claude-sonnet-4-5",
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=0.11,
+                ),
+            ),
+        )
+        assert produced_model_output(result) is True
+
+    @pytest.mark.parametrize(
+        "failure_code", ["agent_ended_without_result", "max_iterations_reached"]
+    )
+    def test_model_execution_failure_code_beats_empty_and_marker_text(self, failure_code):
+        """A model-execution code is a record of what the invocation did."""
+        for output in ("", "CLAUDE_STREAM_NO_TEXT: reason=missing_result_event"):
+            result = AgentResult(
+                success=False,
+                output=output,
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="dev",
+                failure_code=failure_code,
+            )
+            assert produced_model_output(result) is True, output
+
+    def test_marker_only_failure_without_telemetry_produced_nothing(self):
+        """No usage, no model-execution code: the marker is all there is."""
+        result = AgentResult(
+            success=False,
+            output="CLAUDE_STREAM_NO_TEXT: reason=result_missing_text",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="dev",
+        )
         assert produced_model_output(result) is False
         failure = classify_agent_failure(result, phase="DEV")
         assert failure is not None
         assert failure.category == "process"
+
+    def test_killed_before_output_stays_a_no_output_ending(self):
+        """The one process death that must never read as a model execution."""
+        result = _killed_before_output_failure()
+        assert produced_model_output(result) is False
+        assert classify_failure_category(result) == "process"
 
     def test_unrecognized_failure_text_is_not_reclassified(self):
         """Errs toward the pre-existing path when it cannot identify a substrate event."""
