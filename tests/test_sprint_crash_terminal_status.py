@@ -223,6 +223,30 @@ def test_query_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None:
     assert "RuntimeError" in cause
 
 
+def test_query_mode_records_typed_config_error_cause(tmp_path: Path) -> None:
+    """A rejected pinned config is surfaced in the query run's terminal marker."""
+    from theforge.sprint.runner import SprintConfigError
+
+    config = _make_forge_config(tmp_path)
+
+    with pytest.raises(SprintConfigError, match="missing dev profile"):
+        _run_query_mode(
+            tmp_path,
+            config,
+            "config-error-query-run",
+            {
+                "side_effect": SprintConfigError(
+                    tmp_path / "pinned-forge.yaml", ValueError("missing dev profile")
+                )
+            },
+        )
+
+    outcome, cause = detach.read_run_ended_record("config-error-query-run", tmp_path)
+    assert outcome == "failed"
+    assert "SprintConfigError" in cause
+    assert "missing dev profile" in cause
+
+
 def test_query_mode_records_completed_on_success(tmp_path: Path) -> None:
     config = _make_forge_config(tmp_path)
 
@@ -232,8 +256,21 @@ def test_query_mode_records_completed_on_success(tmp_path: Path) -> None:
     assert detach.read_run_ended_record("ok-run", tmp_path) == ("completed", None)
 
 
-def test_manifest_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("error_type", "message", "expected_code"),
+    [
+        (RuntimeError, "sprint crash", 1),
+        (None, "missing dev profile", 2),
+    ],
+)
+def test_manifest_mode_records_failed_outcome_with_cause(
+    tmp_path: Path,
+    error_type: type[RuntimeError] | None,
+    message: str,
+    expected_code: int,
+) -> None:
     from theforge.cli import cmd_sprint
+    from theforge.sprint.runner import SprintConfigError
 
     config = _make_forge_config(tmp_path)
     manifest_path = tmp_path / "sprint.yaml"
@@ -263,6 +300,12 @@ def test_manifest_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None
 
     captured: dict = {}
 
+    error: BaseException
+    if error_type is None:
+        error = SprintConfigError(forge_yaml, ValueError(message))
+    else:
+        error = error_type(message)
+
     def _capture_write(run_id, project_root, outcome="stopped", *, force=False, cause=None):
         captured["run_id"] = run_id
         captured["outcome"] = outcome
@@ -270,7 +313,7 @@ def test_manifest_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None
 
     with (
         patch("theforge.cli.sprint.load_config", return_value=config),
-        patch("theforge.cli.sprint.run_sprint", side_effect=RuntimeError("sprint crash")),
+        patch("theforge.cli.sprint.run_sprint", side_effect=error),
         patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         patch("theforge.cli.sprint.release_story_locks"),
         patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
@@ -279,9 +322,11 @@ def test_manifest_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None
     ):
         rc = cmd_sprint(args)
 
-    assert rc == 1
+    assert rc == expected_code
     assert captured["outcome"] == "failed"
-    assert "sprint crash" in captured["cause"]
+    assert message in captured["cause"]
+    if error_type is None:
+        assert "SprintConfigError" in captured["cause"]
 
 
 def test_cmd_run_records_failed_outcome_on_exception(tmp_path: Path) -> None:

@@ -12,9 +12,9 @@ once, at sprint entry, into ``.forge/sprints/<sprint_id>/forge.yaml`` and every
 story in that sprint is prepared from that copy. Re-entry (``--resume``, or the
 ``os.execv`` re-exec after a source update) reloads the existing snapshot rather
 than recapturing, so the pin survives exactly the event that motivated it. When
-the project-root file no longer matches the pin, the divergence is recorded as a
-drift event on the snapshot record and surfaced in the sprint log and audit —
-the story still runs under the pinned copy.
+the config source that was pinned no longer matches the pin, the divergence is
+recorded as a drift event on the snapshot record and surfaced in the sprint log
+and audit — the story still runs under the pinned copy.
 
 Stdlib + yaml only, so both the sprint runner and the coordinator's run-setup
 path can import it without a dependency cycle.
@@ -137,7 +137,12 @@ def load_audit_record(project_root: Path, sprint_id: str | None) -> dict | None:
     return _load_record(Path(project_root), sprint_id)
 
 
-def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
+def capture_or_load(
+    project_root: Path,
+    sprint_id: str,
+    *,
+    source_path: Path | None = None,
+) -> SprintConfigSnapshot:
     """Return this sprint's pinned configuration, capturing it on first entry.
 
     Capture happens once per logical sprint. On re-entry — ``--resume`` or the
@@ -146,9 +151,13 @@ def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
     pin exists for; the difference is reported by :func:`check_drift`, not
     absorbed by a fresh capture.
 
-    A missing or unreadable project-root ``forge.yaml`` yields a snapshot with
-    ``present=False`` rather than an error: callers fall back to their previous
-    behaviour of reading the project root directly.
+    ``source_path`` is the configuration file the invocation actually loaded.
+    It defaults to the project-root ``forge.yaml`` for existing callers, but a
+    ``forge sprint --config`` invocation must pin the supplied file rather than
+    silently substituting a same-directory default. A missing or unreadable
+    source yields a snapshot with ``present=False`` rather than an error:
+    callers fall back to their previous behaviour of reading the project root
+    directly.
     """
     project_root = Path(project_root)
     pinned = snapshot_config_path(project_root, sprint_id)
@@ -167,7 +176,7 @@ def capture_or_load(project_root: Path, sprint_id: str) -> SprintConfigSnapshot:
             drift_events=list(record.get("drift_events") or []),
         )
 
-    src = project_config_path(project_root)
+    src = Path(source_path) if source_path is not None else project_config_path(project_root)
     text = _read_text(src)
     if text is None:
         return SprintConfigSnapshot(
@@ -207,7 +216,7 @@ def check_drift(
     *,
     story: str | None = None,
 ) -> dict | None:
-    """Record and return a drift event when the project root has moved off the pin.
+    """Record and return a drift event when the pinned config source has changed.
 
     Returns None when there is nothing to report (no snapshot, no pin, or the
     live file still matches). A repeat of an already-recorded digest for the
@@ -216,18 +225,23 @@ def check_drift(
     """
     if snapshot is None or not snapshot.present or snapshot.digest is None:
         return None
-    current = project_config_digest(snapshot.project_root)
+    source_path = Path(snapshot.source)
+    current_text = _read_text(source_path)
+    current = None if current_text is None else digest_text(current_text)
     if current == snapshot.digest:
         return None
     for prior in snapshot.drift_events:
-        if prior.get("project_root_digest") == current and prior.get("story") == story:
+        prior_digest = prior.get("source_config_digest", prior.get("project_root_digest"))
+        if prior_digest == current and prior.get("story") == story:
             return None
     event = {
         "detected_at": _now(),
         "story": story,
         "pinned_digest": snapshot.digest,
-        "project_root_digest": current,
-        "project_root_config_present": current is not None,
+        "source_config": str(source_path),
+        "source_is_project_root": source_path == project_config_path(snapshot.project_root),
+        "source_config_digest": current,
+        "source_config_present": current is not None,
         "pinned_config_in_effect": True,
     }
     snapshot.drift_events.append(event)
@@ -238,12 +252,19 @@ def check_drift(
 def describe_drift(event: dict) -> str:
     """One operator-facing line for a drift event."""
     where = f" before story {event['story']}" if event.get("story") else ""
-    if not event.get("project_root_config_present", True):
+    source = str(event.get("source_config") or "forge.yaml in the project root")
+    if event.get("source_is_project_root", not event.get("source_config")):
+        source = "forge.yaml in the project root"
+    else:
+        source = f"config source {source}"
+    present = event.get("source_config_present", event.get("project_root_config_present", True))
+    current_digest = event.get("source_config_digest", event.get("project_root_digest"))
+    if not present:
         current = "removed"
     else:
-        current = f"now {str(event.get('project_root_digest'))[:12]}"
+        current = f"now {str(current_digest)[:12]}"
     return (
-        f"forge.yaml in the project root changed after this sprint pinned its config{where} "
+        f"{source} changed after this sprint pinned its config{where} "
         f"(pinned {str(event.get('pinned_digest'))[:12]}, {current}); "
         "stories keep running under the pinned snapshot"
     )
@@ -257,6 +278,22 @@ def activate(snapshot: "SprintConfigSnapshot | None") -> None:
         os.environ[SNAPSHOT_ENV_VAR] = str(snapshot.pinned_path)
     else:
         os.environ.pop(SNAPSHOT_ENV_VAR, None)
+
+
+def load_pinned_config(snapshot: "SprintConfigSnapshot", *, project_root: Path):
+    """Load the active snapshot while retaining the sprint's logical root.
+
+    A snapshot lives below ``.forge/sprints/`` rather than beside the project's
+    secrets and source tree.  Passing its directory directly to ``load_config``
+    would therefore make root-relative checks and project-scoped secrets resolve
+    against the snapshot directory.  The pinned file is the configuration
+    source; the checkout that owns the sprint remains its project root.
+    """
+    if not snapshot.present or snapshot.pinned_path is None:
+        raise ValueError("cannot load an unavailable sprint configuration snapshot")
+    from theforge.config import load_config  # noqa: PLC0415 - keeps this module low-dependency
+
+    return load_config(snapshot.pinned_path, project_root=project_root)
 
 
 def deactivate() -> None:
