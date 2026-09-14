@@ -1289,3 +1289,109 @@ class TestWrittenSummaryReentry:
 
         assert len(calls) == 1
         assert outcome.status == "written"
+
+
+class TestArtifactProvenanceGovernsReuse:
+    """The artifact records what it was generated from, and that is what is asked.
+
+    A run record that was never mirrored leaves no outcome to consult, and an
+    artifact written before the digest existed cannot say whether it still
+    describes the run. Keying reuse to the artifact's own
+    ``generation.input_digest`` is what makes both cases decidable (#2520).
+    """
+
+    @staticmethod
+    def _write_legacy_artifact(project_root: Path) -> Path:
+        """A pre-digest (v48-era) summary artifact: no ``generation.input_digest``."""
+        path = summary_path(project_root, RUN_ID)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": SUMMARY_SCHEMA_VERSION,
+                    "run_id": RUN_ID,
+                    "generated_at": "2026-08-15T12:00:00+00:00",
+                    "generation": {"model": "claude-sonnet-4-5", "transport": "api"},
+                    "story": {"slug": "retry-client", "name": "Retry the client"},
+                    "story_shape": {"work_type": "feature"},
+                    "domains": ["backend"],
+                    "changed_files": ["src/client.py"],
+                    "learned_patterns": ["retry-decorator"],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_written_artifact_records_the_input_it_came_from(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), audit
+        )
+
+        artifact = yaml.safe_load(summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8"))
+        assert artifact["generation"]["input_digest"] == (
+            knowledge_summary_flow._generation_input_digest(_audit())
+        )
+
+    def test_an_artifact_whose_outcome_was_never_mirrored_is_not_regenerated(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The repeat-write loop that billed twice and overwrote a correct summary."""
+        config = _make_config(tmp_path)
+
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), _audit())
+        original = summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8")
+
+        # Nothing mirrors the outcome into a canonical run record, so every later
+        # write starts from a fresh audit payload with no recorded outcome.
+        for _ in range(3):
+            outcome = knowledge_summary_flow.maybe_generate_run_summary(
+                config, _done_result(), _audit()
+            )
+            assert outcome.attempted is False
+
+        assert len(calls) == 1
+        assert summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8") == original
+
+    def test_a_pre_digest_artifact_with_changed_input_is_regenerated_once(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """A v48 written outcome must not permanently suppress changed re-entry."""
+        self._write_legacy_artifact(tmp_path)
+        run_record = tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        run_record.parent.mkdir(parents=True, exist_ok=True)
+        run_record.write_text(
+            json.dumps(
+                {
+                    "run_id": RUN_ID,
+                    "knowledge_summary": {
+                        "status": "written",
+                        "attempted": True,
+                        "written": True,
+                        "path": str(summary_path(tmp_path, RUN_ID)),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = _make_config(tmp_path)
+
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert first.status == "written"
+        assert len(calls) == 1
+
+        # The artifact now carries a digest, so the repeat of that same write
+        # reuses it instead of billing again.
+        knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), dict(reentered, knowledge_summary=None)
+        )
+        assert len(calls) == 1

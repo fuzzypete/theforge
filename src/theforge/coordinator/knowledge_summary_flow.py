@@ -17,9 +17,11 @@ prompt:
   omits ``--allowedTools`` and grants its unrestricted default set), so a
   CLI-transport profile is never dispatched here — if no API transport can be
   derived, generation is skipped and says so.
-* **Exactly once per run.** Several terminal seams write a finished run's
-  audit. Generation is guarded on the artifact's own existence, so a run that
-  reaches more than one of them is summarised once and billed once.
+* **Exactly once per generation input.** Several terminal seams write a
+  finished run's audit. Generation is guarded on what the persisted artifact
+  records being generated from, so a run that reaches more than one of them is
+  summarised once and billed once — while a run re-entered under the same
+  run_id with different material is still allowed a fresh attempt (#2520).
 
 Schema/validation lives in ``theforge.knowledge_summary``; prompt construction
 lives in ``theforge.task.summary_prompts``.
@@ -42,6 +44,7 @@ from theforge.knowledge_summary import (
     extract_anchors,
     parse_summary_output,
     summary_exists,
+    summary_generation_input_digest,
     validate_proposed_summary,
     write_summary,
 )
@@ -454,21 +457,13 @@ def maybe_generate_run_summary(
             )
 
         digest = _generation_input_digest(audit)
-        if _reuse_existing_outcome(existing, digest):
-            # Same run, same generation input, already attempted: this is one of
-            # the sprint's repeated terminal writes, not a new attempt.
-            return _echo_existing_outcome(audit, existing)
-
-        if summary_exists(config.project_root, run_id) and (
-            existing is None or existing.generation_input_digest is None
-        ):
-            # A summary artifact is on disk and nothing durable records what it
-            # was generated from — a pre-digest record, or one whose outcome was
-            # never mirrored. There is no change to detect, so re-billing on
-            # every subsequent write would be the old duplicate-dispatch bug in
-            # a new place. Report the artifact instead — and echo the prior
-            # outcome untouched rather than backfilling it with a digest it
-            # never earned.
+        if summary_generation_input_digest(config.project_root, run_id) == digest:
+            # The artifact on disk records being generated from exactly this
+            # input, so this write is a repeat of the one that produced it. The
+            # artifact is asked rather than the outcome because it is the thing
+            # that persists: a run record that was never mirrored leaves no
+            # outcome to consult, and that gap is what let a later repeat
+            # re-dispatch and overwrite a summary that was already correct.
             if existing is not None:
                 return _echo_existing_outcome(audit, existing)
             return _record_summary_outcome(
@@ -481,6 +476,21 @@ def maybe_generate_run_summary(
                 ),
             )
 
+        if not summary_exists(config.project_root, run_id) and _reuse_existing_outcome(
+            existing, digest
+        ):
+            # No artifact was written, and the recorded outcome says this same
+            # input was already attempted: one of the sprint's repeated terminal
+            # writes for a story whose summary attempt did not produce one.
+            return _echo_existing_outcome(audit, existing)
+
+        # Everything else generates. That deliberately includes an artifact
+        # whose ``generation.input_digest`` is absent (written before the digest
+        # existed) or different from this run's: neither can say the artifact
+        # still describes the run in front of us, and a summary that may be
+        # stale is exactly what a re-entered run needs regenerated (#2520). The
+        # attempt is bounded — the artifact it writes carries the digest, so the
+        # next repeat of this same input reuses it.
         anchors = extract_anchors(audit)
         if anchors.is_empty():
             reason = "run offers no citable evidence"
@@ -563,6 +573,10 @@ def maybe_generate_run_summary(
                 "model": profile.model,
                 "transport": profile.mode,
                 "cost_usd": cost_usd,
+                # What this summary was generated from. The artifact is the
+                # durable record of its own provenance, so a later write can ask
+                # it whether the run has changed since (#2520).
+                "input_digest": digest,
             },
         )
         path = write_summary(config.project_root, run_id, artifact)

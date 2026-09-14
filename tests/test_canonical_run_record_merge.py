@@ -180,3 +180,114 @@ def test_the_landing_fields_remain_the_one_clearable_exception(tmp_path: Path) -
 
     # Cleared, not preserved — the exemption is doing its job.
     assert _record(tmp_path)["landing"] is None
+
+
+def test_a_later_rejected_summary_does_not_keep_the_written_one_s_artifact_metadata(
+    tmp_path: Path,
+) -> None:
+    """`knowledge_summary` is one outcome, not a pile of keys from several."""
+    audit = dict(_full_audit())
+    audit["knowledge_summary"] = {
+        "status": "written",
+        "attempted": True,
+        "written": True,
+        "path": ".forge/knowledge/summaries/run-1.yaml",
+        "index_rebuild": {"status": "rebuilt"},
+    }
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["knowledge_summary"] = {
+        "status": "rejected",
+        "attempted": True,
+        "written": False,
+        "reason": "evidence did not resolve",
+    }
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert _record(tmp_path)["knowledge_summary"] == {
+        "status": "rejected",
+        "attempted": True,
+        "written": False,
+        "reason": "evidence did not resolve",
+    }
+
+
+def test_an_absent_summary_block_still_leaves_the_recorded_one_standing(
+    tmp_path: Path,
+) -> None:
+    """Atomic does not mean clearable — saying nothing is not saying otherwise."""
+    audit = dict(_full_audit())
+    audit["knowledge_summary"] = {"status": "written", "attempted": True, "written": True}
+    _write_native_story_record(tmp_path, audit)
+
+    _write_native_story_record(tmp_path, _full_audit(), force_replace=True)
+
+    assert _record(tmp_path)["knowledge_summary"]["written"] is True
+
+
+def test_an_equal_length_list_with_thinner_elements_keeps_the_element_fields(
+    tmp_path: Path,
+) -> None:
+    """The loss just happens one level further down than a missing key."""
+    audit = dict(_full_audit())
+    audit["reviews"] = [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES", "summary": "missing read timeout"},
+        {"cycle": 2, "verdict": "APPROVE", "summary": "resolved"},
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["reviews"] = [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+        {"cycle": 2, "verdict": "APPROVE"},
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert _record(tmp_path)["reviews"] == [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES", "summary": "missing read timeout"},
+        {"cycle": 2, "verdict": "APPROVE", "summary": "resolved"},
+    ]
+
+
+def test_list_elements_are_paired_by_their_own_identity_not_by_position(
+    tmp_path: Path,
+) -> None:
+    audit = dict(_full_audit())
+    audit["finding_registry"] = [
+        {"finding_id": "f-001", "severity": "P1", "file": "src/client.py"},
+        {"finding_id": "f-002", "severity": "P2", "file": "src/retry.py"},
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    # Reordered and thinner; identity, not position, decides what merges.
+    later["finding_registry"] = [
+        {"finding_id": "f-002", "disposition": "resolved"},
+        {"finding_id": "f-001", "disposition": "resolved"},
+    ]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    by_id = {entry["finding_id"]: entry for entry in _record(tmp_path)["finding_registry"]}
+    assert by_id["f-001"] == {
+        "finding_id": "f-001",
+        "severity": "P1",
+        "file": "src/client.py",
+        "disposition": "resolved",
+    }
+    assert by_id["f-002"]["severity"] == "P2"
+
+
+def test_an_element_only_the_stored_list_has_survives(tmp_path: Path) -> None:
+    audit = dict(_full_audit())
+    audit["reviews"] = [
+        {"cycle": 1, "verdict": "REQUEST_CHANGES"},
+        {"cycle": 2, "verdict": "APPROVE"},
+    ]
+    _write_native_story_record(tmp_path, audit)
+
+    later = dict(_full_audit())
+    later["reviews"] = [{"cycle": 1, "verdict": "REQUEST_CHANGES"}]
+    _write_native_story_record(tmp_path, later, force_replace=True)
+
+    assert [entry["cycle"] for entry in _record(tmp_path)["reviews"]] == [1, 2]

@@ -521,6 +521,32 @@ def summary_exists(project_root: Path, run_id: str) -> bool:
     return summary_path(project_root, run_id).exists()
 
 
+def summary_generation_input_digest(project_root: Path, run_id: str) -> str | None:
+    """Return the generation input a persisted summary records being built from.
+
+    The artifact is the durable thing whose provenance matters: it outlives the
+    audit payload that produced it and survives a run record that was never
+    mirrored. Asking it what input it came from is therefore what distinguishes
+    "this exact run has already been summarised" from "a summary exists for this
+    run_id, generated from material that has since changed" (#2520). ``None``
+    means the artifact predates the digest and cannot say — an honest unknown,
+    never to be confused with a match.
+    """
+    path = summary_path(project_root, run_id)
+    try:
+        with open(path, encoding="utf-8") as f:
+            artifact = yaml.safe_load(f)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    if not isinstance(artifact, dict):
+        return None
+    generation = artifact.get("generation")
+    if not isinstance(generation, dict):
+        return None
+    digest = generation.get("input_digest")
+    return digest if isinstance(digest, str) and digest else None
+
+
 def write_summary(project_root: Path, run_id: str, artifact: dict) -> Path:
     """Write the artifact atomically and return its path."""
     path = summary_path(project_root, run_id)
