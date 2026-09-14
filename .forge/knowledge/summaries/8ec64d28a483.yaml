@@ -1,0 +1,141 @@
+schema_version: 2
+run_id: 8ec64d28a483
+authoritative_run_record: .forge/audits/runs/8ec64d28a483.json
+generated_at: '2026-09-13T23:54:33.273373+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.013115
+story:
+  slug: issue-2652
+  name: A failed agent invocation's session id is reused as the resume target for
+    its own retry, so a session that became unusable is retried into repeatedly
+  github_issue: 2652
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/agent_failure.py
+- src/theforge/coordinator/dev_phase.py
+- tests/test_coord_dev_phase_routing.py
+- tests/test_coord_max_iterations_no_submit.py
+- tests/test_coord_no_judgment_seam.py
+what_changed:
+  description: The run changed DEV failure handling so model-output classification
+    is driven by invocation evidence instead of output-text markers, and retry/session-resume
+    decisions stop treating a failing attempt as authoritative about what should be
+    resumed. It also changed no-submit retry-note handling so the same guidance text
+    is not appended twice with different framing.
+  approach: The change centralized retry gating around the model-output classifier
+    and session-state invalidation paths, then exercised the behavior with seam-focused
+    coordinator tests covering immediate transport retries, persisted-session reuse,
+    and duplicate retry-guidance rendering.
+  files_modified: *id002
+what_was_learned:
+- claim: When retry eligibility depends on whether a model actually ran, future fixes
+    should treat invocation telemetry as the primary source of truth and treat output
+    text only as secondary evidence; text-only classification collapses materially
+    different failures into the same bucket and misdrives retry/session decisions.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The first planned step explicitly redirected classification so telemetry
+      outranks empty text and no-output markers, showing that the root planning adjustment
+      was to base the decision on what the invocation recorded doing rather than on
+      rendered output.
+  - type: file
+    path: src/theforge/coordinator/agent_failure.py
+    description: This is the classifier file inspected and changed for the bug, so
+      it is where the run encoded the rule that consumed tokens or model-execution
+      failure data must influence 'produced output' before downstream retry logic
+      consults text markers.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval remarks explicitly called out telemetry-first classification
+      as one of the criteria satisfied, confirming that review treated this ordering
+      as essential to correcting the failure mode rather than as an incidental implementation
+      detail.
+- claim: Session invalidation has to be applied at every handoff point in a retry
+    chain, not just when the first failure is recorded; otherwise a stale stored session
+    can survive through a mixed retry sequence and be resumed again later.
+  evidence:
+  - type: review_finding
+    finding_id: 326afd477e77d04d
+    description: 'The finding describes a specific escape path: an iteration starts
+      from stored session state, a no-output failure occurs, an in-place retry succeeds
+      without issuing a replacement session id, and the old stored session remains
+      available for the next iteration. That demonstrates that one-time invalidation
+      is insufficient unless every retry handoff clears or replaces stale session
+      state.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states the prior P1 was resolved via the session-state
+      fix for the mixed retry case, showing the review loop only closed once invalidation
+      covered the full retry lifecycle rather than the initial failure in isolation.
+  - type: plan_step
+    step_id: '5'
+    description: The plan reserved dedicated seam coverage for retry resume and stale-session
+      invalidation, reflecting that this behavior spans transitions between attempts
+      and must be verified across those transitions rather than at a single decision
+      point.
+- claim: Deduplicating retry guidance by substring or containment is too broad for
+    accumulated agent feedback; future runs should expect echoed or quoted prior guidance
+    inside unrelated feedback and distinguish exact guidance instances from incidental
+    inclusion.
+  evidence:
+  - type: review_finding
+    finding_id: 6bf0292b738be5be
+    description: The finding explains that whitespace-normalized containment suppressed
+      a guidance append when the same text appeared only because another source quoted
+      it, demonstrating that naive containment mistakes echoed context for an already-recorded
+      instruction.
+  - type: plan_step
+    step_id: '3'
+    description: The plan targeted deduplication by the guidance text itself, and
+      the later review finding on containment shows that even text-based dedup still
+      needs a narrow notion of identity to avoid suppressing legitimate guidance.
+  - type: file
+    path: src/theforge/coordinator/dev_phase.py
+    description: This file holds the feedback accumulation path where quoted gate
+      output and retry-note rendering meet, making it the locus of the review-discovered
+      distinction between a true duplicate instruction and unrelated feedback that
+      merely contains the same words.
+learned_patterns:
+- telemetry-first-classification
+- retry-chain-session-invalidation
+- exact-guidance-dedup
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 326afd477e77d04d
+    severity: P1
+    file: src/theforge/coordinator/dev_phase.py
+    description: When an iteration begins from a stored session, that invocation fails
+      without model output, and its fresh transport retry produces output but no replacement
+      session id, the failed stored session remains in state and is resumed again
+      by the next dev iteration.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced edge cases where stale session state or dedup state
+    survived across attempt boundaries that the first-pass fix treated too locally.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 18.226976099999998
+  dominant_difficulty: Correctness depended on preserving invariants across multi-step
+    retry/resume state transitions rather than within any single failure handler.
