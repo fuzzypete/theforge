@@ -284,7 +284,8 @@ class DaemonServer:
         from .config import load_config
         from .sprint import SprintRunContext, run_sprint
         from .sprint.lock import SprintConflictError, acquire_story_locks, release_story_locks
-        from .sprint.runner import parse_manifest_slugs
+        from .sprint.manifest import load_sprint_manifest
+        from .sprint.runner import establish_sprint_config, parse_manifest_slugs
 
         # Find config — use forge_root/forge.yaml or config passed in args
         config_path_str = args.get("config")
@@ -297,6 +298,20 @@ class DaemonServer:
         manifest_path = Path(manifest)
         if not manifest_path.is_absolute():
             manifest_path = (self.forge_root / manifest).resolve()
+
+        # Lock discovery can perform manifest issue admission, so it must see
+        # the same pinned config that the subsequent SprintRunContext uses.
+        # Read only the manifest header first; full resolution stays in the
+        # context boundary below.
+        try:
+            manifest_name = load_sprint_manifest(manifest_path).name
+        except ValueError:
+            # Preserve the existing resolution boundary below.  In particular,
+            # callers that provide a synthetic resolved manifest still receive
+            # its original error handling rather than a new daemon-only one.
+            manifest_name = None
+        if manifest_name is not None:
+            config, _sprint_id, _snapshot = establish_sprint_config(config, manifest_name)
 
         # Acquire per-story locks before execution to guard against concurrent runs
         slugs = parse_manifest_slugs(config, manifest_path)

@@ -1221,6 +1221,23 @@ def _run_query_mode(
         else f"issues '{issues_arg}'"
     )
 
+    # Query-mode semantic admission runs before SprintRunContext exists.  Bind
+    # its scheduler to the same snapshot-backed config the runner will use, so
+    # a resumed sprint cannot evaluate or route with post-pin model settings.
+    # A dry run remains a pure preview and therefore does not capture a pin.
+    if not dry_run:
+        from theforge.sprint.runner import establish_sprint_config  # noqa: PLC0415
+
+        config, _sprint_id, _snapshot = establish_sprint_config(
+            config,
+            _derive_query_sprint_name(
+                name=getattr(args, "name", None),
+                milestone=milestone,
+                label=label,
+                issues_arg=issues_arg,
+            ),
+        )
+
     # Fetch issue list (lightweight — just numbers and titles)
     try:
         if milestone:

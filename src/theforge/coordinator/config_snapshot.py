@@ -259,6 +259,22 @@ def activate(snapshot: "SprintConfigSnapshot | None") -> None:
         os.environ.pop(SNAPSHOT_ENV_VAR, None)
 
 
+def load_pinned_config(snapshot: "SprintConfigSnapshot", *, project_root: Path):
+    """Load the active snapshot while retaining the sprint's logical root.
+
+    A snapshot lives below ``.forge/sprints/`` rather than beside the project's
+    secrets and source tree.  Passing its directory directly to ``load_config``
+    would therefore make root-relative checks and project-scoped secrets resolve
+    against the snapshot directory.  The pinned file is the configuration
+    source; the checkout that owns the sprint remains its project root.
+    """
+    if not snapshot.present or snapshot.pinned_path is None:
+        raise ValueError("cannot load an unavailable sprint configuration snapshot")
+    from theforge.config import load_config  # noqa: PLC0415 - keeps this module low-dependency
+
+    return load_config(snapshot.pinned_path, project_root=project_root)
+
+
 def deactivate() -> None:
     """Drop the active pin (end of sprint, or tests)."""
     global _ACTIVE

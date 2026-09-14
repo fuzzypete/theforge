@@ -25,10 +25,13 @@ from theforge.coordinator import config_snapshot as cs
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import Phase
 from theforge.coordinator.workspace import _create_workspace
+from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
     BASELINE_DIAGNOSTIC_MAX_LINES,
+    SprintRunContext,
     _baseline_failure_diagnostic,
     _run_baseline_gate,
+    establish_sprint_config,
 )
 
 
@@ -470,3 +473,129 @@ def test_sprint_audit_records_the_config_snapshot(tmp_path: Path) -> None:
     block = audit["config_snapshot"]
     assert block["digest"] == snap.digest
     assert [e["story"] for e in block["drift_events"]] == ["issue-9"]
+
+
+# --------------------------------------------------------------------------
+# 5. Seam: routing config is reloaded from the pin, not only worktree config
+# --------------------------------------------------------------------------
+
+
+_PINNED_CONFIG = """\
+project: pinned
+models:
+  enabled:
+    - openai/gpt-5.5/cli
+assignment:
+  exploration:
+    explore_every_n: 17
+    per_sprint_cap: 0
+validation:
+  gate_timeout: 120
+conventions:
+  hard:
+    package_roots: [src]
+"""
+
+_DRIFTED_CONFIG = """\
+project: pinned
+models:
+  enabled:
+    - openai/gpt-5.5/cli
+    - provider: anthropic
+      model: fable
+      transport: {kind: cli}
+      routing: {tier: strong, capability: 10, cost_rank: 3, phase_eligibility: [dev]}
+      cost: {rate_basis: provider_reported}
+assignment:
+  exploration:
+    explore_every_n: 2
+    per_sprint_cap: 3
+validation:
+  gate_timeout: 120
+conventions:
+  hard:
+    package_roots: [src]
+"""
+
+
+def test_resumed_sprint_context_routes_from_the_pinned_config(tmp_path: Path) -> None:
+    """A root-only model cannot enter the context's routing candidate pool."""
+    from theforge.assignment import _reviewer_candidate_pool
+    from theforge.config import load_config
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / ".env").write_text("TEST_TOKEN=project-secret\n", encoding="utf-8")
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _operative, sprint_id, first = establish_sprint_config(pinned_config, "sprint-a")
+    assert sprint_id is not None
+    assert first is not None and first.pinned_path is not None
+
+    # The post-pin config adds both a new inline model and altered exploration.
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+    live_config = load_config(tmp_path / "forge.yaml")
+    assert "anthropic-fable-cli" in {agent.name for agent in live_config.agents}
+
+    resolved = ResolvedSprint(name="sprint-a", budget_usd=1.0, stories=[])
+    context = SprintRunContext.for_sprint(live_config, resolved)
+
+    assert context.config.project_root == tmp_path.resolve()
+    assert context.config.secrets["TEST_TOKEN"] == "project-secret"
+    assert context.config.provenance.source_path == str(first.pinned_path.resolve())
+    assert context.config.assignment.exploration.explore_every_n == 17
+    assert context.config.assignment.exploration.per_sprint_cap == 0
+    assert "anthropic-fable-cli" not in {agent.name for agent in context.config.agents}
+
+    candidate_pool = _reviewer_candidate_pool(
+        context.config.agents,
+        selected_names=set(),
+        exclude_model=None,
+        locked=False,
+        secrets=context.config.secrets,
+    )
+    assert "anthropic-fable-cli" not in {entry["name"] for entry in candidate_pool}
+
+
+def test_establish_sprint_config_keeps_cli_base_branch_and_reloads_the_pin(tmp_path: Path) -> None:
+    """The pin reload happens before runner startup without losing CLI intent."""
+    from theforge.cli.overrides import apply_base_branch_override
+    from theforge.config import load_config
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    pinned_config = load_config(tmp_path / "forge.yaml")
+    _operative, expected_sprint_id, _snapshot = establish_sprint_config(pinned_config, "sprint-a")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+
+    live_config = apply_base_branch_override(load_config(tmp_path / "forge.yaml"), "release/test")
+    operative, sprint_id, snapshot = establish_sprint_config(live_config, "sprint-a")
+
+    assert sprint_id == expected_sprint_id
+    assert snapshot is not None and snapshot.reused is True
+    assert operative.workspace.base_branch == "release/test"
+    assert operative.validation.gate_timeout == 120
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
+
+
+def test_establish_sprint_config_keeps_runtime_parallelism_on_resume(tmp_path: Path) -> None:
+    """A query-mode parallelism choice does not become live-config drift."""
+    from theforge.config import load_config
+    from theforge.config.provenance import VALUE_SOURCE_DERIVED, refresh_provenance
+
+    _write_root_config(tmp_path, _PINNED_CONFIG)
+    first_config = load_config(tmp_path / "forge.yaml")
+    establish_sprint_config(first_config, "sprint-a")
+    _write_root_config(tmp_path, _DRIFTED_CONFIG)
+
+    live_config = load_config(tmp_path / "forge.yaml")
+    runtime_config = refresh_provenance(
+        replace(live_config, sprint=replace(live_config.sprint, max_parallel=3)),
+        source_updates={"sprint.max_parallel": VALUE_SOURCE_DERIVED},
+    )
+    operative, _sprint_id, _snapshot = establish_sprint_config(runtime_config, "sprint-a")
+
+    assert operative.sprint.max_parallel == 3
+    assert (
+        operative.provenance.resolved_value_sources["sprint.max_parallel"] == VALUE_SOURCE_DERIVED
+    )
+    assert "anthropic-fable-cli" not in {agent.name for agent in operative.agents}
