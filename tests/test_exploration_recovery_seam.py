@@ -9,6 +9,7 @@ block (not the story's final outcome), and fire at most once.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
@@ -19,8 +20,10 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import _maybe_recover_failed_challenger
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.engine import _coordinator_loop, _maybe_recover_failed_challenger
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.validate_phase import _ValidateOutcome
+from theforge.task import TaskStory
 
 
 def _config(tmp_path: Path) -> ForgeConfig:
@@ -76,6 +79,19 @@ def _state_with_active_challenger() -> CoordinatorState:
     return state
 
 
+def _state_ready_for_coordinator_loop(tmp_path: Path) -> CoordinatorState:
+    state = _state_with_active_challenger()
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/test"
+    # Keep the test focused on the DEV → VALIDATE handoff rather than adaptive
+    # iteration derivation.
+    state.adaptive_dev_max = 2
+    state.adaptive_review_max = 2
+    state.adaptive_dev_timeout_seconds = 600
+    state.adaptive_dev_cost_estimate_usd = 1.0
+    return state
+
+
 def _noop(_msg: str) -> None:
     pass
 
@@ -108,3 +124,46 @@ def test_recovery_fires_at_most_once(tmp_path):
 def test_no_recovery_when_no_challenger(tmp_path):
     state = CoordinatorState()  # winner-mode run, nothing to recover
     assert _maybe_recover_failed_challenger(state, _config(tmp_path), _noop, None) is None
+
+
+def test_validate_escalation_recovers_challenger_through_winner(tmp_path: Path) -> None:
+    """A terminal gate failure retries DEV once with the exploration winner."""
+    state = _state_ready_for_coordinator_loop(tmp_path)
+    config = _config(tmp_path)
+    task = TaskStory(name="test", slug="test", story_path=tmp_path / "story.md")
+    challenger_failure = CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message="iteration_exhaustion",
+    )
+    winner_failure = CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message="winner_attempt_failed",
+    )
+    dispatched_models: list[str] = []
+
+    def _dev_attempt(_state, current_config, *_args, **_kwargs):
+        dispatched_models.append(current_config.dev_profile.model)
+        return None if len(dispatched_models) == 1 else winner_failure
+
+    with (
+        patch("theforge.coordinator.engine._run_dev_phase", side_effect=_dev_attempt),
+        patch(
+            "theforge.coordinator.engine._run_validate_phase",
+            return_value=(_ValidateOutcome.ESCALATE, challenger_failure),
+        ) as validate,
+        patch("theforge.coordinator.engine._scrub_forge_history"),
+        patch("theforge.coordinator.gate_green_salvage.salvage_gate_green_landing") as salvage,
+    ):
+        result = _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+    assert result is winner_failure
+    assert dispatched_models == ["haiku", "opus"]
+    validate.assert_called_once()
+    salvage.assert_not_called()
+    exploration = state.routing_decision["dev"]["exploration"]
+    assert exploration["challenger_failed"] is True
+    assert exploration["recovery"]["recovered_via"] == "winner"

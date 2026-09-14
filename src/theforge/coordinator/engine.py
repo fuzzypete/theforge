@@ -871,6 +871,15 @@ def _coordinator_loop(
                 state_update_fn=state_update_fn,
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
+                # ── Failed-challenger recovery (#2985, ADR-0006 clause 8) ────
+                # VALIDATE is also a terminal path for a challenger attempt.
+                # Recover before gate-green salvage so the winner receives a
+                # fresh DEV attempt instead of the challenger's gate failure
+                # becoming the story outcome.
+                _recovered_config = _maybe_recover_failed_challenger(state, config, _log, logger)
+                if _recovered_config is not None:
+                    config = _recovered_config
+                    continue
                 # A terminal gate failure discards everything the story built —
                 # including a commit an earlier gate passed and an earlier review
                 # approved. When one exists, land that instead of failing (#2028).
