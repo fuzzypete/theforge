@@ -454,6 +454,34 @@ def _persist_gate_state(
         _cu._log_verbose(f"  preflight gate resume-record save failed: {exc}")
 
 
+def _record_opening_size(state: "_cs.CoordinatorState", *, threshold: int) -> None:
+    """Write the size the *decision* was opened at, on every axis it was opened on.
+
+    These four fields describe the decision, not the attempt resolving it, which
+    is why a re-raised pause keeps what the attempt that first raised it
+    recorded. Overwriting them with the live score would make each further
+    interruption walk the recorded origin one attempt away from the size the
+    operator was first asked about: a decision raised at 9, re-raised by an
+    attempt scoring 8 and interrupted again, would tell the third attempt it had
+    been raised at 8, and the divergence would report the middle attempt's
+    number as the original one (#2860).
+
+    The threshold is always this attempt's: it is configuration, and the gate is
+    being resolved under the one in force now.
+    """
+    state.preflight_complexity_gate_threshold = threshold
+    if state.preflight_complexity_gate_recovered_score is not None:
+        return
+    state.preflight_complexity_gate_score = state.preflight_complexity_score
+    state.preflight_complexity_gate_implementation_score = (
+        state.preflight_implementation_complexity_score
+    )
+    state.preflight_complexity_gate_validation_score = state.preflight_validation_complexity_score
+    # The provenance the operator was shown alongside that score. Recorded rather
+    # than recomputed at read time so the audit says what they actually ruled on.
+    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
+
+
 def _record(
     state: "_cs.CoordinatorState",
     *,
@@ -470,12 +498,7 @@ def _record(
     # The question is no longer outstanding: whatever route produced this
     # decision, a later attempt must read it as answered rather than re-raise it.
     state.preflight_complexity_gate_pending = False
-    state.preflight_complexity_gate_score = state.preflight_complexity_score
-    state.preflight_complexity_gate_implementation_score = (
-        state.preflight_implementation_complexity_score
-    )
-    state.preflight_complexity_gate_validation_score = state.preflight_validation_complexity_score
-    state.preflight_complexity_gate_threshold = threshold
+    _record_opening_size(state, threshold=threshold)
     state.preflight_complexity_gate_decision = decision
     state.preflight_complexity_gate_decision_source = source
     state.preflight_complexity_gate_no_decision_fallback = no_decision_fallback
@@ -483,9 +506,6 @@ def _record(
         round(waited_seconds, 2) if waited_seconds is not None else None
     )
     state.preflight_complexity_gate_decided_at = decided_at or _now_iso()
-    # The provenance the operator was shown alongside the score. Recorded rather
-    # than recomputed at read time so the audit says what they actually ruled on.
-    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
 
 
 def returned_for_decomposition(state: "_cs.CoordinatorState") -> bool:
@@ -776,6 +796,13 @@ def _restore_recorded_gate_fields(state: "_cs.CoordinatorState", block: dict) ->
             "complexity_gate_implementation_score",
         ),
         ("preflight_complexity_gate_validation_score", "complexity_gate_validation_score"),
+        # Restored with the score it belongs to: these describe the size the
+        # decision was opened at, and a re-raised pause keeps them rather than
+        # replacing them with this attempt's (see _record_opening_size).
+        (
+            "preflight_complexity_gate_score_provenance",
+            "complexity_gate_score_provenance",
+        ),
         ("preflight_complexity_gate_threshold", "complexity_gate_threshold"),
         ("preflight_complexity_gate_assessment", "complexity_gate_assessment"),
         (
@@ -1157,17 +1184,17 @@ def _open_gate(
     # re-raise, and re-scored the same story from scratch to decide whether to
     # ask at all. What is written here is "opened, undecided": the scores, the
     # threshold, and which run is holding the pause, with no decision beside it.
+    #
+    # A pause being raised *again* keeps the run and the moment that first
+    # raised it, alongside the size it was raised at: this marker describes the
+    # outstanding decision, and which process is holding the pause right now is
+    # already answered authoritatively by the pending file below.
     state.preflight_complexity_gate_pending = True
-    state.preflight_complexity_gate_pending_run_id = eff_run_id
-    state.preflight_complexity_gate_pending_opened_at = _now_iso()
+    if state.preflight_complexity_gate_recovered_score is None:
+        state.preflight_complexity_gate_pending_run_id = eff_run_id
+        state.preflight_complexity_gate_pending_opened_at = _now_iso()
     state.preflight_complexity_gate_opened = True
-    state.preflight_complexity_gate_score = state.preflight_complexity_score
-    state.preflight_complexity_gate_implementation_score = (
-        state.preflight_implementation_complexity_score
-    )
-    state.preflight_complexity_gate_validation_score = state.preflight_validation_complexity_score
-    state.preflight_complexity_gate_threshold = threshold
-    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
+    _record_opening_size(state, threshold=threshold)
     _persist_gate_state(state, config, task, logger=logger)
 
     reason = _render_reason(

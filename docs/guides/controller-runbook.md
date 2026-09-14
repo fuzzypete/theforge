@@ -649,6 +649,12 @@ Neither score decides whether you are asked — the outstanding decision does.
 The recorded decomposition assessment comes back with the pause and is not
 bought a second time.
 
+**The size it was raised at does not drift.** A decision that is re-raised and
+interrupted again keeps the score, both axes, and the provenance the attempt
+that *first* raised it recorded — so the third attempt is told the decision was
+raised at 9, not at whatever the second one happened to score. Only
+`score_divergence.resumed_score` moves.
+
 Three things suppress the re-raise, and none of them is a score:
 
 - **You already answered.** A recorded decision is honoured as before; the

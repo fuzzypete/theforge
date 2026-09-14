@@ -1360,3 +1360,59 @@ class TestTheResumedDispatchPathStillReachesTheDecision:
         assert gate["recovered_score"] == 9
         assert gate["score_divergence"]["resumed_score"] == 8
         assert gate["unresolved"] is False
+
+
+class TestTheDecisionKeepsTheSizeItWasRaisedAt:
+    """A pause interrupted twice still names the score that first raised it."""
+
+    def test_a_re_raised_pause_interrupted_again_keeps_the_original_size(self, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        # Second attempt: re-raises the decision at its own score of 8, and is
+        # killed inside the pause exactly as the first was.
+        second = _gated_state(score=8, implementation=8, validation=1)
+        second.story_content = _SPEC_TEXT
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            evaluate_preflight_complexity_gate(second, config, task, "PROCEED")
+
+        block = load_resume_record(tmp_path, "test-task")["preflight"]
+        assert block["complexity_gate_pending"] is True
+        assert block["complexity_gate_decision"] is None
+        # The size the decision was opened at, not the size the attempt that
+        # re-raised it computed — otherwise each interruption would walk the
+        # recorded origin one attempt further from what was first asked about.
+        assert block["complexity_gate_score"] == 9
+        assert block["complexity_gate_implementation_score"] == 9
+        assert block["complexity_gate_validation_score"] == 3
+        assert block["complexity_gate_pending_run_id"] == "7c1e04b9d3af"
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    def test_a_third_attempt_still_diverges_against_the_original(self, _poll, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        second = _gated_state(score=8, implementation=8, validation=1)
+        second.story_content = _SPEC_TEXT
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            evaluate_preflight_complexity_gate(second, config, task, "PROCEED")
+
+        third = _gated_state(score=7, implementation=7, validation=1)
+        third.story_content = _SPEC_TEXT
+        result = evaluate_preflight_complexity_gate(third, config, task, "PROCEED")
+
+        assert result is not None and result.success is False
+        assert third.preflight_complexity_gate_recovered_score == 9
+        assert third.preflight_complexity_gate_score_divergence["recorded_score"] == 9
+        assert third.preflight_complexity_gate_score_divergence["resumed_score"] == 7
+        # The resolved decision is still reported at the size it was raised at.
+        assert third.preflight_complexity_gate_score == 9
+        assert "complexity 9 reached the gate threshold 9" in result.message
