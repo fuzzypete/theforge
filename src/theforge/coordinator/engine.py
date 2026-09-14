@@ -49,6 +49,7 @@ from theforge.assignment import (
 )
 from theforge.config import ForgeConfig
 from theforge.process_group import ProcessTeardown
+from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
     load_story,
@@ -335,6 +336,16 @@ def _maybe_recover_failed_challenger(
     state.error_type = None
     state.escalate_reason = None
     state.dev_session_id = None
+    if state.workspace_path is not None:
+        # A resumed run restores this file before starting DEV. Persist the
+        # cleared challenger session now, rather than allowing an interruption
+        # before the winner's first attempt to hand that session to the winner.
+        save_sessions(
+            state.workspace_path,
+            state.dev_session_id,
+            state.reviewer_session_ids,
+            state.plan_review_session_ids,
+        )
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
     log_fn(

@@ -24,6 +24,7 @@ from theforge.coordinator.engine import _coordinator_loop, _maybe_recover_failed
 from theforge.coordinator.review_phase import _ReviewOutcome
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.validate_phase import _ValidateOutcome
+from theforge.sessions import load_sessions, save_sessions
 from theforge.task import TaskStory
 
 
@@ -99,10 +100,19 @@ def _noop(_msg: str) -> None:
 
 def test_recovery_swaps_to_winner_and_records_failure(tmp_path):
     state = _state_with_active_challenger()
+    state.workspace_path = tmp_path
     state.error = "challenger terminal error"
     state.error_type = "gate_failure"
     state.escalate_reason = "challenger escalation"
     state.dev_session_id = "challenger-session"
+    state.reviewer_session_ids = {"reviewer": "reviewer-session"}
+    state.plan_review_session_ids = {"planner": "planner-session"}
+    save_sessions(
+        tmp_path,
+        state.dev_session_id,
+        state.reviewer_session_ids,
+        state.plan_review_session_ids,
+    )
     config = _config(tmp_path)
     new_config = _maybe_recover_failed_challenger(state, config, _noop, None)
 
@@ -128,6 +138,10 @@ def test_recovery_swaps_to_winner_and_records_failure(tmp_path):
     assert state.error_type is None
     assert state.escalate_reason is None
     assert state.dev_session_id is None
+    persisted_sessions = load_sessions(tmp_path)
+    assert "dev_session_id" not in persisted_sessions
+    assert persisted_sessions["reviewer_session_ids"] == {"reviewer": "reviewer-session"}
+    assert persisted_sessions["plan_review_session_ids"] == {"planner": "planner-session"}
 
 
 def test_recovery_fires_at_most_once(tmp_path):
