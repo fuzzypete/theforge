@@ -66,12 +66,13 @@ ESCALATE_DECISION_SOURCES: tuple[str, ...] = (
 # Why the advisory recommendation was (or was not) applied at an expired gate.
 # Only ``applied`` changes the outcome; every other value is a preserve, and
 # they are kept distinct because "the advisor never launched", "it produced
-# nothing parseable", "it recommended nothing", "it recommended elevate", and
-# "it recommended something this run cannot perform" are five different
-# situations with different repairs.
+# nothing parseable", "it recommended nothing", "it recommended elevate",
+# "it recommended something this run cannot perform", and "accept has no
+# merged review verdict" are distinct situations with different repairs.
 ADVICE_APPLIED = "applied"
 ADVICE_ELEVATE = "elevate"  # deliberate no-automated-choice signal
 ADVICE_NOT_PERFORMABLE = "not_performable"  # recommendation withheld by this run's state
+ADVICE_NO_MERGED_REVIEW = "no_merged_review"  # accept needs a merged reviewer verdict
 ADVICE_NO_RECOMMENDATION = "no_recommendation"  # valid report, empty recommendation
 ADVICE_UNPARSEABLE = "unparseable_report"  # advisor ran, report failed validation
 ADVICE_LAUNCH_FAILURE = "launch_failure"  # advisor never reached the model
@@ -81,6 +82,7 @@ ESCALATE_TIMEOUT_ADVICE_STATUSES: tuple[str, ...] = (
     ADVICE_APPLIED,
     ADVICE_ELEVATE,
     ADVICE_NOT_PERFORMABLE,
+    ADVICE_NO_MERGED_REVIEW,
     ADVICE_NO_RECOMMENDATION,
     ADVICE_UNPARSEABLE,
     ADVICE_LAUNCH_FAILURE,

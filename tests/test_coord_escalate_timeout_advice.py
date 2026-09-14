@@ -40,6 +40,7 @@ from theforge.coordinator.review_phase import _run_escalate_gate
 from theforge.coordinator.state import (
     ADVICE_ELEVATE,
     ADVICE_LAUNCH_FAILURE,
+    ADVICE_NO_MERGED_REVIEW,
     ADVICE_NO_RECOMMENDATION,
     ADVICE_NOT_PERFORMABLE,
     ADVICE_POLICY_PRESERVE,
@@ -133,12 +134,14 @@ def _config(tmp_path: Path, *, timeout_policy: str = ESCALATE_TIMEOUT_PRESERVE):
     return dataclasses.replace(base, notifications=notifications, retry=retry)
 
 
-def _escalated_state(*, approvable: bool = True) -> CoordinatorState:
+def _escalated_state(
+    *, approvable: bool = True, survivor_approvable: bool = False
+) -> CoordinatorState:
     state = CoordinatorState()
     state.phase = Phase.ESCALATE
     state.review_cycle = 5
     state.story_content = "Body.\n\n## Acceptance criteria\n\n- do the thing\n"
-    rr = _review()
+    rr = _review("APPROVE" if survivor_approvable else "REQUEST_CHANGES")
     if approvable:
         state.review_results = [rr]
     state.last_cycle_reviewer_results = [("reviewer-a", rr)]
@@ -154,6 +157,8 @@ def _drive_gate(
     report: AdvisoryReport | None,
     timeout_policy: str = ESCALATE_TIMEOUT_PRESERVE,
     approvable: bool = True,
+    survivor_approvable: bool = False,
+    advisory_packet: dict | None = None,
     launch_failure: bool = False,
     run_id: str = "run-t",
     config=None,
@@ -166,7 +171,8 @@ def _drive_gate(
     """
     config = config or _config(tmp_path, timeout_policy=timeout_policy)
     task = _make_task(tmp_path)
-    state = _escalated_state(approvable=approvable)
+    state = _escalated_state(approvable=approvable, survivor_approvable=survivor_approvable)
+    state.advisory_packet = advisory_packet
 
     def _fake_advisor(*a, **k):
         if launch_failure:
@@ -509,6 +515,31 @@ class TestPreservesWhenAdviceCannotBeApplied:
         assert state.escalate_declined_action is None
         assert "cannot perform it" in result.message
 
+    def test_surviving_reviewer_approval_cannot_be_auto_applied_on_expiry(
+        self, tmp_path, monkeypatch
+    ):
+        # A quorum-collapsed cycle retains an individual reviewer's APPROVE for
+        # an explicit operator selection, but it produced no merged cycle
+        # verdict.  Advice against that empty evidence must not land the story
+        # after an unattended expiry.
+        state, result = _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="timeout",
+            report=_report("accept"),
+            approvable=False,
+            survivor_approvable=True,
+            advisory_packet={"cycles": []},
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+        )
+        self._preserved(state, result)
+        assert state.advisory_packet == {"cycles": []}
+        assert state.review_results == []
+        assert state.last_cycle_reviewer_results[0][1].verdict == "APPROVE"
+        assert state.escalate_timeout_advice == ADVICE_NO_MERGED_REVIEW
+        assert "operator may still select" in result.message
+        assert "merged reviewer verdict" in result.message
+
 
 # ── a present operator always governs ─────────────────────────────────────────
 
@@ -529,6 +560,20 @@ class TestOperatorSelectionBeatsAdvice:
         assert state.escalate_decision_source == ESCALATE_SOURCE_OPERATOR
         assert state.escalate_timeout_advice is None
         assert result.success is False
+
+    def test_operator_can_accept_a_surviving_reviewer_approval(self, tmp_path, monkeypatch):
+        state, result = _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="accept",
+            report=_report("elevate"),
+            approvable=False,
+            survivor_approvable=True,
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+        )
+        assert result.success is True
+        assert state.escalate_decision == "accept"
+        assert state.escalate_decision_source == ESCALATE_SOURCE_OPERATOR
 
     def test_pending_file_selection_before_expiry_governs(self, tmp_path, monkeypatch):
         """Through the real pending gate: a resolved file wins over the advice."""
