@@ -49,6 +49,7 @@ from theforge.assignment import (
 )
 from theforge.config import ForgeConfig
 from theforge.process_group import ProcessTeardown
+from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
     load_story,
@@ -309,17 +310,42 @@ def _maybe_recover_failed_challenger(
 
     # Record the failure in the audit substrate view so the exploration outcome
     # stays reconstructable (the challenger failed; the story ran on the winner).
+    _recovery_record = dict(recovery.failure_record)
+    if (
+        state.error is not None
+        or state.error_type is not None
+        or state.escalate_reason is not None
+    ):
+        _recovery_record["terminal_error"] = {
+            "message": state.error,
+            "type": state.error_type,
+            "escalate_reason": state.escalate_reason,
+        }
     if isinstance(state.routing_decision, dict):
         _dev_block = state.routing_decision.get("dev")
         if isinstance(_dev_block, dict) and isinstance(_dev_block.get("exploration"), dict):
             _dev_block["exploration"]["challenger_failed"] = True
-            _dev_block["exploration"]["recovery"] = recovery.failure_record
+            _dev_block["exploration"]["recovery"] = _recovery_record
 
     state.exploration_recovered = True
     # Retry through the winner: fresh dev attempt, clear the challenger's failed
     # transport/escalation state so the winner starts clean.
     state.retry_reason = None
     state.dev_escalated = False
+    state.error = None
+    state.error_type = None
+    state.escalate_reason = None
+    state.dev_session_id = None
+    if state.workspace_path is not None:
+        # A resumed run restores this file before starting DEV. Persist the
+        # cleared challenger session now, rather than allowing an interruption
+        # before the winner's first attempt to hand that session to the winner.
+        save_sessions(
+            state.workspace_path,
+            state.dev_session_id,
+            state.reviewer_session_ids,
+            state.plan_review_session_ids,
+        )
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
     log_fn(
@@ -871,6 +897,15 @@ def _coordinator_loop(
                 state_update_fn=state_update_fn,
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
+                # ── Failed-challenger recovery (#2985, ADR-0006 clause 8) ────
+                # VALIDATE is also a terminal path for a challenger attempt.
+                # Recover before gate-green salvage so the winner receives a
+                # fresh DEV attempt instead of the challenger's gate failure
+                # becoming the story outcome.
+                _recovered_config = _maybe_recover_failed_challenger(state, config, _log, logger)
+                if _recovered_config is not None:
+                    config = _recovered_config
+                    continue
                 # A terminal gate failure discards everything the story built —
                 # including a commit an earlier gate passed and an earlier review
                 # approved. When one exists, land that instead of failing (#2028).
