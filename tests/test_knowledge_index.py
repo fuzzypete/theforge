@@ -875,3 +875,103 @@ def test_missing_run_record_is_soundness_indeterminate(tmp_path: Path) -> None:
         "rank": "excluded",
         "reasons": [REASON_SOUNDNESS_INDETERMINATE],
     }
+
+
+def _summary_payload(run_id: str, *, learned: str) -> dict:
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "generated_at": "2026-05-01T00:00:00+00:00",
+        "story": {"slug": "demo", "name": "Demo", "github_issue": 7},
+        "story_shape": {
+            "work_type": "bug",
+            "complexity": "small",
+            "complexity_score": 2,
+            "contract_change": False,
+        },
+        "domains": ["backend"],
+        "changed_files": ["src/client.py"],
+        "learned_patterns": [learned],
+    }
+
+
+def _write_summary_at(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def test_run_present_in_canonical_and_preserved_trees_indexes_once(tmp_path: Path) -> None:
+    """One run_id yields one entry, keyed to the canonical artifact (#2625)."""
+    canonical = tmp_path / ".forge" / "knowledge" / "summaries" / "run-dup.yaml"
+    _write_summary_at(canonical, _summary_payload("run-dup", learned="canonical pattern"))
+    preserved = (
+        tmp_path
+        / ".forge"
+        / "unpublished-story-run-artifacts"
+        / "story-a"
+        / ".forge"
+        / "knowledge"
+        / "summaries"
+        / "run-dup.yaml"
+    )
+    _write_summary_at(preserved, _summary_payload("run-dup", learned="preserved pattern"))
+
+    result = rebuild_knowledge_index(tmp_path)
+
+    assert result.payload["indexed_count"] == 1
+    # Both artifacts were examined; only one run identity was indexed.
+    assert result.payload["source_count"] == 2
+    entries = result.payload["entries"]
+    assert len(entries) == 1
+    assert entries[0]["run_id"] == "run-dup"
+    assert entries[0]["summary_path"] == str(
+        Path(".forge") / "knowledge" / "summaries" / "run-dup.yaml"
+    )
+    assert entries[0]["learned_patterns"] == ["canonical pattern"]
+
+
+def test_canonical_precedence_does_not_depend_on_collection_order(tmp_path: Path) -> None:
+    """A preserved root sorting before *and* after the canonical tree loses either way."""
+    for story in ("story-a", "story-z"):
+        _write_summary_at(
+            tmp_path
+            / ".forge"
+            / "unpublished-story-run-artifacts"
+            / story
+            / ".forge"
+            / "knowledge"
+            / "summaries"
+            / "run-dup.yaml",
+            _summary_payload("run-dup", learned=f"preserved {story}"),
+        )
+    _write_summary_at(
+        tmp_path / ".forge" / "knowledge" / "summaries" / "run-dup.yaml",
+        _summary_payload("run-dup", learned="canonical pattern"),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+
+    entries = result.payload["entries"]
+    assert len(entries) == 1
+    assert entries[0]["learned_patterns"] == ["canonical pattern"]
+    assert result.payload["source_count"] == 3
+    assert result.payload["indexed_count"] == 1
+
+
+def test_preserved_only_run_is_still_indexed(tmp_path: Path) -> None:
+    preserved_rel = (
+        Path(".forge")
+        / "unpublished-story-run-artifacts"
+        / "story-a"
+        / ".forge"
+        / "knowledge"
+        / "summaries"
+        / "run-only.yaml"
+    )
+    _write_summary_at(tmp_path / preserved_rel, _summary_payload("run-only", learned="preserved"))
+
+    result = rebuild_knowledge_index(tmp_path)
+
+    entries = result.payload["entries"]
+    assert len(entries) == 1
+    assert entries[0]["summary_path"] == str(preserved_rel)

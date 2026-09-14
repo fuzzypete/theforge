@@ -156,19 +156,34 @@ def _build_entry(summary: dict[str, Any], *, summary_path: str) -> dict[str, obj
     }
 
 
-def _summary_artifact_paths(project_root: Path) -> list[Path]:
-    paths: list[Path] = []
+# Source tiers for a persisted summary artifact. Lower wins when the same
+# ``run_id`` is carried by more than one tree, so a run present in both the
+# canonical and the preserved location yields one entry pointing at the
+# canonical artifact rather than two entries in traversal order (#2625).
+_TIER_CANONICAL = 0
+_TIER_PRESERVED = 1
+
+
+def _summary_artifact_sources(project_root: Path) -> list[tuple[Path, int]]:
+    """Return ``(path, tier)`` for every persisted summary artifact on disk."""
+    sources: list[tuple[Path, int]] = []
     summaries_root = project_root / SUMMARIES_DIR
     if summaries_root.exists():
-        paths.extend(sorted(summaries_root.glob("*.yaml")))
+        sources.extend((path, _TIER_CANONICAL) for path in sorted(summaries_root.glob("*.yaml")))
 
     preserved_root = project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR
     if preserved_root.exists():
         for run_root in sorted(path for path in preserved_root.iterdir() if path.is_dir()):
             preserved_summaries = run_root / SUMMARIES_DIR
             if preserved_summaries.exists():
-                paths.extend(sorted(preserved_summaries.glob("*.yaml")))
-    return paths
+                sources.extend(
+                    (path, _TIER_PRESERVED) for path in sorted(preserved_summaries.glob("*.yaml"))
+                )
+    return sources
+
+
+def _summary_artifact_paths(project_root: Path) -> list[Path]:
+    return [path for path, _tier in _summary_artifact_sources(project_root)]
 
 
 def rebuild_knowledge_index(project_root: Path) -> KnowledgeIndexBuildResult:
@@ -176,11 +191,15 @@ def rebuild_knowledge_index(project_root: Path) -> KnowledgeIndexBuildResult:
     project_root = Path(project_root)
     index_path = project_root / KNOWLEDGE_INDEX_PATH
 
-    entries: list[dict[str, object]] = []
+    # Keyed by validated run_id so one run yields one entry however many trees
+    # hold a copy of its summary; the value carries the source tier so canonical
+    # beats preserved by stated precedence rather than by collection order
+    # (#2625).
+    by_run_id: dict[str, tuple[int, str, dict[str, object]]] = {}
     diagnostics: list[KnowledgeIndexDiagnostic] = []
-    summary_paths = _summary_artifact_paths(project_root)
+    summary_sources = _summary_artifact_sources(project_root)
 
-    for path in summary_paths:
+    for path, tier in summary_sources:
         rel_path = str(path.relative_to(project_root))
         try:
             summary = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -201,19 +220,25 @@ def rebuild_knowledge_index(project_root: Path) -> KnowledgeIndexBuildResult:
             diagnostics.append(KnowledgeIndexDiagnostic(path=rel_path, reason=str(exc)))
             continue
 
-        entries.append(
-            _build_entry_with_facts(
-                project_root,
-                summary,
-                validated,
-                summary_path=rel_path,
-            )
+        entry = _build_entry_with_facts(
+            project_root,
+            summary,
+            validated,
+            summary_path=rel_path,
         )
+        run_id = str(validated["run_id"])
+        incumbent = by_run_id.get(run_id)
+        # Deterministic tie-break inside a tier by relative path.
+        if incumbent is None or (tier, rel_path) < (incumbent[0], incumbent[1]):
+            by_run_id[run_id] = (tier, rel_path, entry)
 
+    entries = [entry for _tier, _rel, entry in by_run_id.values()]
     entries.sort(key=_summary_sort_key)
     payload: dict[str, object] = {
         "schema_version": KNOWLEDGE_INDEX_SCHEMA_VERSION,
-        "source_count": len(summary_paths),
+        # The number of summary artifacts examined — unchanged meaning. Two
+        # copies of one run count twice here and once in ``indexed_count``.
+        "source_count": len(summary_sources),
         "indexed_count": len(entries),
         "skipped_count": len(diagnostics),
         "entries": entries,

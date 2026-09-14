@@ -1629,3 +1629,74 @@ class TestRendererIndexerModelIdentitySeam:
             conn.close()
 
         assert row == ("anthropic/claude-sonnet-4-6/cli", "direct", "canonical")
+
+
+class TestRebuildRunIdentityReconciliation:
+    """One run_id is one row, whichever trees hold a copy of the record (#2624)."""
+
+    @staticmethod
+    def _write_preserved(project_root: Path, story: str, record: dict) -> Path:
+        preserved = project_root.joinpath(
+            *audit_storage.UNPUBLISHED_STORY_RUN_ARTIFACTS_RELPATH, story
+        ).joinpath(*audit_storage.RUNS_RELPATH)
+        preserved.mkdir(parents=True, exist_ok=True)
+        path = preserved / f"{record['run_id']}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_canonical_record_wins_over_preserved_copy_of_same_run(self, tmp_path: Path) -> None:
+        _write_runs(tmp_path, [_make_record(run_id="r1", cost=9.0)])
+        self._write_preserved(tmp_path, "story-a", _make_record(run_id="r1", cost=1.0))
+
+        summary = sub.rebuild_from_runs(tmp_path)
+
+        assert summary.runs_seen == 2
+        assert summary.imported == 1
+        assert summary.failed == 0
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            rows = conn.execute(
+                "SELECT run_id, source_path, raw_json FROM audit_records"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        run_id, source_path, raw_json = rows[0]
+        assert run_id == "r1"
+        # The canonical path keys the row, so the canonical file still matches
+        # an indexed row — the preserved copy does not displace it.
+        assert source_path == str(Path(*audit_storage.RUNS_RELPATH) / "r1.json")
+        assert json.loads(raw_json)["totals"]["cost_usd"] == 9.0
+
+    def test_reconciliation_is_not_decided_by_traversal_order(self, tmp_path: Path) -> None:
+        # Two preserved copies plus the canonical one; the canonical record wins
+        # regardless of how many preserved roots sort after it.
+        self._write_preserved(tmp_path, "story-z", _make_record(run_id="r1", cost=1.0))
+        _write_runs(tmp_path, [_make_record(run_id="r1", cost=9.0)])
+        self._write_preserved(tmp_path, "story-a", _make_record(run_id="r1", cost=2.0))
+
+        summary = sub.rebuild_from_runs(tmp_path)
+
+        assert summary.runs_seen == 3
+        assert summary.imported == 1
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            rows = conn.execute("SELECT run_id, source_path FROM audit_records").fetchall()
+        finally:
+            conn.close()
+        assert rows == [("r1", str(Path(*audit_storage.RUNS_RELPATH) / "r1.json"))]
+
+    def test_preserved_only_run_is_still_indexed(self, tmp_path: Path) -> None:
+        self._write_preserved(tmp_path, "story-a", _make_record(run_id="r1"))
+
+        summary = sub.rebuild_from_runs(tmp_path)
+
+        assert summary.imported == 1
+        conn = sqlite3.connect(str(sub.substrate_path(tmp_path)))
+        try:
+            rows = conn.execute("SELECT run_id, source_path FROM audit_records").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0][0] == "r1"
+        assert "unpublished-story-run-artifacts" in rows[0][1]
