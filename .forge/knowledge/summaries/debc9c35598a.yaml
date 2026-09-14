@@ -1,0 +1,203 @@
+schema_version: 2
+run_id: debc9c35598a
+authoritative_run_record: .forge/audits/runs/debc9c35598a.json
+generated_at: '2026-09-14T01:20:52.009392+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01671
+story:
+  slug: issue-2651
+  name: A run identity is keyed inconsistently across canonical and preserved audit
+    trees, so one run can be indexed twice, indexed under the wrong path, or overwritten
+    by a thinner payload
+  github_issue: 2651
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint_digest.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/knowledge_summary_flow.py
+- src/theforge/knowledge_index.py
+- src/theforge/knowledge_summary.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/rca.py
+- tests/fixtures/audit_record_schema_v49.json
+- tests/test_audit_substrate.py
+- tests/test_canonical_run_record_merge.py
+- tests/test_coord_knowledge_summary.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_decomposition_acceptance_seam.py
+- tests/test_knowledge_index.py
+- tests/test_knowledge_receipt_seam.py
+- tests/test_sprint_rca.py
+what_changed:
+  description: The run reconciled run identity handling across canonical and preserved
+    audit trees, knowledge indexing, and summary-flow record lookup so the same run
+    is treated as one logical record even when artifacts exist in multiple locations
+    or under multiple identifiers. It also tightened canonical audit-record rewriting
+    to merge newer payloads without discarding richer existing data or leaving stale
+    summary metadata behind.
+  approach: The change established deterministic identity and record-selection rules
+    at read/rebuild time, then paired them with preservation-oriented merge logic
+    for canonical rewrites and summary outcomes so later thinner or partial writes
+    no longer win merely because they are newer.
+  files_modified: *id002
+what_was_learned:
+- claim: When a workflow can re-encounter the same logical run from multiple storage
+    trees or identifier forms, future work should define reconciliation rules at the
+    key level up front; otherwise rebuilds and indexes drift based on traversal order
+    or duplicate the run.
+  evidence:
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 states that the run-identity reconciliation now matches the
+      spec only after earlier issues were addressed, showing that the hard part was
+      not reading both trees but enforcing one deterministic identity across them.
+  - type: file
+    path: src/theforge/knowledge_index.py
+    description: This file was part of the identity-focused change surface because
+      the index had to stop treating separate tree copies as separate rows, demonstrating
+      that reconciliation belongs in the indexing key logic rather than in later consumers.
+  - type: file
+    path: src/theforge/coordinator/audit_storage.py
+    description: Audit storage was changed alongside the index, showing that identity
+      consistency had to be enforced where records are discovered and selected, not
+      only where they are displayed.
+- claim: For append-over-time audit records, a rewrite path must merge semantically
+    and preserve richer prior facts; replacing nested structures wholesale lets later
+    thinner payloads erase valid detail even when the update looks superficially equivalent.
+  evidence:
+  - type: review_finding
+    finding_id: 8aaf99f47dafe1d8
+    description: The finding shows that even when a later payload had the same number
+      of review entries, replacing the list removed fields inside an entry, demonstrating
+      that shape-level equality is not sufficient for safe overwrite.
+  - type: review_finding
+    finding_id: f5ae85af6a82d117
+    description: 'This finding shows a second failure mode of forced rewrite logic:
+      reviewer-specific failure metadata could be copied onto the wrong reviewer and
+      later shorter payloads could discard attempts, confirming that merges must preserve
+      per-entity identity and accumulated detail.'
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: The repeated review findings both pointed at sprint audit rewriting,
+      showing that canonical record persistence is a merge problem over nested per-run
+      state rather than a simple last-write-wins replacement.
+- claim: Terminal outcome caching for generated artifacts must be keyed by the exact
+    generation input state, and missing provenance fields are not benign defaults;
+    otherwise reruns either suppress needed regeneration or repeatedly re-dispatch
+    billed work.
+  evidence:
+  - type: review_finding
+    finding_id: 47e9b9b374adcf3d
+    description: The finding shows that a written summary without a generation-input
+      digest caused changed input to reuse an old terminal outcome, demonstrating
+      that outcome reuse is unsafe when provenance is incomplete.
+  - type: review_finding
+    finding_id: a2a46203350583b3
+    description: 'This finding shows the opposite failure mode: when artifact existence
+      and mirrored outcome state diverged, retries alternated between already-exists
+      recording and fresh dispatch, proving that cache correctness depends on reconciling
+      provenance and persisted outcome together.'
+  - type: review_finding
+    finding_id: 3c3511d243251148
+    description: The net-new finding shows that even after core fixes, a failed or
+      rejected changed re-entry could keep dispatching on unchanged terminal rewrites
+      when an older artifact remained, reinforcing that retry suppression must consider
+      both prior artifact state and current input identity.
+- claim: If production distinguishes multiple run identifiers, fixtures that collapse
+    them into one will hide identity bugs; future verification should preserve the
+    real identifier split whenever ownership or lookup behavior is under test.
+  evidence:
+  - type: file
+    path: tests/fixtures/audit_record_schema_v49.json
+    description: A new fixture schema was introduced as part of this run's verification
+      surface, reflecting that the test substrate had to represent production audit
+      identity more faithfully for the bug class to be exercisable.
+  - type: file
+    path: tests/test_sprint_rca.py
+    description: Sprint RCA verification was updated in the same run because classifier
+      behavior depends on which identifier is available, showing that tests around
+      ownership and lookup must model the production distinction between run ids.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 did not stop at code-path fixes and continued to surface
+      record-shape issues, which is consistent with identity regressions surviving
+      when the test world does not preserve the same identifier relationships as production.
+learned_patterns:
+- key-level-identity-reconciliation
+- semantic-merge-over-last-write
+- provenance-keyed-terminal-caching
+- fixtures-must-preserve-id-splits
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b60c31f103873dfa
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: 'When an existing canonical record has a written knowledge_summary
+      with a path and a later rewrite records that the new summary attempt was rejected,
+      the persisted record keeps the old path and index_rebuild beside written: false.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 8aaf99f47dafe1d8
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: When a later canonical payload contains the same number of review
+      entries but omits fields within an entry, the merge replaces the complete list
+      and permanently removes those fields.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 47e9b9b374adcf3d
+    severity: P1
+    file: src/theforge/coordinator/knowledge_summary_flow.py
+    description: When a v48 run has a written summary but no generation-input digest,
+      re-entering that run id with changed summary input returns the old written outcome
+      without dispatching a new summary.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: a2a46203350583b3
+    severity: P1
+    file: src/theforge/coordinator/knowledge_summary_flow.py
+    description: When a summary artifact exists but its outcome was never mirrored,
+      the first repeat records an already-exists outcome with the current digest and
+      the next unchanged repeat dispatches again, overwriting the existing summary
+      and billing twice.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: f5ae85af6a82d117
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: When a run records multiple reviewer attempts in the same cycle,
+      the forced canonical rewrite can copy one reviewer's failure metadata into another
+      reviewer and can discard attempts from a later shorter payload.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced edge cases where partial rewrites or incomplete provenance
+    made persisted state look terminal when it was actually ambiguous.
+  - Identity bugs spanned storage, indexing, and generation flow together; fixing
+    only one layer left review-visible inconsistencies in another.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 68.43065250000001
+  dominant_difficulty: The run was hard because one logical defect crossed multiple
+    persistence layers and two different run-identifier schemes, so correctness depended
+    on keeping identity, merge, and retry semantics aligned everywhere.
