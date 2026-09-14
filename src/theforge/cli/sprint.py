@@ -439,7 +439,8 @@ def _cmd_sprint(args: object) -> int:
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
         raise
-    except SprintConfigError:
+    except SprintConfigError as exc:
+        outcome, cause = "failed", _exc_cause(exc)
         raise
     except Exception as exc:
         import traceback
@@ -1787,7 +1788,8 @@ def _run_query_mode(
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
         raise
-    except SprintConfigError:
+    except SprintConfigError as exc:
+        outcome, cause = "failed", _exc_cause(exc)
         raise
     except Exception as exc:
         import traceback
