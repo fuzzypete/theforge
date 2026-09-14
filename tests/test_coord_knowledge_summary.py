@@ -1046,3 +1046,521 @@ def test_audit_schema_version_exposes_knowledge_summary_status() -> None:
     # survive later fields being added (#2525 bumped to v31).
     assert CURRENT_RECORD_SCHEMA_VERSION >= 30
     assert 29 in MIGRATION_HELPERS
+
+
+class TestRunIdentityReentry:
+    """A durable prior outcome does not own this run_id forever (#2520).
+
+    The sprint calls the story-audit writer several times for one finished
+    story, so an attempted-but-not-written outcome must not re-bill on each of
+    those. It must also not become a permanent block on a run that legitimately
+    re-enters under the same run_id carrying new evidence — eligibility for the
+    run in front of us is what decides.
+    """
+
+    @staticmethod
+    def _persist_outcome(project_root: Path, audit: dict) -> None:
+        """Mirror the recorded outcome into the canonical run record.
+
+        This is what ``_write_native_story_record`` does immediately after
+        generation, and it is the only reason a later, freshly-generated audit
+        payload can see the prior outcome at all.
+        """
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    def test_repeated_terminal_writes_of_an_unchanged_run_dispatch_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            calls.append(dict(kwargs))
+            return _FakeAgentResult(output=UNEVIDENCED_OUTPUT)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), first_audit
+        )
+        assert first.attempted is True
+        assert first.written is False
+        self._persist_outcome(tmp_path, first_audit)
+
+        # The sprint's later writes regenerate the audit payload from the same
+        # unchanged run — same evidence, so the same attempt.
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert second.attempted is True
+        assert second.written is False
+
+    def test_a_run_re_entered_with_new_evidence_is_attempted_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            calls.append(dict(kwargs))
+            return _FakeAgentResult(output=UNEVIDENCED_OUTPUT)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        # The run re-entered and did more work: another review cycle, another
+        # finding, another file. The prior attempted outcome must not block it.
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        reentered["finding_registry"].append(
+            {
+                "finding_id": "f-009",
+                "cycle_first_seen": 2,
+                "cycle_last_seen": 2,
+                "file": "src/retry.py",
+                "severity": "P2",
+                "description": "backoff ceiling unbounded",
+                "disposition": "resolved",
+            }
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert len(calls) == 2
+        assert outcome.attempted is True
+
+    def test_an_ineligible_run_still_reports_its_recorded_outcome(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Eligibility-first must not regress the attempted/not_attempted split."""
+        monkeypatch.setattr(
+            knowledge_summary_flow,
+            "run_agent",
+            lambda **_: _FakeAgentResult(output=UNEVIDENCED_OUTPUT),
+        )
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), first_audit
+        )
+        self._persist_outcome(tmp_path, first_audit)
+
+        # Summaries switched off: the run is no longer eligible, but the outcome
+        # it already reached is still the truth about it.
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), _audit()
+        )
+
+        assert outcome.attempted is True
+        assert outcome.status != "not_attempted"
+
+
+class TestWrittenSummaryReentry:
+    """A written artifact is not a permanent disqualification (#2520).
+
+    ``summary_exists`` answers "has this generation input been summarised?",
+    which only the recorded digest can actually decide. Treating it as "is this
+    the kind of run we summarise?" is what let an artifact written from earlier
+    material block a run that re-entered and did more.
+    """
+
+    @staticmethod
+    def _persist_outcome(project_root: Path, audit: dict) -> None:
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    def test_a_written_summary_does_not_block_re_entry_with_new_material(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), first_audit
+        )
+        assert first.status == "written"
+        assert summary_path(tmp_path, RUN_ID).exists()
+        self._persist_outcome(tmp_path, first_audit)
+
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        reentered["iterations"]["review_cycles_total"] = 2
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert len(calls) == 2
+        assert second.status == "written"
+
+    def test_prompt_material_changing_without_new_anchors_still_re_attempts(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """Same finding ids, cycles, paths and refs — different finding prose."""
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        reentered = _audit()
+        reentered["finding_registry"][0]["description"] = (
+            "the retry path drops the read timeout when the connect timeout fires first"
+        )
+        assert (
+            knowledge_summary_flow.extract_anchors(reentered).finding_ids
+            == knowledge_summary_flow.extract_anchors(first_audit).finding_ids
+        )
+
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), reentered)
+
+        assert len(calls) == 2
+
+    def test_an_unchanged_run_with_a_written_summary_is_still_not_billed_again(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._persist_outcome(tmp_path, first_audit)
+
+        second = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert second.written is True
+
+    def test_a_pre_digest_outcome_is_never_backfilled_by_an_ineligible_pass(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The legacy (v48) record keeps its unknown digest through an ineligible write.
+
+        Stamping it during the ineligible pass would have it claim it matched
+        today's generation input, which it was never compared against — and the
+        next eligible pass would then reuse it instead of re-attempting.
+        """
+        # A v48-shaped durable outcome: attempted, no digest recorded.
+        path = tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "run_id": RUN_ID,
+                    "knowledge_summary": {
+                        "status": "rejected",
+                        "attempted": True,
+                        "written": False,
+                        "reason": "legacy",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ineligible_audit = _audit()
+        echoed = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), ineligible_audit
+        )
+        assert echoed.attempted is True
+        assert "generation_input_digest" not in ineligible_audit["knowledge_summary"]
+        assert calls == []
+
+        # Eligibility restored: the undigested outcome must not suppress it.
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), _audit()
+        )
+
+        assert len(calls) == 1
+        assert outcome.status == "written"
+
+
+class TestArtifactProvenanceGovernsReuse:
+    """The artifact records what it was generated from, and that is what is asked.
+
+    A run record that was never mirrored leaves no outcome to consult, and an
+    artifact written before the digest existed cannot say whether it still
+    describes the run. Keying reuse to the artifact's own
+    ``generation.input_digest`` is what makes both cases decidable (#2520).
+    """
+
+    @staticmethod
+    def _write_legacy_artifact(project_root: Path) -> Path:
+        """A pre-digest (v48-era) summary artifact: no ``generation.input_digest``."""
+        path = summary_path(project_root, RUN_ID)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": SUMMARY_SCHEMA_VERSION,
+                    "run_id": RUN_ID,
+                    "generated_at": "2026-08-15T12:00:00+00:00",
+                    "generation": {"model": "claude-sonnet-4-5", "transport": "api"},
+                    "story": {"slug": "retry-client", "name": "Retry the client"},
+                    "story_shape": {"work_type": "feature"},
+                    "domains": ["backend"],
+                    "changed_files": ["src/client.py"],
+                    "learned_patterns": ["retry-decorator"],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_written_artifact_records_the_input_it_came_from(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), audit
+        )
+
+        artifact = yaml.safe_load(summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8"))
+        assert artifact["generation"]["input_digest"] == (
+            knowledge_summary_flow._generation_input_digest(_audit())
+        )
+
+    def test_an_artifact_whose_outcome_was_never_mirrored_is_not_regenerated(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The repeat-write loop that billed twice and overwrote a correct summary."""
+        config = _make_config(tmp_path)
+
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), _audit())
+        original = summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8")
+
+        # Nothing mirrors the outcome into a canonical run record, so every later
+        # write starts from a fresh audit payload with no recorded outcome.
+        for _ in range(3):
+            outcome = knowledge_summary_flow.maybe_generate_run_summary(
+                config, _done_result(), _audit()
+            )
+            assert outcome.attempted is False
+
+        assert len(calls) == 1
+        assert summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8") == original
+
+    def test_a_pre_digest_artifact_with_changed_input_is_regenerated_once(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """A v48 written outcome must not permanently suppress changed re-entry."""
+        self._write_legacy_artifact(tmp_path)
+        run_record = tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        run_record.parent.mkdir(parents=True, exist_ok=True)
+        run_record.write_text(
+            json.dumps(
+                {
+                    "run_id": RUN_ID,
+                    "knowledge_summary": {
+                        "status": "written",
+                        "attempted": True,
+                        "written": True,
+                        "path": str(summary_path(tmp_path, RUN_ID)),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = _make_config(tmp_path)
+
+        reentered = _audit()
+        reentered["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        first = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentered
+        )
+
+        assert first.status == "written"
+        assert len(calls) == 1
+
+        # The artifact now carries a digest, so the repeat of that same write
+        # reuses it instead of billing again.
+        knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), dict(reentered, knowledge_summary=None)
+        )
+        assert len(calls) == 1
+
+
+class TestStaleArtifactAfterAFailedReentry:
+    """A stale artifact must not make a failed re-entry bill on every repeat.
+
+    A changed re-entry whose attempt is rejected writes no artifact, so the one
+    from the earlier input survives on disk. That survivor says nothing about
+    the input in front of us — the recorded outcome does, and it says this exact
+    input has already been tried (#2520).
+    """
+
+    @staticmethod
+    def _mirror(project_root: Path, audit: dict) -> None:
+        path = project_root / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"run_id": RUN_ID, "knowledge_summary": audit["knowledge_summary"]}),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _reentered() -> dict:
+        audit = _audit()
+        audit["reviews"].append({"cycle": 2, "verdict": "APPROVE", "summary": "again"})
+        audit["iterations"]["review_cycles_total"] = 2
+        return audit
+
+    def test_a_rejected_reentry_is_not_re_dispatched_on_every_later_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatches: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            dispatches.append(dict(kwargs))
+            # The first dispatch writes a summary; the re-entry is rejected.
+            output = VALID_OUTPUT if len(dispatches) == 1 else UNEVIDENCED_OUTPUT
+            return _FakeAgentResult(output=output)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        first_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), first_audit)
+        self._mirror(tmp_path, first_audit)
+        stale = summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8")
+
+        reentry_audit = self._reentered()
+        rejected = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), reentry_audit
+        )
+        assert rejected.attempted is True
+        assert rejected.written is False
+        self._mirror(tmp_path, reentry_audit)
+
+        # The artifact from the *earlier* input is still on disk. Repeated
+        # terminal writes of the re-entered run must not keep paying for it.
+        for _ in range(3):
+            outcome = knowledge_summary_flow.maybe_generate_run_summary(
+                config, _done_result(), self._reentered()
+            )
+            assert outcome.written is False
+
+        assert len(dispatches) == 2
+        assert summary_path(tmp_path, RUN_ID).read_text(encoding="utf-8") == stale
+
+    def test_the_stale_artifact_is_still_replaced_once_material_changes_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reuse is scoped to the input that was tried, not to the run_id."""
+        dispatches: list[dict] = []
+
+        def _agent(**kwargs: object) -> _FakeAgentResult:
+            dispatches.append(dict(kwargs))
+            output = UNEVIDENCED_OUTPUT if len(dispatches) == 1 else VALID_OUTPUT
+            return _FakeAgentResult(output=output)
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _agent)
+        config = _make_config(tmp_path)
+
+        rejected_audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), rejected_audit)
+        self._mirror(tmp_path, rejected_audit)
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), self._reentered()
+        )
+
+        assert len(dispatches) == 2
+        assert outcome.status == "written"
+
+
+class TestOutcomeRecordingIsTotalAndLazy:
+    """Recording an outcome is bookkeeping and must not become a failure mode.
+
+    This module is a side effect of a run that already finished, so it never
+    raises — and that has to hold for the reuse bookkeeping as much as for the
+    dispatch. A run that was never eligible also has no dispatch to compare
+    against, so it renders no prompt to reach that conclusion.
+    """
+
+    def test_an_ineligible_run_renders_no_summary_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, calls: list[dict]
+    ) -> None:
+        renders: list[dict] = []
+        real_prompt = knowledge_summary_flow.build_run_summary_prompt
+
+        def _spy(audit: dict, anchors: object) -> str:
+            renders.append(audit)
+            return real_prompt(audit, anchors)
+
+        monkeypatch.setattr(knowledge_summary_flow, "build_run_summary_prompt", _spy)
+
+        audit = _audit()
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path, run_summaries=False), _done_result(), audit
+        )
+
+        assert outcome.status == "not_attempted"
+        assert renders == []
+        assert calls == []
+        # An outcome that never attempted anything cannot vouch for a
+        # generation input, so it claims none.
+        assert "generation_input_digest" not in audit["knowledge_summary"]
+
+    def test_an_attempted_outcome_records_the_input_it_was_reached_from(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        audit = _audit()
+        knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), audit
+        )
+
+        assert audit["knowledge_summary"]["attempted"] is True
+        assert audit["knowledge_summary"]["generation_input_digest"] == (
+            knowledge_summary_flow._generation_input_digest(_audit())
+        )
+
+    def test_an_unrenderable_audit_yields_an_unknown_digest_rather_than_raising(
+        self, tmp_path: Path
+    ) -> None:
+        malformed = {"run_id": RUN_ID, "task": ["not", "a", "mapping"]}
+
+        assert knowledge_summary_flow._generation_input_digest(malformed) is None
+
+    def test_an_unrenderable_audit_does_not_escape_the_summary_flow(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        """The audit write path must not inherit a failure from its side effect."""
+        malformed = {"run_id": RUN_ID, "task": ["not", "a", "mapping"]}
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), malformed
+        )
+
+        assert outcome.written is False
+        assert isinstance(malformed["knowledge_summary"], dict)
+
+    def test_an_unknown_digest_never_matches_a_run_with_no_artifact(self, tmp_path: Path) -> None:
+        """`None == None` must not read as 'already summarised'."""
+        assert knowledge_summary_flow.summary_generation_input_digest(tmp_path, RUN_ID) is None
+        assert (
+            knowledge_summary_flow._reuse_existing_outcome(
+                knowledge_summary_flow.RunSummaryOutcome(
+                    status="rejected", attempted=True, written=False
+                ),
+                None,
+            )
+            is False
+        )

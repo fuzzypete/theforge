@@ -1074,6 +1074,13 @@ def _classify_story(
     spend_shape = _spend_shape(story, audit)
     if spend_shape is not None:
         entry["spend_shape"] = spend_shape
+    # Only present when manifest-owned artifacts had to be dropped because this
+    # story offered no run identity to match their owners against (#2589).
+    ownership = _unresolved_artifact_ownership(
+        sprint_log_dir / slug, logs_root, _story_attempt_run_ids(story, audit)
+    )
+    if ownership is not None:
+        entry["artifact_ownership"] = ownership
     # Only present when the surfaces describing this one story disagree; an
     # operator reading one of them otherwise has no way to know (#2373).
     consistency = _outcome_consistency(story, audit, outcome, summary_source, audit_source)
@@ -1250,17 +1257,68 @@ def _story_attempt_started_at(story: dict, audit: dict) -> datetime.datetime | N
 
 
 def _story_attempt_run_ids(story: dict, audit: dict) -> set[str]:
-    """Return the current attempt's recorded run identities, if present."""
+    """Return the run identities that key this attempt's artifact-owner manifest.
+
+    Only the per-story audit's ``run_id`` does. The manifest is written by the
+    coordinator run that produced the artifacts, under that run's id, and the
+    summary row's ``story_run_id`` is derived independently — ``result.state.run_id
+    or state.sprint_run_id`` in the sprint runner — so it can legitimately be the
+    sprint-wide identifier instead. Substituting it here matches a differently
+    scoped id against manifest owners and resolves ownership to the wrong attempt
+    (#2589). When the audit is missing, unreadable, or carries no ``run_id``, this
+    returns the empty set and ownership is *unresolved* rather than guessed;
+    :func:`_artifact_belongs_to_attempt` then fails closed.
+
+    ``story`` is retained in the signature because the caller holds both records
+    and the summary row remains the source for the attempt's time window.
+    """
     ids: set[str] = set()
-    candidates = [story.get("story_run_id")]
     if isinstance(audit, dict):
-        candidates.append(audit.get("run_id"))
-    for value in candidates:
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                ids.add(text)
+        value = audit.get("run_id")
+        if isinstance(value, str) and value.strip():
+            ids.add(value.strip())
     return ids
+
+
+def _unresolved_artifact_ownership(
+    story_dir: Path,
+    logs_root: Path,
+    attempt_run_ids: set[str],
+) -> dict | None:
+    """Report manifest-owned artifacts this story could not resolve ownership for.
+
+    Returned only when the story's artifact manifest names owners but no run
+    identity was available to compare them against — the per-story audit was
+    missing, unreadable, or carried no ``run_id``. Those artifacts are excluded
+    from classification (failing closed beats attributing another attempt's
+    evidence to this story), and an operator reading the RCA is told so rather
+    than being left to wonder why the story classified from nothing (#2589).
+    """
+    if attempt_run_ids:
+        return None
+    manifest = _load_yaml(story_dir / ".artifact-owners.yaml")
+    if not isinstance(manifest, dict):
+        return None
+    entries = manifest.get("artifacts")
+    if not isinstance(entries, dict):
+        return None
+    excluded = sorted(
+        _rel(story_dir / rel, logs_root)
+        for rel, owner in entries.items()
+        if isinstance(rel, str) and isinstance(owner, str) and owner.strip()
+    )
+    if not excluded:
+        return None
+    return {
+        "resolved": False,
+        "reason": "per-story audit run_id unavailable",
+        "excluded_artifacts": excluded,
+        "note": _truncate(
+            f"{len(excluded)} artifact(s) name an owning run in this story's manifest, but the "
+            "per-story audit supplied no run_id to match them against; they were excluded from "
+            "classification rather than attributed to this attempt"
+        ),
+    }
 
 
 def _parse_attempt_timestamp(value: object) -> datetime.datetime | None:

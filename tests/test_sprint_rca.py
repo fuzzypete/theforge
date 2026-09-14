@@ -1430,7 +1430,10 @@ def test_prior_attempt_review_artifact_with_stale_owner_run_id_is_excluded_after
             [
                 {
                     "slug": "issue-2038",
-                    "story_run_id": "run-current",
+                    # Sprint-level identifier: derived independently of the
+                    # per-story run_id (``result.state.run_id or
+                    # state.sprint_run_id``), and never what keys the manifest.
+                    "story_run_id": "run-sprint-wide",
                     "outcome": "ESCALATE",
                     "error": "story escalated",
                     "started_at": started_at,
@@ -1482,7 +1485,9 @@ def test_current_attempt_review_artifact_with_current_owner_run_id_survives_stal
             [
                 {
                     "slug": "issue-1324",
-                    "story_run_id": "run-current",
+                    # Diverges from the per-story audit run_id below, the way a
+                    # real sprint summary row does.
+                    "story_run_id": "run-sprint-wide",
                     "outcome": "ESCALATE",
                     "error": "story escalated",
                     "started_at": started_at,
@@ -1519,6 +1524,99 @@ def test_current_attempt_review_artifact_with_current_owner_run_id_survives_stal
     entry = _build(d)["stories"]["issue-1324"]
     assert entry["primary_failure_class"] == "provider_quota"
     assert any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
+    # Retained through the per-story audit run_id and nothing else.
+    assert "artifact_ownership" not in entry
+
+
+def test_artifact_owned_by_the_sprint_level_run_id_is_not_claimed_by_this_attempt(
+    tmp_path: Path,
+) -> None:
+    """``story_run_id`` does not key the manifest, so it cannot resolve ownership.
+
+    The manifest is written under the per-story coordinator run's id. Matching a
+    sprint-level identifier against it resolves ownership to a different scope
+    and pulls another attempt's evidence into this story (#2589).
+    """
+    d = _sprint_dir(tmp_path, name="sprint-scoped-owner")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2038",
+                    "story_run_id": "run-sprint-wide",
+                    "outcome": "ESCALATE",
+                    "error": "story escalated",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2038" / "audit.yaml",
+        {
+            "run_id": "run-current",
+            "timing": {"started_at": started_at, "finished_at": finished_at},
+        },
+    )
+    artifact = d / "issue-2038" / "review-cycle-1" / "openai-gpt.yaml"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        "output: |\n  ERROR: You've hit your usage limit. Try again at 6:57 PM.\n",
+        encoding="utf-8",
+    )
+    _write(
+        d / "issue-2038" / ".artifact-owners.yaml",
+        {"artifacts": {"review-cycle-1/openai-gpt.yaml": "run-sprint-wide"}},
+    )
+
+    entry = _build(d)["stories"]["issue-2038"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert not any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
+
+
+def test_missing_per_story_audit_leaves_manifest_ownership_unresolved(tmp_path: Path) -> None:
+    """No audit run_id means ownership is reported unresolved, not guessed."""
+    d = _sprint_dir(tmp_path, name="unreadable-audit")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2038",
+                    "story_run_id": "run-sprint-wide",
+                    "outcome": "ESCALATE",
+                    "error": "story escalated",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    # No audit.yaml at all — the only identifier left is the sprint-level one.
+    artifact = d / "issue-2038" / "review-cycle-1" / "openai-gpt.yaml"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        "output: |\n  ERROR: You've hit your usage limit. Try again at 6:57 PM.\n",
+        encoding="utf-8",
+    )
+    _write(
+        d / "issue-2038" / ".artifact-owners.yaml",
+        {"artifacts": {"review-cycle-1/openai-gpt.yaml": "run-sprint-wide"}},
+    )
+
+    entry = _build(d)["stories"]["issue-2038"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert not any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
+    ownership = entry["artifact_ownership"]
+    assert ownership["resolved"] is False
+    assert any(path.endswith("openai-gpt.yaml") for path in ownership["excluded_artifacts"])
+    assert "run_id" in ownership["note"]
 
 
 # ── Engine: determinism / regenerability ──────────────────────────────────────
