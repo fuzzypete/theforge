@@ -29,6 +29,11 @@ from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
 from ..config.model_identity import PHASE_PREFLIGHT
+from ..config.provenance import (
+    VALUE_SOURCE_CLI_OVERRIDE,
+    VALUE_SOURCE_DERIVED,
+    refresh_provenance,
+)
 from ..coordinator import config_snapshot as config_snapshot_mod
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.agent_failure import (
@@ -160,6 +165,7 @@ from .manifest import (
     ResolvedSprint,
     SprintResult,
     _build_task_from_story,
+    load_sprint_manifest,
     resolve_from_manifest,
 )
 from .preserved_resume import preserved_escalated_message
@@ -3642,6 +3648,125 @@ class SprintStopCondition:
             return True
 
 
+def _snapshot_source_matches(config: ForgeConfig, snapshot: SprintConfigSnapshot) -> bool:
+    """Whether ``config`` was already parsed from this sprint's pinned file."""
+    source_path = getattr(getattr(config, "provenance", None), "source_path", None)
+    if not source_path or snapshot.pinned_path is None:
+        return False
+    try:
+        return Path(source_path).resolve() == snapshot.pinned_path.resolve()
+    except OSError:
+        return source_path == str(snapshot.pinned_path)
+
+
+class SprintConfigError(ValueError):
+    """A sprint's pinned configuration cannot be loaded as its operative config.
+
+    This stays an ordinary exception so non-CLI callers — especially the daemon
+    queue — can record the failed sprint and continue processing later entries.
+    The CLI translates it to its standard structural-config message and exit
+    status at the command boundary.
+    """
+
+    def __init__(self, config_path: Path, cause: ValueError) -> None:
+        self.config_path = Path(config_path)
+        super().__init__(str(cause))
+
+
+def _preserve_runtime_config_overrides(config: ForgeConfig, pinned: ForgeConfig) -> ForgeConfig:
+    """Carry operator and derived invocation choices onto the pinned config.
+
+    The pin supplies all ``forge.yaml`` settings, while a value derived from the
+    current invocation remains in force for that invocation.  Provenance keeps
+    this deliberately narrow: ordinary root-file drift cannot masquerade as an
+    override.
+    """
+    provenance = getattr(config, "provenance", None)
+    sources = getattr(provenance, "resolved_value_sources", {})
+    if not isinstance(sources, dict):
+        return pinned
+
+    rebound = pinned
+    source_updates: dict[str, str] = {}
+    if sources.get("workspace.base_branch") == VALUE_SOURCE_CLI_OVERRIDE:
+        rebound = replace(
+            rebound,
+            workspace=replace(rebound.workspace, base_branch=config.workspace.base_branch),
+        )
+        source_updates["workspace.base_branch"] = VALUE_SOURCE_CLI_OVERRIDE
+    if sources.get("sprint.max_parallel") in {
+        VALUE_SOURCE_CLI_OVERRIDE,
+        VALUE_SOURCE_DERIVED,
+    }:
+        rebound = replace(
+            rebound,
+            sprint=replace(rebound.sprint, max_parallel=config.sprint.max_parallel),
+        )
+        source_updates["sprint.max_parallel"] = sources["sprint.max_parallel"]
+
+    return (
+        refresh_provenance(rebound, source_updates=source_updates) if source_updates else rebound
+    )
+
+
+def establish_sprint_config(
+    config: ForgeConfig,
+    sprint_name: str,
+    *,
+    sprint_id: str | None = None,
+) -> tuple[ForgeConfig, str | None, SprintConfigSnapshot | None]:
+    """Activate and load a sprint's one operative configuration.
+
+    The root ``forge.yaml`` is only bootstrap input: once a sprint identity is
+    known, every config consumer must receive the pinned snapshot instead.  The
+    helper is deliberately usable before manifest semantic admission as well as
+    at runner entry, so query, manifest, daemon, and direct API paths share the
+    same boundary.
+    """
+    resolved_sprint_id = sprint_id
+    if not resolved_sprint_id:
+        try:
+            resolved_sprint_id = _get_or_create_sprint_id(sprint_name, config.project_root)
+        except Exception:  # pragma: no cover - stable IDs retain their existing fallback behavior
+            resolved_sprint_id = None
+
+    snapshot: SprintConfigSnapshot | None = None
+    if resolved_sprint_id:
+        try:
+            source_path = getattr(getattr(config, "provenance", None), "source_path", None)
+            snapshot = capture_or_load(
+                config.project_root,
+                resolved_sprint_id,
+                source_path=Path(source_path) if source_path else None,
+            )
+        except Exception:  # pragma: no cover - snapshot capture remains best effort
+            snapshot = None
+    config_snapshot_mod.activate(snapshot)
+
+    if snapshot is None or not snapshot.present or snapshot.pinned_path is None:
+        return config, resolved_sprint_id, snapshot
+    # Programmatic callers can supply a fully-built config that has no file
+    # provenance.  Preserve that existing API seam on first capture; normal
+    # CLI and daemon startup always has a source path and reloads the pin even
+    # on its initial creation.  A reused pin is never allowed this fallback.
+    if not snapshot.reused and not getattr(
+        getattr(config, "provenance", None), "source_path", None
+    ):
+        return config, resolved_sprint_id, snapshot
+    if _snapshot_source_matches(config, snapshot):
+        return config, resolved_sprint_id, snapshot
+
+    try:
+        pinned = config_snapshot_mod.load_pinned_config(snapshot, project_root=config.project_root)
+    except ValueError as exc:
+        # A stale pin is still this sprint's operative forge.yaml, so falling
+        # back to bootstrap config would silently change routing. Let the CLI
+        # render the normal structural-config message, while daemon callers can
+        # account for this failed queue entry and continue.
+        raise SprintConfigError(snapshot.pinned_path, exc) from exc
+    return _preserve_runtime_config_overrides(config, pinned), resolved_sprint_id, snapshot
+
+
 @dataclass(frozen=True)
 class SprintRunContext:
     """What a sprint consults but never changes.
@@ -3739,15 +3864,45 @@ class SprintRunContext:
         through untouched.
         """
         if isinstance(sprint, (str, Path)):
-            resolved = resolve_from_manifest(Path(sprint), config.project_root, config=config)
+            # Manifest issue entries can schedule semantic evaluation while the
+            # manifest resolves.  Read its name first, then establish the
+            # snapshot before that admission can inspect config.preflight_profile.
+            manifest_path = Path(sprint)
+            requested_sprint_id = options.pop("sprint_id", None)  # type: ignore[arg-type]
+            try:
+                manifest_name = load_sprint_manifest(manifest_path).name
+            except ValueError:
+                # Preserve the existing resolve_from_manifest error boundary.
+                # It is also a patchable seam for callers that supply a
+                # synthetic resolved manifest in tests.
+                manifest_name = None
+            if manifest_name is not None:
+                config, resolved_sprint_id, _snapshot = establish_sprint_config(
+                    config,
+                    manifest_name,
+                    sprint_id=requested_sprint_id,
+                )
+            resolved = resolve_from_manifest(manifest_path, config.project_root, config=config)
+            if manifest_name is None:
+                config, resolved_sprint_id, _snapshot = establish_sprint_config(
+                    config,
+                    resolved.name,
+                    sprint_id=requested_sprint_id,
+                )
         else:
             resolved = sprint
+            config, resolved_sprint_id, _snapshot = establish_sprint_config(
+                config,
+                resolved.name,
+                sprint_id=options.pop("sprint_id", None),  # type: ignore[arg-type]
+            )
         live = options.pop("live_story_slugs", None) or ()
         unresolved = options.pop("unresolved_live_slugs", None) or ()
         registered = options.pop("registered_live_slugs", None) or ()
         return cls(
             config=config,
             resolved=resolved,
+            sprint_id=resolved_sprint_id,
             live_story_slugs=frozenset(live),  # type: ignore[arg-type]
             unresolved_live_slugs=frozenset(unresolved),  # type: ignore[arg-type]
             registered_live_slugs=frozenset(registered),  # type: ignore[arg-type]
@@ -5150,9 +5305,24 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
     """
-    # The context is rebound (never mutated) exactly twice below: once for the
-    # adaptively scaled gate timeout, once for the sprint id this run resolves.
+    # The context is rebound (never mutated) for the snapshot-backed operative
+    # config and later for the adaptively scaled gate timeout.
     _ctx = context
+
+    # Direct API callers may construct SprintRunContext rather than use
+    # for_sprint().  Establish the same boundary here, before *any* config
+    # consumer (auth, availability, workspace, routing, or timeout policy) can
+    # inspect the live bootstrap config.
+    _operative_config, _resolved_sprint_id, _config_snapshot = establish_sprint_config(
+        _ctx.config,
+        _ctx.resolved.name,
+        sprint_id=_ctx.sprint_id,
+    )
+    _ctx = replace(
+        _ctx,
+        config=_operative_config,
+        sprint_id=_resolved_sprint_id,
+    )
 
     # A re-exec'd launch (source changed mid-sprint) keeps the original argv and
     # therefore never carries ``--resume``, but it MUST run the same merged-state
@@ -5459,14 +5629,6 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
     _cli_run_id = _ctx.run_id
 
-    # Stable sprint_id — does not change across run_id rollovers or --resume.
-    # Used to aggregate story outcomes across all worker-process boundaries.
-    _sprint_id: str | None = None
-    try:
-        _sprint_id = _get_or_create_sprint_id(_ctx.resolved.name, _ctx.config.project_root)
-    except Exception:
-        pass
-
     # Everything the sprint consults is settled by this point, so the context is
     # final from here on and the mutable half gets its own named object. Below
     # this line the nested functions read ``_ctx`` and write ``_sprint_state``,
@@ -5474,7 +5636,6 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # questions the old ``nonlocal`` writes left open — what accumulates cost,
     # and what decides the sprint has stopped — are answered by
     # ``_sprint_state.cost`` and ``_sprint_state.stop`` and by nothing else.
-    _ctx = replace(_ctx, sprint_id=_sprint_id)
     _sprint_state = SprintExecutionState.for_run(_ctx)
 
     # Ownership records the pre-exec image left behind. Adopted rather than
@@ -5563,13 +5724,6 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # a story landing a config-contract change made the sprint's own forge.yaml
     # invalid, and the next re-entry read the changed file. A project root that
     # has since moved off the pin is reported as drift, never silently adopted.
-    _config_snapshot: "SprintConfigSnapshot | None" = None
-    if _ctx.sprint_id:
-        try:
-            _config_snapshot = capture_or_load(_ctx.config.project_root, _ctx.sprint_id)
-        except Exception:  # pragma: no cover - snapshotting must never abort a sprint
-            _config_snapshot = None
-    config_snapshot_mod.activate(_config_snapshot)
     if _config_snapshot is not None and _config_snapshot.present:
         _log(
             f"Sprint config pinned: forge.yaml {(_config_snapshot.digest or '')[:12]} "

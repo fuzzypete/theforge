@@ -157,6 +157,67 @@ def test_daemon_server_dedup_running(forge_root: Path, mock_config: MagicMock) -
     asyncio.run(_run())
 
 
+def test_daemon_records_an_invalid_pinned_config_and_continues_queue(
+    forge_root: Path, mock_config: MagicMock
+) -> None:
+    """A malformed reused pin crashes only its sprint, not the daemon loop."""
+    from theforge.config import load_config
+    from theforge.coordinator import config_snapshot as config_snapshot_mod
+    from theforge.sprint.runner import establish_sprint_config
+
+    config_path = forge_root / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    invalid_manifest = forge_root / "invalid.yaml"
+    invalid_manifest.write_text("name: invalid\nbudget_usd: 1\nstories: []\n", encoding="utf-8")
+    next_manifest = forge_root / "next.yaml"
+    next_manifest.write_text("name: next\nbudget_usd: 1\nstories: []\n", encoding="utf-8")
+
+    _operative, _sprint_id, snapshot = establish_sprint_config(load_config(config_path), "invalid")
+    assert snapshot is not None and snapshot.pinned_path is not None
+    snapshot.pinned_path.write_text("dev: []\n", encoding="utf-8")
+
+    async def _run() -> None:
+        server = DaemonServer(forge_root, mock_config)
+        completed_slugs: list[str] = []
+
+        def _execute(manifest: str, args: dict, _state_update_fn: object) -> None:
+            if args["slug"] == "invalid":
+                # Exercise the real malformed-pin boundary from the daemon's
+                # executor thread; the loop must catch this ordinary exception.
+                establish_sprint_config(load_config(config_path), "invalid")
+            completed_slugs.append(args["slug"])
+
+        server._execute_sprint = _execute  # type: ignore[method-assign]
+        with patch("theforge.daemon._daemon_ntfy_notify"):
+            await server.handle_submit(
+                {"manifest": str(invalid_manifest), "args": {"slug": "invalid"}}
+            )
+            await server.handle_submit({"manifest": str(next_manifest), "args": {"slug": "next"}})
+            loop_task = asyncio.create_task(server._run_loop())
+            try:
+                await asyncio.wait_for(server._queue.join(), timeout=2)
+            finally:
+                server._shutdown_event.set()
+                await asyncio.wait_for(loop_task, timeout=2)
+
+        assert completed_slugs == ["next"]
+        assert [entry["outcome"] for entry in server._completed] == ["crashed", "done"]
+        assert server._current_state["current_sprint"] is None
+        assert server._current_state["queue"] == []
+
+    try:
+        asyncio.run(_run())
+        crash_lines = (
+            (forge_root / ".forge" / "logs" / "crashes.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        assert len(crash_lines) == 1
+        assert "SprintConfigError" in json.loads(crash_lines[0])["last_log_event"]
+    finally:
+        config_snapshot_mod.deactivate()
+
+
 # ── stop_daemon ────────────────────────────────────────────────────────
 
 

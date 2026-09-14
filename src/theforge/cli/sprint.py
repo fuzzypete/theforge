@@ -7,7 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from theforge.cli.overrides import apply_base_branch_override
-from theforge.cli.shared import _find_config, load_config_checked
+from theforge.cli.shared import (
+    _find_config,
+    _print_startup_auth_warnings,
+    load_config_checked,
+    print_config_load_error,
+)
 from theforge.config import load_config
 from theforge.config.provenance import (
     VALUE_SOURCE_CLI_OVERRIDE,
@@ -24,7 +29,7 @@ from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
-from theforge.sprint.runner import parse_manifest_story_refs
+from theforge.sprint.runner import SprintConfigError, parse_manifest_story_refs
 
 # A run's reported disposition must be derived from how it actually ended, not
 # from the absence of a record saying otherwise. ``_BACKSTOP`` carries the
@@ -101,6 +106,10 @@ def cmd_sprint(args: object) -> int:
     except KeyboardInterrupt:
         _BACKSTOP.update({"outcome": "stopped", "cause": "interrupted by operator (SIGINT)"})
         raise
+    except SprintConfigError as exc:
+        print_config_load_error(exc.config_path, exc)
+        _record_run_failure(_exc_cause(exc))
+        return 2
     except BaseException as exc:
         _record_run_failure(_exc_cause(exc))
         raise
@@ -177,7 +186,14 @@ def _cmd_sprint(args: object) -> int:
         return 1
 
     config = apply_base_branch_override(
-        load_config_checked(config_path, loader=load_config),
+        load_config_checked(
+            config_path,
+            loader=load_config,
+            # A non-preview sprint replaces this bootstrap config with its pin
+            # before dispatch. Warn for the operative config below, not for
+            # models that root-file drift added or removed.
+            emit_startup_auth_warnings=bool(getattr(args, "dry_run", False)),
+        ),
         getattr(args, "base_branch", None),
     )
 
@@ -398,30 +414,33 @@ def _cmd_sprint(args: object) -> int:
     outcome = "failed"
     cause: str | None = _UNKNOWN_END_CAUSE
     try:
-        result = run_sprint(
-            SprintRunContext.for_sprint(
-                config,
-                manifest_path,
-                auto_merge=auto_merge,
-                interactive=interactive,
-                notify=not args.no_notify,
-                resume=resume,
-                reexec=reexec,
-                no_pull=no_pull,
-                run_id=run_id,
-                dropped_slugs=dropped_slugs,
-                force=force,
-                live_story_slugs=set(liveness.live_slugs),
-                unresolved_live_slugs=set(liveness.unresolved_slugs),
-                registered_live_slugs=set(liveness.registered_slugs),
-                accept_unmeasured_spend=accept_unmeasured_spend,
-                accept_unmeasured_reason=accept_unmeasured_reason,
-            )
+        context = SprintRunContext.for_sprint(
+            config,
+            manifest_path,
+            auto_merge=auto_merge,
+            interactive=interactive,
+            notify=not args.no_notify,
+            resume=resume,
+            reexec=reexec,
+            no_pull=no_pull,
+            run_id=run_id,
+            dropped_slugs=dropped_slugs,
+            force=force,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
+            registered_live_slugs=set(liveness.registered_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend,
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
+        _print_startup_auth_warnings(context.config)
+        result = run_sprint(context)
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
+    except SprintConfigError as exc:
+        outcome, cause = "failed", _exc_cause(exc)
         raise
     except Exception as exc:
         import traceback
@@ -1221,6 +1240,22 @@ def _run_query_mode(
         else f"issues '{issues_arg}'"
     )
 
+    # Query-mode semantic admission runs before SprintRunContext exists.  Bind
+    # its scheduler to the same snapshot-backed config the runner will use, so
+    # a resumed sprint cannot evaluate or route with post-pin model settings.
+    # A dry run remains a pure preview and therefore does not capture a pin.
+    if not dry_run:
+        from theforge.sprint.runner import establish_sprint_config  # noqa: PLC0415
+
+        config, _sprint_id, _snapshot = establish_sprint_config(
+            config,
+            _derive_query_sprint_name(
+                name=getattr(args, "name", None),
+                milestone=milestone,
+                label=label,
+                issues_arg=issues_arg,
+            ),
+        )
     # Fetch issue list (lightweight — just numbers and titles)
     try:
         if milestone:
@@ -1726,32 +1761,35 @@ def _run_query_mode(
     )
 
     try:
-        result = run_sprint(
-            SprintRunContext.for_sprint(
-                runtime_config,
-                resolved,
-                auto_merge=auto_merge,
-                interactive=interactive,
-                notify=not args.no_notify,
-                resume=resume,
-                reexec=reexec,
-                no_pull=no_pull,
-                run_id=run_id,
-                dropped_slugs=dropped_slugs,
-                skipped_issues=skipped_issues,
-                entry_intake_outcomes=entry_intake_outcomes,
-                force=force,
-                live_story_slugs=set(liveness.live_slugs),
-                unresolved_live_slugs=set(liveness.unresolved_slugs),
-                registered_live_slugs=set(liveness.registered_slugs),
-                accept_unmeasured_spend=accept_unmeasured_spend or [],
-                accept_unmeasured_reason=accept_unmeasured_reason,
-            )
+        context = SprintRunContext.for_sprint(
+            runtime_config,
+            resolved,
+            auto_merge=auto_merge,
+            interactive=interactive,
+            notify=not args.no_notify,
+            resume=resume,
+            reexec=reexec,
+            no_pull=no_pull,
+            run_id=run_id,
+            dropped_slugs=dropped_slugs,
+            skipped_issues=skipped_issues,
+            entry_intake_outcomes=entry_intake_outcomes,
+            force=force,
+            live_story_slugs=set(liveness.live_slugs),
+            unresolved_live_slugs=set(liveness.unresolved_slugs),
+            registered_live_slugs=set(liveness.registered_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend or [],
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
+        _print_startup_auth_warnings(context.config)
+        result = run_sprint(context)
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
         # rather than folding it into the failure bucket.
         outcome, cause = "stopped", "interrupted by operator (SIGINT)"
+        raise
+    except SprintConfigError as exc:
+        outcome, cause = "failed", _exc_cause(exc)
         raise
     except Exception as exc:
         import traceback
