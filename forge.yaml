@@ -19,10 +19,14 @@ models:
     #                               (theforge#2909). API-key auth is unaffected. The earlier
     #                               "still served, no deprecation (verified 2026-07-07)" note was
     #                               true when written. Was: value strong tier ($2.50/$15).
-    - openai/gpt-5.4-mini/cli     # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
-    #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
-    #                                 savings) but zero dev runs — profile reranker starves zero-history models
-    #                                 regardless of order. Reverted same day; real fix is #1617.
+    # - openai/gpt-5.4-mini/cli   # REMOVED 2026-09-15: retired from Codex under ChatGPT-account
+    #                               auth like gpt-5.4 above. `codex debug models` on this account
+    #                               lists only gpt-5.5 and the gpt-5.6 family; every cheap-tier
+    #                               dispatch (three preflight decomposition assessments on
+    #                               2026-09-15) returned 400 "not supported when using Codex with
+    #                               a ChatGPT account" and was booked cost-unknown, halting the
+    #                               sprint each time. Routing-time exclusion is theforge#2914.
+    #                               Was: cheap tier ($0.75/$4.50).
     - openai/gpt-5.5/cli          # OpenAI's recommended coding model (promoted to the catalog, #2252)
     # Fable — Anthropic's top tier, added 2026-09-06. The CLI `fable` alias resolves
     # to claude-fable-5 (probed: modelUsage reports claude-fable-5; $0.68 for a
