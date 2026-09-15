@@ -194,6 +194,14 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "complexity_gate_waited_seconds": state.preflight_complexity_gate_waited_seconds,
         "complexity_gate_decided_at": state.preflight_complexity_gate_decided_at,
         "complexity_gate_score_provenance": state.preflight_complexity_gate_score_provenance,
+        # An opened decision nobody has answered yet (#2860). Written before the
+        # operator is polled and cleared when a decision is recorded, so a
+        # process killed inside the pause leaves this True with no decision
+        # beside it — the one shape that says a solicited decision is still
+        # outstanding rather than resolved or never asked.
+        "complexity_gate_pending": bool(state.preflight_complexity_gate_pending),
+        "complexity_gate_pending_run_id": state.preflight_complexity_gate_pending_run_id,
+        "complexity_gate_pending_opened_at": state.preflight_complexity_gate_pending_opened_at,
         # The decomposition assessment carried on that pause (#2686). Restored
         # so a resumed attempt neither loses an artifact that was paid for nor
         # pays to produce it a second time.
@@ -546,6 +554,44 @@ def _foundation_report(foundation: tuple[int, int] | None) -> dict[str, Any] | N
     return {"degraded": foundation[0] == _DEGRADED_RANK, "examined": foundation[1]}
 
 
+#: Keys of the preflight block that describe the complexity gate rather than the
+#: preflight judgement. Carried across a replacement while the gate's decision is
+#: still outstanding (see :func:`_carry_unresolved_gate`).
+_GATE_KEY_PREFIX = "complexity_gate_"
+
+
+def _gate_is_unresolved(block: Any) -> bool:
+    """Whether ``block`` records a gate that was opened and never decided."""
+    if not isinstance(block, dict):
+        return False
+    return bool(block.get("complexity_gate_pending")) and not block.get("complexity_gate_decision")
+
+
+def _carry_unresolved_gate(existing: Any, incoming: Any) -> Any:
+    """Preserve an outstanding scope decision across a preflight replacement.
+
+    Foundedness decides which *judgement* a resume proceeds from, and a later
+    attempt that examined as much wins on equal footing — which is right for a
+    verdict and wrong for a question already put to the operator. A story
+    interrupted inside the pause is re-scored by the resumed run's own preflight
+    before the gate is reached, and letting that save replace the gate fields
+    would erase the outstanding decision on the way past: the gate would then
+    find nothing to honour, default, or re-raise, and a score that landed under
+    the threshold the second time would take the story to implementation at full
+    scope on nobody's authority (#2860).
+
+    Deliberately narrow: only the gate keys, only while the recorded gate is
+    unresolved, and only into an incoming block that records no decision of its
+    own — an attempt that actually answered the question replaces it outright.
+    """
+    if not isinstance(incoming, dict):
+        return incoming
+    if not _gate_is_unresolved(existing) or incoming.get("complexity_gate_decision"):
+        return incoming
+    preserved = {k: v for k, v in existing.items() if k.startswith(_GATE_KEY_PREFIX)}
+    return {**incoming, **preserved}
+
+
 def _merge_phase_blocks(
     base: dict[str, Any],
     blocks: dict[str, Any],
@@ -594,6 +640,8 @@ def _merge_phase_blocks(
             )
             if keep_existing:
                 continue
+        if name == "preflight":
+            value = _carry_unresolved_gate(existing_block, value)
         merged[name] = value
     return merged, decisions
 
@@ -1026,6 +1074,12 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         (
             "preflight_complexity_gate_score_provenance",
             "complexity_gate_score_provenance",
+        ),
+        ("preflight_complexity_gate_pending", "complexity_gate_pending"),
+        ("preflight_complexity_gate_pending_run_id", "complexity_gate_pending_run_id"),
+        (
+            "preflight_complexity_gate_pending_opened_at",
+            "complexity_gate_pending_opened_at",
         ),
         ("preflight_complexity_gate_assessment", "complexity_gate_assessment"),
         (
