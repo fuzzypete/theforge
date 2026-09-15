@@ -1180,6 +1180,7 @@ def _load_story_summary_entry_from_audit(
         ),
         "merge": bool((audit_data.get("merge") or {}).get("merged", False)),
         "landing": audit_data.get("landing") or build_landing_record(audit_data.get("merge")),
+        "post_gate_sweeps": _post_gate_sweeps(iteration_block),
         "iteration_usage": {
             "dev": {
                 "used": dev_usage.get("used", 0),
@@ -1197,6 +1198,22 @@ def _load_story_summary_entry_from_audit(
         "started_at": timing_block.get("started_at") if isinstance(timing_block, dict) else None,
         "finished_at": timing_block.get("finished_at") if isinstance(timing_block, dict) else None,
     }
+
+
+def _post_gate_sweeps(iteration_block: object) -> list[dict]:
+    """Extract post-gate residue from the validation run that preceded it."""
+    if not isinstance(iteration_block, dict):
+        return []
+    validation_runs = iteration_block.get("validation_runs")
+    if not isinstance(validation_runs, list):
+        return []
+    return [
+        sweep
+        for validation_run in validation_runs
+        if isinstance(validation_run, dict)
+        for sweep in (validation_run.get("post_gate_sweeps") or [])
+        if isinstance(sweep, dict)
+    ]
 
 
 def _preflight_fallback(state: object) -> str:

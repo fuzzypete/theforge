@@ -1,0 +1,120 @@
+schema_version: 2
+run_id: 0c37115fbe59
+authoritative_run_record: .forge/audits/runs/0c37115fbe59.json
+generated_at: '2026-09-15T16:43:18.267541+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0111625
+  input_digest: aed0619a991f0f6eaf36176e0a73716188e2476f666c2d2d1871bd7f899b212a
+story:
+  slug: issue-2503
+  name: 'Story landed as wip/acceptance_criteria commits: subject line taken from
+    structured input, and post-gate worktree state committed to trunk'
+  github_issue: 2503
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/audit.py
+- src/theforge/cli/sprint_digest.py
+- src/theforge/coordinator/review_context.py
+- src/theforge/coordinator/run_setup.py
+- src/theforge/coordinator/state.py
+- src/theforge/coordinator/validate_phase.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/runner.py
+- tests/test_cli_audit.py
+- tests/test_cli_sprint_digest.py
+- tests/test_coord_convention_routing.py
+- tests/test_coord_dev_handoff_capture.py
+- tests/test_validate_phase.py
+- tests/test_validation_profile_seam.py
+what_changed:
+  description: The run changed how post-gate sweep provenance is captured and surfaced
+    so landed-story reporting can distinguish reviewed work from worktree state auto-committed
+    after validation, and it propagated that detail through coordinator state, audit
+    output, and sprint-facing summaries.
+  approach: It threaded sweep metadata from VALIDATE-phase commit creation through
+    coordinator context and persisted state, then taught the audit and sprint renderers
+    to display that provenance consistently, with review tightening the presentation
+    details.
+  files_modified: *id002
+what_was_learned:
+- claim: When provenance is surfaced through multiple reporting views, each renderer
+    needs its own output-level verification because a shared data-path can still produce
+    misleading presentation in one consumer.
+  evidence:
+  - type: review_finding
+    finding_id: eaf9793d114e595d
+    description: The review found that the same post-gate sweep detail was present
+      but mis-indented in the audit renderer, showing that carrying correct metadata
+      end-to-end was not sufficient; each presentation layer required its own formatting
+      check to keep the provenance legible.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved after the audit-indentation issue was fixed, demonstrating
+      that the remaining work was not data capture but per-renderer presentation correctness
+      for the surfaced provenance.
+  - type: file
+    path: src/theforge/cli/audit.py
+    description: This renderer was the location of the indentation defect, demonstrating
+      that one consumer of the shared sweep metadata could misrepresent the information
+      even when upstream capture was correct.
+  - type: file
+    path: src/theforge/cli/sprint_digest.py
+    description: A separate CLI consumer was updated alongside audit output, showing
+      that the same provenance had to be validated independently in more than one
+      rendered view.
+- claim: Review and gate provenance must be tied to the exact reviewed HEAD, because
+    approval on one commit and validation evidence from another leaves post-gate sweep
+    behavior needing explicit re-verification.
+  evidence:
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly notes that the supplied PASS was for 10d4da52
+      while the reviewed HEAD was 339deb12, and that focused verification was performed
+      on the changed sweep paths, showing that commit mismatches force re-checking
+      of post-gate landing behavior.
+  - type: diff
+    ref: 10d4da52655fe637bb66aee3d720934d944c9ece
+    description: This diff reference is the commit for which PASS evidence existed,
+      illustrating one side of the gate-versus-reviewed-HEAD mismatch called out during
+      review.
+  - type: diff
+    ref: 339deb12b6fccecf10057f7f6604f66c1c2cb2aa
+    description: This diff reference is the reviewed HEAD in cycle 2, demonstrating
+      that provenance-sensitive behavior was assessed against a different commit than
+      the one with the supplied PASS.
+learned_patterns:
+- provenance-through-multiple-renderers
+- head-specific-gate-verification
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop centered on whether post-gate sweep provenance stayed legible
+    and trustworthy across every consumer, first catching a renderer-specific audit
+    formatting defect and then checking behavior against a reviewed HEAD that differed
+    from the supplied PASS commit.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 5.3524821
+  dominant_difficulty: Preserving and presenting exact post-gate provenance consistently
+    across coordinator state, landing records, and multiple CLI views while review
+    and validation evidence referred to different commits.

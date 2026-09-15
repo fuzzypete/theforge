@@ -4357,6 +4357,10 @@ def _landing_evidence_fields(result: CoordinatorResult) -> dict:
         "landing_status": getattr(result, "landing_status", None),
         "landing": build_landing_record(_merge),
         "merge": bool(_merge and _merge.get("merged", False)),
+        # VALIDATE's post-gate sweep is not equivalent to a clean gate pass.
+        # Carry it to the completed-sprint landing row, where ``forge status``
+        # reports what actually reached the branch.
+        "post_gate_sweeps": list(result.state.post_gate_sweeps),
     }
 
 

@@ -328,6 +328,29 @@ def _get_raw_dev_notes(
     return None
 
 
+def get_dev_handoff_summary(
+    forge_handoff_path: Path | None = None,
+) -> str | None:
+    """Return the handoff's free-text summary, when it is present and usable.
+
+    The raw handoff remains available through :func:`_get_raw_dev_notes` for
+    parsing and reviewer context.  Callers that need human-authored prose must
+    deliberately select the structured ``summary`` field rather than deriving
+    text from a YAML serialization.
+    """
+    if forge_handoff_path is None or not forge_handoff_path.exists():
+        return None
+    try:
+        data = yaml.safe_load(forge_handoff_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    summary = data.get("summary") if isinstance(data, dict) else None
+    if not isinstance(summary, str):
+        return None
+    normalized = " ".join(summary.split())
+    return normalized or None
+
+
 def _parse_dev_handoff(
     forge_handoff_path: Path | None = None,
 ) -> DevHandoff | None:
