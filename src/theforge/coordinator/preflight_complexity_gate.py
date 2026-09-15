@@ -42,6 +42,20 @@ Three properties, one per acceptance criterion:
   ``decompose``, and the run records both which action it applied and that no
   operator decision was recorded.
 
+And one property that is about the *decision* rather than about the gate (#2860):
+
+* **A solicited decision is never discarded.** It is answered, resolved to its
+  stated no-decision action, or asked again — stopping the run across an open
+  pause is none of the three. So the pause is durable before the operator is
+  polled, and a later attempt looks the outstanding decision up for itself
+  rather than inferring from a score whether to ask. This matters because the
+  score is *not* stable across attempts: a story killed before its first dev
+  commit is dispatched as a fresh run, preflight evaluates it live again, and one
+  that opened the gate at 9 can come back at 8. Where the two evaluations
+  disagree, the divergence is what the operator is shown — not a reason to skip
+  asking, since a gate whose answer changes between evaluations of identical
+  input would make a re-run a way to obtain the permissive answer.
+
 **Which axis the threshold reads.** The comparison is against the *projected*
 ``complexity_score`` — the ``max(implementation, validation)`` figure that
 routing, timeouts, and review budgets already consume — because this gate is a
@@ -304,6 +318,7 @@ def _render_reason(
         "",
         f"Threshold {threshold}. Nothing has been spent beyond preflight for this story.",
     ]
+    lines.extend(_divergence_lines(state))
     note = _score_provenance_note(state)
     if note is not None:
         lines.extend(["", f"Score provenance: {note}."])
@@ -358,6 +373,12 @@ def _gate_payload(
         "score_founded": complexity_is_founded(state),
         "score_provenance_note": _score_provenance_note(state),
         "scope_exceeded": bool(state.preflight_scope_exceeded),
+        # Set when this pause is an unanswered one being raised again (#2860):
+        # the score the earlier attempt opened it at, and how the two
+        # evaluations of identical story content disagree. Null on a pause that
+        # was raised for the first time.
+        "recovered_score": state.preflight_complexity_gate_recovered_score,
+        "score_divergence": state.preflight_complexity_gate_score_divergence,
         "no_decision_action": no_decision_action,
         "no_decision_fallback": no_decision_fallback,
         "default_action": PREFLIGHT_GATE_DECOMPOSE,
@@ -433,6 +454,34 @@ def _persist_gate_state(
         _cu._log_verbose(f"  preflight gate resume-record save failed: {exc}")
 
 
+def _record_opening_size(state: "_cs.CoordinatorState", *, threshold: int) -> None:
+    """Write the size the *decision* was opened at, on every axis it was opened on.
+
+    These four fields describe the decision, not the attempt resolving it, which
+    is why a re-raised pause keeps what the attempt that first raised it
+    recorded. Overwriting them with the live score would make each further
+    interruption walk the recorded origin one attempt away from the size the
+    operator was first asked about: a decision raised at 9, re-raised by an
+    attempt scoring 8 and interrupted again, would tell the third attempt it had
+    been raised at 8, and the divergence would report the middle attempt's
+    number as the original one (#2860).
+
+    The threshold is always this attempt's: it is configuration, and the gate is
+    being resolved under the one in force now.
+    """
+    state.preflight_complexity_gate_threshold = threshold
+    if state.preflight_complexity_gate_recovered_score is not None:
+        return
+    state.preflight_complexity_gate_score = state.preflight_complexity_score
+    state.preflight_complexity_gate_implementation_score = (
+        state.preflight_implementation_complexity_score
+    )
+    state.preflight_complexity_gate_validation_score = state.preflight_validation_complexity_score
+    # The provenance the operator was shown alongside that score. Recorded rather
+    # than recomputed at read time so the audit says what they actually ruled on.
+    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
+
+
 def _record(
     state: "_cs.CoordinatorState",
     *,
@@ -446,12 +495,10 @@ def _record(
 ) -> None:
     """Write the gate's outcome onto the run state."""
     state.preflight_complexity_gate_opened = opened
-    state.preflight_complexity_gate_score = state.preflight_complexity_score
-    state.preflight_complexity_gate_implementation_score = (
-        state.preflight_implementation_complexity_score
-    )
-    state.preflight_complexity_gate_validation_score = state.preflight_validation_complexity_score
-    state.preflight_complexity_gate_threshold = threshold
+    # The question is no longer outstanding: whatever route produced this
+    # decision, a later attempt must read it as answered rather than re-raise it.
+    state.preflight_complexity_gate_pending = False
+    _record_opening_size(state, threshold=threshold)
     state.preflight_complexity_gate_decision = decision
     state.preflight_complexity_gate_decision_source = source
     state.preflight_complexity_gate_no_decision_fallback = no_decision_fallback
@@ -459,9 +506,6 @@ def _record(
         round(waited_seconds, 2) if waited_seconds is not None else None
     )
     state.preflight_complexity_gate_decided_at = decided_at or _now_iso()
-    # The provenance the operator was shown alongside the score. Recorded rather
-    # than recomputed at read time so the audit says what they actually ruled on.
-    state.preflight_complexity_gate_score_provenance = _score_provenance_note(state)
 
 
 def returned_for_decomposition(state: "_cs.CoordinatorState") -> bool:
@@ -737,6 +781,173 @@ def _apply_accepted_proposal(
     return _application_failed_result(state, task, outcome)
 
 
+def _restore_recorded_gate_fields(state: "_cs.CoordinatorState", block: dict) -> None:
+    """Put the recorded pause back on a state that never held it.
+
+    Only fills what this attempt does not already have, so a live value is never
+    displaced by a recorded one. The assessment matters most: without it the
+    re-raised pause would show none, and generating one again would pay a second
+    time for an artifact that is already on the record.
+    """
+    for attr, key in (
+        ("preflight_complexity_gate_score", "complexity_gate_score"),
+        (
+            "preflight_complexity_gate_implementation_score",
+            "complexity_gate_implementation_score",
+        ),
+        ("preflight_complexity_gate_validation_score", "complexity_gate_validation_score"),
+        # Restored with the score it belongs to: these describe the size the
+        # decision was opened at, and a re-raised pause keeps them rather than
+        # replacing them with this attempt's (see _record_opening_size).
+        (
+            "preflight_complexity_gate_score_provenance",
+            "complexity_gate_score_provenance",
+        ),
+        ("preflight_complexity_gate_threshold", "complexity_gate_threshold"),
+        ("preflight_complexity_gate_assessment", "complexity_gate_assessment"),
+        (
+            "preflight_complexity_gate_assessment_none_reason",
+            "complexity_gate_assessment_none_reason",
+        ),
+        ("preflight_complexity_gate_assessment_model", "complexity_gate_assessment_model"),
+        ("preflight_complexity_gate_assessment_profile", "complexity_gate_assessment_profile"),
+        (
+            "preflight_complexity_gate_assessment_prior_cost_usd",
+            "complexity_gate_assessment_cost_usd",
+        ),
+        ("preflight_complexity_gate_pending_run_id", "complexity_gate_pending_run_id"),
+        ("preflight_complexity_gate_pending_opened_at", "complexity_gate_pending_opened_at"),
+    ):
+        value = block.get(key)
+        if value in (None, "", [], {}) or getattr(state, attr, None) not in (None, "", [], {}):
+            continue
+        setattr(state, attr, value)
+    if block.get("complexity_gate_assessment_generated"):
+        state.preflight_complexity_gate_assessment_generated = True
+    # Whatever produced the recorded assessment, it was not this process, so its
+    # spend stays provenance and is never charged here.
+    state.preflight_complexity_gate_assessment_invoked = False
+    state.preflight_complexity_gate_pending = True
+
+
+def _recover_unresolved_gate(
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    task: "TaskStory",
+) -> dict[str, Any] | None:
+    """The outstanding scope decision this story already has, or None.
+
+    A run interrupted inside the pause leaves ``complexity_gate_pending`` on the
+    durable record with no decision beside it. Read here rather than through
+    ``recover_phase_state``, for two reasons the dispatch layer cannot change:
+    a story killed before its first dev commit is triaged as a fresh run and
+    never reaches a recovery-aware entry point at all, and even where it does,
+    phase recovery fills only what the resumed attempt is *missing* — and by the
+    time the gate is reached the resumed attempt has a preflight judgement of its
+    own, so the recorded block is skipped wholesale.
+
+    Refused when the record describes different story text: a story that was
+    edited deserves a fresh evaluation, and the decision that was outstanding was
+    about a question that no longer exists.
+    """
+    if state.preflight_complexity_gate_decision is not None:
+        return None
+    block: dict[str, Any] | None = None
+    if state.preflight_complexity_gate_pending:
+        # A recovery-aware entry point already put the marker on the state.
+        block = {
+            "complexity_gate_score": state.preflight_complexity_gate_score,
+            "complexity_gate_threshold": state.preflight_complexity_gate_threshold,
+            "complexity_gate_pending_run_id": state.preflight_complexity_gate_pending_run_id,
+            "complexity_gate_pending_opened_at": (
+                state.preflight_complexity_gate_pending_opened_at
+            ),
+        }
+    else:
+        from .resume_persistence import (  # noqa: PLC0415
+            load_resume_record,
+            story_content_hash,
+        )
+
+        project_root = getattr(config, "project_root", None)
+        if project_root is None:
+            return None
+        try:
+            record = load_resume_record(project_root, task.slug)
+        except Exception:  # noqa: BLE001 - a record read is never a gate
+            return None
+        if not isinstance(record, dict):
+            return None
+        candidate = record.get("preflight")
+        if not isinstance(candidate, dict):
+            return None
+        if not candidate.get("complexity_gate_pending"):
+            return None
+        if candidate.get("complexity_gate_decision"):
+            return None
+        recorded_hash = record.get("story_content_hash")
+        content = state.story_content
+        if not recorded_hash or content is None:
+            # Neither side can establish that the outstanding decision was about
+            # *this* text. Re-raising on that basis would pause a story whose
+            # question may no longer apply, so this degrades to today's path.
+            return None
+        if recorded_hash != story_content_hash(content):
+            return None
+        _restore_recorded_gate_fields(state, candidate)
+        block = candidate
+    return {
+        "recorded_score": block.get("complexity_gate_score"),
+        "recorded_threshold": block.get("complexity_gate_threshold"),
+        "recorded_run_id": block.get("complexity_gate_pending_run_id"),
+        "opened_at": block.get("complexity_gate_pending_opened_at"),
+    }
+
+
+def _record_divergence(
+    state: "_cs.CoordinatorState",
+    recovered: dict[str, Any],
+    *,
+    threshold: int,
+) -> None:
+    """Record that this attempt sized the same story differently from the one that asked.
+
+    The divergence is the operator's business, not a reason to skip the question:
+    a gate whose answer changes between evaluations of identical input would make
+    a re-run a way to obtain the permissive answer.
+    """
+    recorded = recovered.get("recorded_score")
+    state.preflight_complexity_gate_recovered_score = (
+        recorded if isinstance(recorded, int) else None
+    )
+    live = state.preflight_complexity_score
+    if not isinstance(recorded, int) or recorded == live:
+        state.preflight_complexity_gate_score_divergence = None
+        return
+    state.preflight_complexity_gate_score_divergence = {
+        "recorded_score": recorded,
+        "resumed_score": live,
+        "threshold": threshold,
+        "recorded_run_id": recovered.get("recorded_run_id"),
+        "opened_at": recovered.get("opened_at"),
+    }
+
+
+def _divergence_lines(state: "_cs.CoordinatorState") -> list[str]:
+    """The operator-facing statement of a re-evaluation that disagrees."""
+    divergence = state.preflight_complexity_gate_score_divergence
+    if not divergence:
+        return []
+    return [
+        "",
+        f"This decision was raised on an earlier attempt at complexity "
+        f"{divergence['recorded_score']} and never answered. This attempt scored "
+        f"the same story content {divergence['resumed_score']} against threshold "
+        f"{divergence['threshold']}. You are being asked because the decision is "
+        "outstanding, not because of either score.",
+    ]
+
+
 def evaluate_preflight_complexity_gate(
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
@@ -752,10 +963,37 @@ def evaluate_preflight_complexity_gate(
     returned for decomposition, when an accepted proposal was applied, and when
     one was accepted but could not be applied in full.
     """
-    if not should_gate(state, config, verdict):
-        return None
-
     threshold = gate_threshold(config)
+
+    # An outstanding decision is a property of the story, not of this attempt's
+    # score (#2860). It is looked up before the score is consulted, so a run that
+    # resumes across an unanswered pause arrives at one of the three outcomes a
+    # solicited decision may have — honoured, defaulted, or asked again — rather
+    # than at a second evaluation's permission to proceed.
+    #
+    # Two things still suppress it, and neither is a re-scoring: a verdict other
+    # than PROCEED ends the run here anyway and spends nothing further, and a
+    # threshold above the maximum score is the operator having turned the gate
+    # off outright.
+    recovered = (
+        _recover_unresolved_gate(state, config, task)
+        if verdict == "PROCEED" and not gate_is_disabled(threshold)
+        else None
+    )
+
+    if recovered is not None:
+        _record_divergence(state, recovered, threshold=threshold)
+
+    if not should_gate(state, config, verdict):
+        if recovered is None:
+            return None
+        _cu._log(
+            f"  ↺ PREFLIGHT gate  re-raising an unanswered scope decision from "
+            f"{recovered.get('recorded_run_id') or 'an earlier attempt'} "
+            f"(recorded complexity {recovered.get('recorded_score')}, this attempt "
+            f"scored {state.preflight_complexity_score} against threshold {threshold})"
+        )
+
     no_decision_action, no_decision_fallback = _resolve_no_decision(config)
 
     # A decision already on this state came off the resume record: the operator
@@ -938,6 +1176,26 @@ def _open_gate(
     # Decided after the assessment exists, because whether the proposal can be
     # applied is a fact about the artifact that was just produced.
     actions = offered_actions(state, task)
+
+    # The question is durable before it is asked (#2860). Everything below this
+    # line can be interrupted — the poll blocks for the whole wait window — and
+    # until this save existed an interruption there left a record saying the gate
+    # had never opened. A resumed attempt then had nothing to honour, default, or
+    # re-raise, and re-scored the same story from scratch to decide whether to
+    # ask at all. What is written here is "opened, undecided": the scores, the
+    # threshold, and which run is holding the pause, with no decision beside it.
+    #
+    # A pause being raised *again* keeps the run and the moment that first
+    # raised it, alongside the size it was raised at: this marker describes the
+    # outstanding decision, and which process is holding the pause right now is
+    # already answered authoritatively by the pending file below.
+    state.preflight_complexity_gate_pending = True
+    if state.preflight_complexity_gate_recovered_score is None:
+        state.preflight_complexity_gate_pending_run_id = eff_run_id
+        state.preflight_complexity_gate_pending_opened_at = _now_iso()
+    state.preflight_complexity_gate_opened = True
+    _record_opening_size(state, threshold=threshold)
+    _persist_gate_state(state, config, task, logger=logger)
 
     reason = _render_reason(
         task=task,

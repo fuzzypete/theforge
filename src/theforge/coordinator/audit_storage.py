@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 49
+CURRENT_RECORD_SCHEMA_VERSION = 50
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2885,6 +2885,22 @@ def _migrate_v48_to_v49(record: dict) -> dict:
     return record
 
 
+def _migrate_v49_to_v50(record: dict) -> dict:
+    """Advance v49 records across the gate's unresolved/divergence keys (#2860).
+
+    v50 records whether a run ended with the preflight scope decision still
+    open and unanswered (``preflight_complexity_gate.unresolved``), and, when a
+    run raised a decision an earlier attempt had already opened, the score that
+    opened it and how the two evaluations of identical story content differed
+    (``recovered_score`` / ``score_divergence``). A v49 record predates all
+    three: it cannot say whether its pause was still outstanding when the
+    process stopped, and it never resumed one. Leaving the keys absent says
+    exactly that; defaulting ``unresolved`` to False would assert a resolution
+    the old record never recorded.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2942,6 +2958,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     46: _migrate_v46_to_v47,
     47: _migrate_v47_to_v48,
     48: _migrate_v48_to_v49,
+    49: _migrate_v49_to_v50,
 }
 
 

@@ -865,6 +865,17 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # the gate opens on any PROCEED score at or above the threshold, and
             # the operator rules with this provenance in front of them.
             "score_provenance_note": state.preflight_complexity_gate_score_provenance,
+            # ── An outstanding decision, and a re-evaluation that disagreed ──
+            # True exactly when this run ended with the pause still open and
+            # nobody's answer recorded — the shape a resumed attempt reads as
+            # "still outstanding" rather than resolved or never asked (#2860).
+            "unresolved": bool(state.preflight_complexity_gate_pending),
+            # Non-null when this run raised a decision an earlier attempt had
+            # already opened: the score that opened it, and how the two
+            # evaluations of identical story content differed. A divergence is
+            # recorded rather than acted on — it never decides whether to ask.
+            "recovered_score": state.preflight_complexity_gate_recovered_score,
+            "score_divergence": state.preflight_complexity_gate_score_divergence,
             # ── Decomposition assessment (#2686) ───────────────────────────
             # The artifact the operator was shown next to the question, and what
             # they then did with it. The pair is what lets assessment quality be

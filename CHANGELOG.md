@@ -123,6 +123,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A scope decision you were asked for is no longer discarded by a resume
+  (#2860):** a story that opened the preflight complexity gate at complexity 9,
+  was left with the operator's approve/decompose decision unanswered, and was
+  stopped before the window elapsed came back on `--resume` scored 8 for the
+  identical story content — and went straight to implementation. The decision
+  was neither answered, nor resolved to its stated `decompose` default, nor
+  asked again; it simply did not recur, and the story landed 3,965 insertions
+  implementing all three slices its own decomposition assessment had proposed as
+  separate work.
+
+  Two gaps, both closed. The pause is now durable **before** the operator is
+  polled — "opened, undecided" with both complexity axes, the threshold, and the
+  run holding it — so a process killed inside the wait leaves an outstanding
+  decision on the record instead of one that reads as never opened. And the gate
+  now looks that record up for itself: a story interrupted before its first dev
+  commit is triaged as a fresh run and never reaches the resume-recovery entry
+  points, and even where it does, phase recovery fills only what the resumed
+  attempt is missing — by the gate, it already has a preflight judgement of its
+  own.
+
+  The resumed run therefore arrives at one of the three outcomes a solicited
+  decision may have, whatever it re-scores the story:
+
+  ```
+  ▸ #2684  PREFLIGHT  complexity 8 (impl 8, validation 1)  — awaiting operator
+    unanswered: raised at complexity 9 on an earlier attempt; this attempt scored 8
+  ```
+
+  The divergence is put in front of the operator rather than acted on — a gate
+  whose answer changes between evaluations of identical input would make a
+  re-run a way to obtain the permissive answer, and the more expensive the
+  story, the more likely something interrupts it. Neither score decides whether
+  you are asked; the outstanding decision does. A recorded answer is still
+  honoured, an edited story still gets a fresh evaluation, and the recorded
+  decomposition assessment comes back with the pause rather than being bought
+  again. `preflight_complexity_gate.unresolved`, `recovered_score`, and
+  `score_divergence` on the run audit are where this is visible afterwards.
+
 - **The structural-decay observer now measures its readiness over the
   population it analyses (#2623):** its run-coverage check divided the runs it
   could analyse by every cost-bearing run ever recorded, including runs from
