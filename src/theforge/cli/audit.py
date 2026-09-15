@@ -202,7 +202,7 @@ def cmd_audit(args: object) -> int:
                 files = sweep.get("files") or []
                 count = len(files) if isinstance(files, list) else 0
                 print(
-                    "    Post-gate sweep: "
+                    "                Post-gate sweep: "
                     f"{count} file(s) committed — {sweep.get('commit_subject', '?')}"
                 )
 
