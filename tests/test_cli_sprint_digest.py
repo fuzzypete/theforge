@@ -81,6 +81,33 @@ def _landed_story(num: int, cost: float) -> dict:
     }
 
 
+def test_landed_digest_marks_post_gate_sweeps(tmp_path: Path) -> None:
+    """A landed sweep is not rendered as the same clean LANDED row."""
+    run_id = "sweep-run"
+    _write_summary(
+        tmp_path,
+        "issue-2503",
+        run_id,
+        [
+            {
+                **_landed_story(2503, 1.0),
+                "post_gate_sweeps": [
+                    {
+                        "files": ["src/theforge/example.py"],
+                        "commit_subject": "chore: coordinator swept 1 post-gate file",
+                    }
+                ],
+            }
+        ],
+    )
+
+    output = _render(tmp_path, run_id)
+
+    assert "LANDED (1 of 1)" in output
+    assert "post-gate sweep: 1 file(s) committed" in output
+    assert "chore: coordinator swept 1 post-gate file" in output
+
+
 # ── Full digest layout ────────────────────────────────────────────────────────
 
 

@@ -211,6 +211,15 @@ def _print_landed(landed: list[dict], total: int, project_root: Path | None = No
         print(f"  ✓ {_story_row(story, project_root)}{_gate_green_suffix(story)}")
         for line in _gate_green_detail_lines(story):
             print(line)
+        sweeps = story.get("post_gate_sweeps") or []
+        if isinstance(sweeps, list):
+            for sweep in sweeps:
+                if not isinstance(sweep, dict):
+                    continue
+                files = sweep.get("files") or []
+                count = len(files) if isinstance(files, list) else 0
+                subject = sweep.get("commit_subject") or "(subject unavailable)"
+                print(f"       post-gate sweep: {count} file(s) committed — {subject}")
 
 
 def _gate_green_rollback(story: dict) -> dict | None:

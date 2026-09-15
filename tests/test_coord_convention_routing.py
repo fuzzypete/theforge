@@ -309,7 +309,7 @@ class TestConventionChannelSeam:
                 return_value=("PASS", None, "OK", "pytest tests/", 0),
             ),
             patch(
-                "theforge.coordinator.validate_phase._get_raw_dev_notes",
+                "theforge.coordinator.validate_phase.get_dev_handoff_summary",
                 return_value="summary: grew the module",
             ),
             patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),

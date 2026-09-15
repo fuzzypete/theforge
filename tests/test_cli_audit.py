@@ -28,6 +28,14 @@ def test_cmd_audit_renders_validation_worktree_state(tmp_path: Path, capsys) -> 
                                 "untracked": ["scratch.txt"],
                                 "ignored": ["build/cache.json"],
                             },
+                            "post_gate_sweeps": [
+                                {
+                                    "files": ["src/theforge/example.py"],
+                                    "commit_subject": (
+                                        "chore: coordinator swept 1 post-gate file"
+                                    ),
+                                }
+                            ],
                         }
                     ]
                 },
@@ -46,3 +54,7 @@ def test_cmd_audit_renders_validation_worktree_state(tmp_path: Path, capsys) -> 
     assert "Validation: complete (merge authority) → PASS" in out
     assert "command: make gate" in out
     assert "worktree_state: untracked=1 (scratch.txt); ignored=1 (build/cache.json)" in out
+    assert (
+        "                Post-gate sweep: 1 file(s) committed — "
+        "chore: coordinator swept 1 post-gate file"
+    ) in out
