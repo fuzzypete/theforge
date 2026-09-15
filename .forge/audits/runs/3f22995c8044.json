@@ -1,0 +1,40 @@
+{
+  "schema_version": 48,
+  "run_id": "3f22995c8044",
+  "parent_run_id": null,
+  "forge_version": null,
+  "sprint_id": "61aa761a00c8",
+  "sprint_name": "issues-2976,2860,2651,2652,2980,2596,2948,2985,1802",
+  "task": {
+    "slug": "issue-1802",
+    "path": "bug: synthetic collision edges gate scheduling but are never persisted to state \u2014 collision-serialized stories show as bare waiting/PREFLIGHT with no reason",
+    "github_issue": 1802
+  },
+  "timing": {
+    "started_at": "2026-09-13T23:22:24Z",
+    "finished_at": "2026-09-13T23:24:17Z"
+  },
+  "outcome": {
+    "final_phase": "DONE",
+    "success": true,
+    "cost_usd": 1.7734,
+    "error_type": null,
+    "message": null
+  },
+  "totals": {
+    "cost_usd": 1.7734
+  },
+  "reviews": [],
+  "carried_from_accumulated_state": true,
+  "landing_status": "pending_integration",
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/3003",
+    "pr_merged_at": null
+  },
+  "merge": false
+}

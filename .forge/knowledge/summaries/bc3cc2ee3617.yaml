@@ -1,0 +1,132 @@
+schema_version: 2
+run_id: bc3cc2ee3617
+authoritative_run_record: .forge/audits/runs/bc3cc2ee3617.json
+generated_at: '2026-09-15T00:13:46.653749+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0130325
+story:
+  slug: issue-2860
+  name: A story that raised the preflight scope decision is scored below the threshold
+    on resume, so the decision is neither answered nor defaulted but silently skipped
+  github_issue: 2860
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- CHANGELOG.md
+- docs/guides/controller-runbook.md
+- src/theforge/cli/status.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/preflight_complexity_gate.py
+- src/theforge/coordinator/resume_persistence.py
+- src/theforge/coordinator/state.py
+- tests/fixtures/audit_record_schema_v50.json
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_decomposition_acceptance_seam.py
+- tests/test_knowledge_receipt_seam.py
+- tests/test_preflight_complexity_gate_seam.py
+what_changed:
+  description: The run fixed resume handling for preflight-only complexity-gate pauses
+    so an unanswered scope decision is preserved across interruption and re-applied
+    on resume instead of being silently dropped when the live score changes. It also
+    recorded and exposed the recovered gate state through audit and status surfaces.
+  approach: The change treated an opened gate as durable recoverable state, routed
+    zero-commit resumes back through resume recovery, and reconciled recovered gate
+    state against a resumed live score with fail-closed behavior when the original
+    gate had opened.
+  files_modified: *id002
+what_was_learned:
+- claim: When a run can be interrupted after soliciting an operator decision but before
+    any implementation work, that pending decision has to be persisted before polling
+    starts; otherwise a fresh-looking resume path can erase the only evidence that
+    the decision was ever opened.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: The first plan step is to persist an opened, undecided complexity
+      gate before operator polling begins, identifying pre-poll durability as the
+      mechanism needed to prevent unanswered decisions from disappearing on interruption.
+  - type: plan_step
+    step_id: '2'
+    description: The second plan step focuses on zero-commit resume triage retaining
+      recoverable story state instead of classifying the resume as fresh, showing
+      that losing the persisted pending-decision state was specifically tied to pre-implementation
+      interruption.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval explicitly notes that the pause is durably written
+      pre-poll and recovered on the fresh resume path, confirming that the resolved
+      failure mode was loss of the solicited decision during interruption and resume.
+- claim: If resumed live evaluation disagrees with a previously opened gate, recovery
+    logic must preserve the original opening context rather than overwrite it from
+    later attempts, because repeated interruptions can otherwise drift provenance
+    one attempt at a time.
+  evidence:
+  - type: review_finding
+    finding_id: 2b1b5dff1aba4115
+    description: The finding describes a re-raised pause interrupted mid-poll overwriting
+      the saved opening score with the current attempt's live score, demonstrating
+      that recovery paths need immutability for the original gate-opening facts to
+      avoid provenance drift across retries.
+  - type: diff
+    ref: 8c25f371404f3e024a39e53c6cc43428876dcbc7
+    description: This follow-up diff is cited in cycle 2 as fixing the carried finding
+      about recorded opening size drifting per interruption, showing that preserving
+      original-opening state across successive resumes was necessary beyond the first-pass
+      recovery fix.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that the carried finding about recorded opening size
+      drift was fixed and verified, reinforcing that divergence handling must anchor
+      to the original opening attempt rather than the most recent interrupted retry.
+- claim: Operator-facing resume logs for recovered gates need to distinguish 'recovered
+    because a gate was previously opened' from 'newly exceeded threshold now'; otherwise
+    divergence recovery can present permissive live scores as if they triggered the
+    gate themselves.
+  evidence:
+  - type: review_finding
+    finding_id: ad53dba8cbe13e89
+    description: The finding reports a resumed score of 8 against threshold 9 still
+      being logged as though it reached the threshold before divergence context appears,
+      showing that recovery messaging must separate historical gate cause from current
+      live score.
+  - type: plan_step
+    step_id: '4'
+    description: The plan step to fail closed when recovered state says a gate was
+      opened but the resumed live score is below threshold shows the run had to treat
+      recovered-gate handling as distinct from ordinary threshold crossing, which
+      the console narrative also needs to reflect.
+learned_patterns:
+- pre-poll-decision-persistence
+- resume-provenance-preservation
+- divergence-aware-gate-logging
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly surfaced that resume recovery was correct only if it preserved
+    original gate provenance and presented divergence explicitly, rather than recomputing
+    or restating the gate from the latest attempt.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 39.3390803
+  dominant_difficulty: Reconciling interrupted preflight state with resumed live scoring
+    without losing the original decision provenance.
