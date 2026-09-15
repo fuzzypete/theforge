@@ -1081,3 +1081,338 @@ class TestTheAssessmentSurvivesResumeWithoutBeingPaidForTwice:
             evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
 
         mock_assess.assert_not_called()
+
+
+# ── A solicited decision is never discarded (#2860) ──────────────────────
+
+
+_SPEC_TEXT = "# Test Spec\n\nImplement the thing."
+
+
+def _killed_mid_poll(run_id, timeout_seconds, **kwargs):
+    """A poller that never returns, the way a killed process never returns."""
+    raise KeyboardInterrupt
+
+
+def _unanswered_record(tmp_path: Path, *, score: int = 9, story: str = _SPEC_TEXT) -> dict:
+    """Open the gate for real and get killed inside the pause; return the record."""
+    config = _config_with(tmp_path)
+    task = _make_task(tmp_path)
+    state = _gated_state(score=score)
+    state.story_content = story
+    state.preflight_complexity_gate_assessment_none_reason = "atomic"
+
+    with (
+        _assessment_agent() as mock_assess,
+        patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        evaluate_preflight_complexity_gate(state, config, task, "PROCEED")
+    mock_assess.assert_not_called()
+
+    record = load_resume_record(config.project_root, task.slug)
+    assert record is not None
+    return record
+
+
+class TestAnUnansweredDecisionSurvivesTheProcessThatAskedIt:
+    def test_the_pause_is_durable_before_the_operator_is_polled(self, tmp_path: Path):
+        """A kill inside the wait leaves "opened, undecided" on the record."""
+        block = _unanswered_record(tmp_path)["preflight"]
+
+        assert block["complexity_gate_pending"] is True
+        assert block["complexity_gate_opened"] is True
+        assert block["complexity_gate_decision"] is None
+        assert block["complexity_gate_score"] == 9
+        assert block["complexity_gate_threshold"] == 9
+        assert block["complexity_gate_pending_run_id"] == "7c1e04b9d3af"
+
+    def test_a_later_preflight_save_cannot_erase_it(self, tmp_path: Path):
+        """The resumed run re-scores before the gate is reached; the question stands.
+
+        This is the exact ordering that made the bug survivable: batch preflight
+        saves a freshly scored block for the same story before dispatch, and an
+        equally founded incoming block otherwise wins outright.
+        """
+        _unanswered_record(tmp_path)
+
+        rescored = _gated_state(score=8)
+        rescored.story_content = _SPEC_TEXT
+        assert (
+            save_resume_record(tmp_path, rescored, slug="test-task", story_content=_SPEC_TEXT)
+            is not None
+        )
+
+        block = load_resume_record(tmp_path, "test-task")["preflight"]
+        assert block["complexity_score"] == 8, "the newer judgement still wins"
+        assert block["complexity_gate_pending"] is True
+        assert block["complexity_gate_score"] == 9
+
+    def test_an_answered_decision_replaces_it(self, tmp_path: Path):
+        _unanswered_record(tmp_path)
+
+        answered = _gated_state(score=9)
+        answered.story_content = _SPEC_TEXT
+        answered.preflight_complexity_gate_decision = "approve"
+        answered.preflight_complexity_gate_decision_source = "operator"
+        save_resume_record(tmp_path, answered, slug="test-task", story_content=_SPEC_TEXT)
+
+        block = load_resume_record(tmp_path, "test-task")["preflight"]
+        assert block["complexity_gate_pending"] is False
+        assert block["complexity_gate_decision"] == "approve"
+
+
+class TestAResumeAcrossAnUnansweredDecisionMustResolveIt:
+    def _resumed_state(self, score: int) -> CoordinatorState:
+        """The state a *fresh* dispatch builds on resume: no memory of the gate."""
+        state = _gated_state(score=score)
+        state.story_content = _SPEC_TEXT
+        return state
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    def test_a_lower_rescore_re_raises_instead_of_permitting(self, _poll, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        resumed = self._resumed_state(8)
+
+        with patch("theforge.pending.write_pending", wraps=pending.write_pending) as mock_write:
+            result = evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        # Asked again, then resolved to the configured no-decision action rather
+        # than left outstanding a second time.
+        mock_write.assert_called_once()
+        assert result is not None and result.success is False
+        assert resumed.preflight_complexity_gate_decision == "decompose"
+        assert resumed.preflight_complexity_gate_decision_source == "no_decision"
+        assert resumed.preflight_complexity_gate_pending is False
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    def test_the_divergence_is_put_in_front_of_the_operator(self, _poll, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        resumed = self._resumed_state(8)
+        captured: dict = {}
+
+        real_write = pending.write_pending
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return real_write(**kwargs)
+
+        with patch("theforge.pending.write_pending", side_effect=_capture):
+            evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        assert resumed.preflight_complexity_gate_recovered_score == 9
+        divergence = resumed.preflight_complexity_gate_score_divergence
+        assert divergence["recorded_score"] == 9
+        assert divergence["resumed_score"] == 8
+        assert divergence["threshold"] == 9
+        assert divergence["recorded_run_id"] == "7c1e04b9d3af"
+        assert isinstance(divergence["opened_at"], str)
+        assert "raised on an earlier attempt at complexity 9" in captured["reason"]
+        payload = captured["extra"][PREFLIGHT_GATE_EXTRA_KEY]
+        assert payload["score_divergence"]["resumed_score"] == 8
+
+    def test_an_operator_answer_is_honoured_on_the_re_raised_pause(self, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        resumed = self._resumed_state(8)
+
+        with patch("theforge.pending.poll_pending", side_effect=_answer_with("approve")):
+            result = evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        assert result is None, "an approval continues the run as scoped"
+        assert resumed.preflight_complexity_gate_decision == "approve"
+        assert resumed.preflight_complexity_gate_decision_source == "operator"
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    def test_the_recorded_assessment_is_not_bought_again(self, _poll, tmp_path: Path):
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        first = _gated_state(score=9)
+        first.story_content = _SPEC_TEXT
+
+        with (
+            _assessment_agent() as mock_assess,
+            patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            evaluate_preflight_complexity_gate(first, config, task, "PROCEED")
+        assert mock_assess.call_count == 1
+
+        resumed = self._resumed_state(8)
+        with _assessment_agent() as mock_again:
+            evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        mock_again.assert_not_called()
+        assert resumed.preflight_complexity_gate_assessment_generated is True
+        assert resumed.preflight_complexity_gate_assessment["slices"][0]["title"] == (
+            "Parser and data contract"
+        )
+        assert resumed.total_decomposition_assessment_cost == 0.0
+
+    def _asserting_nothing_is_asked(self):
+        """Patch the pause writer for the assertion only, never for the setup."""
+        return patch("theforge.pending.write_pending")
+
+    def test_an_answered_decision_is_not_asked_again(self, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        answered = _gated_state(score=9)
+        answered.story_content = _SPEC_TEXT
+        answered.preflight_complexity_gate_decision = "approve"
+        answered.preflight_complexity_gate_decision_source = "operator"
+        save_resume_record(tmp_path, answered, slug="test-task", story_content=_SPEC_TEXT)
+
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        with self._asserting_nothing_is_asked() as mock_write:
+            result = evaluate_preflight_complexity_gate(
+                self._resumed_state(8), config, task, "PROCEED"
+            )
+
+        assert result is None
+        mock_write.assert_not_called()
+
+    def test_an_edited_story_gets_a_fresh_evaluation(self, tmp_path: Path):
+        """The outstanding question was about text that no longer exists."""
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        resumed = self._resumed_state(8)
+        resumed.story_content = _SPEC_TEXT + "\n\nAnd one more thing.\n"
+
+        with self._asserting_nothing_is_asked() as mock_write:
+            result = evaluate_preflight_complexity_gate(resumed, config, task, "PROCEED")
+
+        assert result is None
+        mock_write.assert_not_called()
+
+    def test_a_disabled_gate_raises_nothing(self, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path, preflight_complexity_gate_threshold=11)
+        task = _make_task(tmp_path)
+
+        with self._asserting_nothing_is_asked() as mock_write:
+            result = evaluate_preflight_complexity_gate(
+                self._resumed_state(8), config, task, "PROCEED"
+            )
+
+        assert result is None
+        mock_write.assert_not_called()
+
+    def test_a_terminal_verdict_raises_nothing(self, tmp_path: Path):
+        """BLOCKED ends the run here and spends nothing further either way."""
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        with self._asserting_nothing_is_asked() as mock_write:
+            result = evaluate_preflight_complexity_gate(
+                self._resumed_state(8), config, task, "BLOCKED"
+            )
+
+        assert result is None
+        mock_write.assert_not_called()
+
+
+class TestTheResumedDispatchPathStillReachesTheDecision:
+    """The bug's own shape: a 0-commits-ahead story dispatched as a fresh run."""
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_a_fresh_run_task_resolves_the_outstanding_decision(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, _poll, tmp_path
+    ):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+        (tmp_path / "test-task").mkdir(exist_ok=True)
+
+        mock_shell.return_value = (True, "OK", 0, False)
+        # The resumed evaluation of identical story content scores it *under* the
+        # threshold, which is what used to take the story straight to planning.
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=_preflight_output(8), cost_usd=0.37
+        )
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_complexity_score == 8
+        assert result.state.preflight_complexity_gate_recovered_score == 9
+        assert result.state.preflight_complexity_gate_decision == "decompose"
+        assert result.state.preflight_complexity_gate_decision_source == "no_decision"
+        assert result.success is False
+        assert result.phase is Phase.PREFLIGHT
+        mock_plan.assert_not_called()
+        mock_dev.assert_not_called()
+        mock_pool.assert_not_called()
+
+        audit = generate_audit_log(config, task, result)
+        gate = audit["preflight_complexity_gate"]
+        assert gate["recovered_score"] == 9
+        assert gate["score_divergence"]["resumed_score"] == 8
+        assert gate["unresolved"] is False
+
+
+class TestTheDecisionKeepsTheSizeItWasRaisedAt:
+    """A pause interrupted twice still names the score that first raised it."""
+
+    def test_a_re_raised_pause_interrupted_again_keeps_the_original_size(self, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        # Second attempt: re-raises the decision at its own score of 8, and is
+        # killed inside the pause exactly as the first was.
+        second = _gated_state(score=8, implementation=8, validation=1)
+        second.story_content = _SPEC_TEXT
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            evaluate_preflight_complexity_gate(second, config, task, "PROCEED")
+
+        block = load_resume_record(tmp_path, "test-task")["preflight"]
+        assert block["complexity_gate_pending"] is True
+        assert block["complexity_gate_decision"] is None
+        # The size the decision was opened at, not the size the attempt that
+        # re-raised it computed — otherwise each interruption would walk the
+        # recorded origin one attempt further from what was first asked about.
+        assert block["complexity_gate_score"] == 9
+        assert block["complexity_gate_implementation_score"] == 9
+        assert block["complexity_gate_validation_score"] == 3
+        assert block["complexity_gate_pending_run_id"] == "7c1e04b9d3af"
+
+    @patch("theforge.pending.poll_pending", side_effect=_never_answered)
+    def test_a_third_attempt_still_diverges_against_the_original(self, _poll, tmp_path: Path):
+        _unanswered_record(tmp_path, score=9)
+        config = _config_with(tmp_path)
+        task = _make_task(tmp_path)
+
+        second = _gated_state(score=8, implementation=8, validation=1)
+        second.story_content = _SPEC_TEXT
+        with (
+            patch("theforge.pending.poll_pending", side_effect=_killed_mid_poll),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            evaluate_preflight_complexity_gate(second, config, task, "PROCEED")
+
+        third = _gated_state(score=7, implementation=7, validation=1)
+        third.story_content = _SPEC_TEXT
+        result = evaluate_preflight_complexity_gate(third, config, task, "PROCEED")
+
+        assert result is not None and result.success is False
+        assert third.preflight_complexity_gate_recovered_score == 9
+        assert third.preflight_complexity_gate_score_divergence["recorded_score"] == 9
+        assert third.preflight_complexity_gate_score_divergence["resumed_score"] == 7
+        # The resolved decision is still reported at the size it was raised at.
+        assert third.preflight_complexity_gate_score == 9
+        assert "complexity 9 reached the gate threshold 9" in result.message
