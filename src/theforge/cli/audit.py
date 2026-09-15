@@ -194,6 +194,17 @@ def cmd_audit(args: object) -> int:
         residue = _format_worktree_state(entry.get("worktree_state"))
         if residue:
             print(f"                worktree_state: {residue}")
+        post_gate_sweeps = entry.get("post_gate_sweeps") or []
+        if isinstance(post_gate_sweeps, list):
+            for sweep in post_gate_sweeps:
+                if not isinstance(sweep, dict):
+                    continue
+                files = sweep.get("files") or []
+                count = len(files) if isinstance(files, list) else 0
+                print(
+                    "                Post-gate sweep: "
+                    f"{count} file(s) committed — {sweep.get('commit_subject', '?')}"
+                )
 
     # Cost summary
     print()

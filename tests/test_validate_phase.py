@@ -229,8 +229,8 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
             return_value=("PASS", None, "OK", "pytest tests/", 0),
         ),
         patch(
-            "theforge.coordinator.validate_phase._get_raw_dev_notes",
-            return_value="summary: tidy worktree",
+            "theforge.coordinator.validate_phase.get_dev_handoff_summary",
+            return_value="Tidy worktree",
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
         patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
@@ -251,6 +251,21 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
     # guard adds follow-up `git rev-list` calls to the same patched subprocess.run.
     commit_calls = [c for c in commit_run.call_args_list if c.args[0][:2] == ["git", "commit"]]
     assert len(commit_calls) == 1
+    assert commit_calls[0].args[0] == [
+        "git",
+        "commit",
+        "-m",
+        "chore: coordinator swept 1 post-gate file: Tidy worktree",
+    ]
+    assert state.post_gate_sweeps == [
+        {
+            "dev_iteration": 1,
+            "files": ["src/example.py"],
+            "commit_subject": "chore: coordinator swept 1 post-gate file: Tidy worktree",
+            "handoff_summary": "Tidy worktree",
+        }
+    ]
+    assert state.validation_runs[-1]["post_gate_sweeps"] == state.post_gate_sweeps
     assert len(state.dev_iteration_telemetry) == 1
     telemetry = state.dev_iteration_telemetry[0]
     assert telemetry.gate_result == "PASS"
@@ -1638,7 +1653,7 @@ def test_skipped_gate_is_not_counted_as_a_gate_run(tmp_path: Path) -> None:
     with (
         patch("theforge.coordinator.validate_phase.run_gate_full") as gate_full,
         patch(
-            "theforge.coordinator.validate_phase._get_raw_dev_notes",
+            "theforge.coordinator.validate_phase.get_dev_handoff_summary",
             return_value="summary: done",
         ),
         patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),

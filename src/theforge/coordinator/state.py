@@ -823,6 +823,11 @@ class CoordinatorState:
     # Persisted to the resume sidecar and the audit; records written before this
     # field existed are absent, and absence is read as legacy (complete/merge).
     validation_runs: list[dict] = field(default_factory=list)
+    # Commits created by VALIDATE after a gate PASS because the worktree still
+    # had residue.  These changes were not part of the gate's judged commit;
+    # preserving their files and subject makes that provenance visible to audit
+    # and landing consumers rather than presenting the run as a clean pass.
+    post_gate_sweeps: list[dict] = field(default_factory=list)
     last_review_findings: str | None = None
     cycle_history: list[CycleHistory] = field(default_factory=list)
     cycle_history_total: int = 0  # monotonically increasing count of all appended entries

@@ -35,9 +35,9 @@ from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import (
     _get_handoff_content,
-    _get_raw_dev_notes,
     _latest_forge_handoff_path,
     _parse_dev_handoff,
+    get_dev_handoff_summary,
 )
 from .run_setup import save_trajectory_state
 from .state import (
@@ -1141,19 +1141,18 @@ def _run_validate_phase(
                 raw_names = ", ".join(dirty_files)
                 _log(f"Dirty worktree detected: {raw_names}")
 
-                # Auto-commit: synthesize message from handoff, don't
-                # re-invoke the agent (full-prompt retry burns tokens and
-                # times out — the agent already wrote the code).
-                dev_notes = _get_raw_dev_notes(
+                # This residue appeared after the gate ran, so its commit must
+                # say that plainly.  Optionally preserve the dev's structured
+                # summary, never a line selected from serialized YAML.
+                handoff_summary = get_dev_handoff_summary(
                     forge_handoff_path=_latest_forge_handoff_path(state)
                 )
-                if dev_notes:
-                    first_line = dev_notes.strip().splitlines()[0][:72]
-                    commit_msg = first_line
-                else:
-                    commit_msg = (
-                        f"wip: uncommitted changes from dev iteration {state.dev_iteration}"
-                    )
+                file_count = len(dirty_files)
+                file_word = "file" if file_count == 1 else "files"
+                commit_msg = f"chore: coordinator swept {file_count} post-gate {file_word}"
+                if handoff_summary:
+                    commit_msg = f"{commit_msg}: {handoff_summary}"
+                commit_msg = commit_msg[:72]
                 _cu._run_shell("git add -A", workspace_path)
                 _deindex_forge_artifacts(workspace_path)
                 # Use subprocess.run directly to avoid shell injection
@@ -1166,6 +1165,23 @@ def _run_validate_phase(
                         timeout=30,
                         check=True,
                     )
+                    state.post_gate_sweeps.append(
+                        {
+                            "dev_iteration": state.dev_iteration,
+                            "files": dirty_files,
+                            "commit_subject": commit_msg,
+                            "handoff_summary": handoff_summary,
+                        }
+                    )
+                    # ``validation_runs`` records the gate that has just
+                    # passed. Attach the later sweep to that provenance rather
+                    # than presenting it as gate-judged content, while keeping
+                    # the additive detail compatible for existing audit readers.
+                    if state.validation_runs:
+                        state.validation_runs[-1].setdefault("post_gate_sweeps", []).append(
+                            state.post_gate_sweeps[-1]
+                        )
+                    _persist_trajectory(state, workspace_path, "post-gate sweep provenance")
                     _log(f"  Auto-committed dirty worktree: {commit_msg}")
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     err_detail = getattr(exc, "stderr", b"").decode(errors="replace")[:200]
