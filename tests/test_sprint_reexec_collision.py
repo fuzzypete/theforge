@@ -384,7 +384,7 @@ class TestReexecPriorOutcomeClassification:
     prior record remain pending and schedulable."""
 
     def _drop_for(
-        self, tmp_path: Path, capsys, prior_outcomes: dict[str, str]
+        self, tmp_path: Path, capsys, prior_outcomes: dict[str, str | dict] | None
     ) -> tuple[dict[str, str], str, int]:
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase=None)
         config = _mock_config(tmp_path)
@@ -436,10 +436,49 @@ class TestReexecPriorOutcomeClassification:
         assert "STRANDED" in err
 
     def test_resolved_no_prior_record_stays_scheduled_with_a_lock(self, tmp_path, capsys) -> None:
-        dropped, err, lock_count = self._drop_for(tmp_path, capsys, {})
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        config = _mock_config(tmp_path)
+        with (
+            patch(
+                "theforge.sprint.audit._get_or_create_sprint_id",
+                return_value="sprint-1",
+            ),
+            patch("theforge.sprint.audit._load_accumulated_stories", return_value=[]),
+        ):
+            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes == {}
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
         assert "issue-829" not in dropped
         assert "DROPPED issue-829" not in err
         assert lock_count == 2
+
+    def test_failed_cli_prior_outcome_resolution_keeps_active_worktree_fail_closed(
+        self, tmp_path, capsys
+    ) -> None:
+        """A failed state read must not masquerade as a resolved empty sprint."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
+        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
+
+        config = _mock_config(tmp_path)
+        with (
+            patch(
+                "theforge.sprint.audit._get_or_create_sprint_id",
+                return_value="sprint-1",
+            ),
+            patch(
+                "theforge.sprint.audit._load_accumulated_stories",
+                side_effect=OSError("state unavailable"),
+            ),
+        ):
+            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes is None
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
+        assert "DROPPED issue-829" in err
+        assert lock_count == 1
 
     def test_pending_committed_worktree_reaches_dispatch_without_blocking_sibling(
         self, tmp_path: Path

@@ -516,14 +516,16 @@ def _resolve_story_liveness(config: object, slugs: list[str]) -> LivenessResolut
         return unresolved_liveness(slugs, reason=f"liveness lookup unavailable: {exc}")
 
 
-def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]:
+def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict] | None:
     """Best-effort map of slug -> prior-generation story record for the guard.
 
     Resolves the logical sprint id the same way the runner does (from the
     manifest ``name``) and reads the prior generation's accumulated story
-    entries from ``.forge/sprints/<id>/state.yaml``. Returns an empty map on any
-    failure so a lookup miss degrades to today's collision behavior — this must
-    never fail the launch.
+    entries from ``.forge/sprints/<id>/state.yaml``. Returns an empty map when
+    the state was read successfully and contains no story entries, and ``None``
+    when the lookup could not be established. The distinction lets the launch
+    guard preserve genuinely pending stories without treating a failed lookup
+    as proof that this sprint owns an active worktree.
 
     The whole recorded entry is carried forward, not just its ``outcome``: the
     guard's reconciliation decision needs the landing evidence recorded beside
@@ -551,7 +553,7 @@ def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]
             records[slug] = as_prior_record(story)
         return records
     except Exception:
-        return {}
+        return None
 
 
 def _resolve_base_branch_sha(config: object) -> str | None:
