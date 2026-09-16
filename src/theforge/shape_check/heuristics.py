@@ -894,6 +894,34 @@ def _section_content(section: str) -> str:
     return rest
 
 
+_HOOK_BUG_CAPTURE_LABELS: dict[str, str] = {
+    OBSERVED_SECTION.key: "Observed",
+    EXPECTED_SECTION.key: "Expected",
+}
+
+
+def _top_level_hook_bug_capture_value(body: str, section_key: str) -> str | None:
+    """Return a legacy hook-filed capture value when its exact label is present.
+
+    The post-run hook historically wrote the two required bug-capture fields
+    as top-level inline labels rather than Markdown sections.  This narrowly
+    recognizes that first-party shape without treating diagnosis fields,
+    quoted examples, bullets, or fenced code as document structure.
+    """
+    label = _HOOK_BUG_CAPTURE_LABELS.get(section_key)
+    if label is None:
+        return None
+    label_re = re.compile(rf"^\*\*{re.escape(label)}:\*\*(?P<value>.*)$", re.IGNORECASE)
+    tracker = FenceTracker()
+    for line in body.splitlines():
+        if tracker.feed(line) != "outside":
+            continue
+        match = label_re.match(line)
+        if match is not None:
+            return match.group("value").strip()
+    return None
+
+
 def _required_bug_section_reason(
     body: str,
     labels: Iterable[str],
@@ -908,7 +936,15 @@ def _required_bug_section_reason(
         return None
     section = extract_authoritative_section(body, heading_pattern, canonical_texts)
     if section is None:
-        condition = "absent"
+        content = _top_level_hook_bug_capture_value(body, section_key)
+        if content is None:
+            condition = "absent"
+        elif not content.strip():
+            condition = "empty"
+        elif is_placeholder_only(content):
+            condition = "contains only placeholder scaffolding"
+        else:
+            return None
     else:
         content = _section_content(section)
         if not content.strip():
