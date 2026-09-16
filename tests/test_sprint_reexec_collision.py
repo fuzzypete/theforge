@@ -475,13 +475,34 @@ class TestReexecPriorOutcomeClassification:
         assert "DROPPED issue-829" in err
         assert lock_count == 1
 
-    def test_missing_prior_state_keeps_active_worktree_fail_closed(self, tmp_path, capsys) -> None:
-        """A freshly created id without state has no resolved ownership record."""
+    def test_missing_first_generation_state_keeps_active_worktree_scheduled(
+        self, tmp_path, capsys
+    ) -> None:
+        """A re-exec before the first state write owns its selected worktree."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        config = _mock_config(tmp_path)
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes == {}
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert "issue-829" not in dropped
+        assert "DROPPED issue-829" not in err
+        assert lock_count == 2
+
+    def test_unrecorded_sprint_id_keeps_active_worktree_fail_closed(
+        self, tmp_path, capsys
+    ) -> None:
+        """A fallback id cannot establish that an absent state is this sprint's."""
         from theforge.cli.sprint import _resolve_prior_outcomes
         from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
 
         config = _mock_config(tmp_path)
-        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+        with patch(
+            "theforge.sprint.audit._get_or_create_sprint_id",
+            return_value="unrecorded-id",
+        ):
+            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
 
         assert prior_outcomes is None
         dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
@@ -510,13 +531,20 @@ class TestReexecPriorOutcomeClassification:
             [f"{pending_slug}.md", f"{sibling_slug}.md"],
         )
         config = _make_config(tmp_path)
+        # The first generation re-execs while the base branch pull runs, before
+        # the runner has persisted a state.yaml. That absence means no story
+        # has settled yet, not that generation ownership is unresolvable.
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+        assert prior_outcomes == {}
 
         locked_fds, launch_error, dropped = acquire_launch_story_locks(
             slugs=[pending_slug, sibling_slug],
             config=config,
             resume=False,
             allow_drop=True,
-            prior_outcomes={},
+            prior_outcomes=prior_outcomes,
         )
 
         try:
