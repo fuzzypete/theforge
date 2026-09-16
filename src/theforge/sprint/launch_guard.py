@@ -13,7 +13,6 @@ from theforge.sprint.lock import (
     sweep_story_locks,
 )
 from theforge.sprint.preflight import (
-    abort_for_active_worktrees,
     check_active_worktrees_or_continue,
     drop_conflicting_running_stories,
     warn_for_running_stories,
@@ -127,6 +126,12 @@ def acquire_launch_story_locks(
     ``REASON_ACTIVE_WORKTREE`` collision is what produced #2079 — a sprint
     dropping its own committed work and advising the operator to delete it.
 
+    ``prior_outcomes`` being supplied, even as an empty mapping, means the
+    re-exec caller resolved the prior generation. A selected active worktree
+    with no entry is therefore a pending story owned by this sprint, not a
+    foreign collision. ``None`` preserves the fail-closed legacy path for
+    callers that cannot establish generation ownership.
+
     ``canonical_refs_by_slug`` is best-effort operator context for launch-time
     preserved messages only. Lock ownership and collision classification remain
     keyed by slug; the extra ref lets file-backed and custom-slug issue stories
@@ -153,6 +158,12 @@ def acquire_launch_story_locks(
     # A story whose liveness could not be resolved is held to the same rule: the
     # lookup failing is not evidence that its agent is gone, so it is deferred
     # rather than reconciled against a worktree that may be under active write.
+    # ``None`` means an older/unknown caller supplied no generation record at
+    # all. An empty mapping is materially different on the re-exec path: the
+    # caller resolved this sprint's prior outcomes and established that a
+    # selected story simply had not dispatched yet. Preserve that distinction
+    # before normalising the mapping for lookups below (#2998).
+    prior_outcomes_resolved = prior_outcomes is not None
     prior_outcomes = prior_outcomes or {}
     # Precedence, decided before anything reads these sets: an ownership record
     # is cleared *after* the scheduler settles a story, so a crash or a re-exec
@@ -308,9 +319,16 @@ def acquire_launch_story_locks(
             # recoverable stranded sprint state, not a fresh collision.
             dropped[slug] = REASON_STRANDED_WORKTREE
             stranded_slugs.append(slug)
-        else:
+        elif not prior_outcomes_resolved:
+            # Compatibility for callers that cannot establish which generation
+            # owns the worktree: keep failing closed as a foreign collision.
             dropped[slug] = REASON_ACTIVE_WORKTREE
             collision_slugs.append(slug)
+        # With a resolved prior-outcome map, no record means this selected story
+        # was still pending when the sprint re-exec'd. Its worktree was already
+        # admitted for this sprint, so leave it schedulable. The lock acquisition
+        # below remains the authoritative concurrency check and will still turn a
+        # competing process's claim into REASON_LOCK_HELD.
     remaining = [s for s in schedulable if s not in dropped]
     if reconciled_slugs:
         print(
@@ -334,7 +352,6 @@ def acquire_launch_story_locks(
             file=sys.stderr,
             flush=True,
         )
-        abort_for_active_worktrees(collision_slugs)
 
     # Acquire locks for everything that survived worktree checks.  On a lock
     # conflict, acquire_story_locks releases the partial set it was holding —

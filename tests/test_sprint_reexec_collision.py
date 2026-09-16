@@ -4,9 +4,8 @@ Covers two behaviors:
 
 1. Escalated worktrees are recognized by their state metadata and are not
    treated as active-worktree collisions during re-exec.
-2. A genuine active-worktree collision after re-exec does not abort the whole
-   sprint — the conflicted story is marked failed, visibly, and the remaining
-   stories continue.
+2. A legacy re-exec call with unresolved generation ownership fails closed on
+   an active worktree, while a resolved current-sprint pending story proceeds.
 """
 
 from __future__ import annotations
@@ -16,7 +15,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
+from tests.test_sprint_launch_liveness import (
+    _make_config,
+    _make_coordinator_result,
+    _make_manifest,
+    _make_spec_file,
+    _triage_full,
+    _worktree_with_commit,
+)
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.preserved_resume import preserved_escalated_detail
@@ -323,6 +331,7 @@ class TestGenuineCollisionDuringReexec:
                 config=config,
                 resume=False,
                 allow_drop=True,
+                prior_outcomes={},
             )
 
             try:
@@ -370,13 +379,13 @@ class TestGenuineCollisionDuringReexec:
 
 class TestReexecPriorOutcomeClassification:
     """Issue #1838: an active worktree after re-exec is classified against the
-    prior generation's recorded outcomes — a 3-way split so a completed story is
-    reconciled, an unfinished prior story is reported as stranded, and only a
-    worktree with no prior record remains a genuine fresh collision."""
+    prior generation's recorded outcomes: completed stories reconcile,
+    unfinished prior stories are stranded, and current-sprint stories with no
+    prior record remain pending and schedulable."""
 
     def _drop_for(
-        self, tmp_path: Path, capsys, prior_outcomes: dict[str, str]
-    ) -> tuple[dict[str, str], str]:
+        self, tmp_path: Path, capsys, prior_outcomes: dict[str, str | dict] | None
+    ) -> tuple[dict[str, str], str, int]:
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase=None)
         config = _mock_config(tmp_path)
         completed = MagicMock(returncode=0, stdout="3\n")
@@ -390,9 +399,10 @@ class TestReexecPriorOutcomeClassification:
             )
         from theforge.sprint.lock import release_story_locks
 
+        lock_count = len(locked_fds)
         release_story_locks(locked_fds)
         assert launch_error is None
-        return dropped, capsys.readouterr().err
+        return dropped, capsys.readouterr().err, lock_count
 
     def test_prior_done_worktree_is_reconciled_not_collision(self, tmp_path, capsys) -> None:
         from theforge.sprint.launch_guard import (
@@ -400,7 +410,7 @@ class TestReexecPriorOutcomeClassification:
             REASON_RECONCILE_PRIOR_DONE,
         )
 
-        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "DONE"})
+        dropped, err, _lock_count = self._drop_for(tmp_path, capsys, {"issue-829": "DONE"})
         assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
         assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
         assert "issue-267" not in dropped
@@ -409,7 +419,9 @@ class TestReexecPriorOutcomeClassification:
     def test_prior_already_done_worktree_is_reconciled(self, tmp_path, capsys) -> None:
         from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
 
-        dropped, _err = self._drop_for(tmp_path, capsys, {"issue-829": "ALREADY_DONE"})
+        dropped, _err, _lock_count = self._drop_for(
+            tmp_path, capsys, {"issue-829": "ALREADY_DONE"}
+        )
         assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
 
     def test_prior_unfinished_worktree_is_stranded(self, tmp_path, capsys) -> None:
@@ -418,17 +430,157 @@ class TestReexecPriorOutcomeClassification:
             REASON_STRANDED_WORKTREE,
         )
 
-        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "FAILED"})
+        dropped, err, _lock_count = self._drop_for(tmp_path, capsys, {"issue-829": "FAILED"})
         assert dropped["issue-829"] == REASON_STRANDED_WORKTREE
         assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
         assert "STRANDED" in err
 
-    def test_no_prior_record_is_unchanged_active_collision(self, tmp_path, capsys) -> None:
+    def test_resolved_no_prior_record_stays_scheduled_with_a_lock(self, tmp_path, capsys) -> None:
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        config = _mock_config(tmp_path)
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        (sprint_log_dir / ".sprint_id").write_text("sprint-1", encoding="utf-8")
+        state_path = tmp_path / ".forge" / "sprints" / "sprint-1" / "state.yaml"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("stories: []\n", encoding="utf-8")
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes == {}
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert "issue-829" not in dropped
+        assert "DROPPED issue-829" not in err
+        assert lock_count == 2
+
+    def test_malformed_prior_state_keeps_active_worktree_fail_closed(
+        self, tmp_path, capsys
+    ) -> None:
+        """A real malformed state file must not masquerade as an empty sprint."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
         from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
 
-        dropped, err = self._drop_for(tmp_path, capsys, {})
+        config = _mock_config(tmp_path)
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        (sprint_log_dir / ".sprint_id").write_text("sprint-1", encoding="utf-8")
+        state_path = tmp_path / ".forge" / "sprints" / "sprint-1" / "state.yaml"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("stories: [\n", encoding="utf-8")
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes is None
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
         assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
-        assert "DROPPED" in err
+        assert "DROPPED issue-829" in err
+        assert lock_count == 1
+
+    def test_missing_first_generation_state_keeps_active_worktree_scheduled(
+        self, tmp_path, capsys
+    ) -> None:
+        """A re-exec before the first state write owns its selected worktree."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        config = _mock_config(tmp_path)
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes == {}
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert "issue-829" not in dropped
+        assert "DROPPED issue-829" not in err
+        assert lock_count == 2
+
+    def test_unrecorded_sprint_id_keeps_active_worktree_fail_closed(
+        self, tmp_path, capsys
+    ) -> None:
+        """A fallback id cannot establish that an absent state is this sprint's."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
+        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
+
+        config = _mock_config(tmp_path)
+        with patch(
+            "theforge.sprint.audit._get_or_create_sprint_id",
+            return_value="unrecorded-id",
+        ):
+            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes is None
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
+        assert "DROPPED issue-829" in err
+        assert lock_count == 1
+
+    def test_pending_committed_worktree_reaches_dispatch_without_blocking_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """The launch classification must survive the scheduler handoff.
+
+        A re-exec sees a selected story's preattached worktree and its ahead
+        commit, but no prior outcome or dispatch-ownership record because the
+        story was still pending. The guard must keep it scheduled, and the
+        runner must dispatch both it and the unrelated remaining story without
+        inventing unverifiable sprint spend from the old commit.
+        """
+        pending_slug = "issue-829"
+        sibling_slug = "issue-267"
+        _make_spec_file(tmp_path, "Issue 829", pending_slug)
+        _make_spec_file(tmp_path, "Issue 267", sibling_slug)
+        _worktree_with_commit(tmp_path, pending_slug)
+        manifest_path = _make_manifest(
+            tmp_path,
+            [f"{pending_slug}.md", f"{sibling_slug}.md"],
+        )
+        config = _make_config(tmp_path)
+        # The first generation re-execs while the base branch pull runs, before
+        # the runner has persisted a state.yaml. That absence means no story
+        # has settled yet, not that generation ownership is unresolvable.
+        from theforge.cli.sprint import _resolve_prior_outcomes
+
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+        assert prior_outcomes == {}
+
+        locked_fds, launch_error, dropped = acquire_launch_story_locks(
+            slugs=[pending_slug, sibling_slug],
+            config=config,
+            resume=False,
+            allow_drop=True,
+            prior_outcomes=prior_outcomes,
+        )
+
+        try:
+            assert launch_error is None
+            assert dropped == {}
+            assert len(locked_fds) == 2
+
+            with (
+                patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+                patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+                patch(
+                    "theforge.sprint.runner.run_task",
+                    return_value=_make_coordinator_result(),
+                ) as mock_run_task,
+                patch(
+                    "theforge.sprint.runner._run_baseline_gate",
+                    return_value={"passed": True, "message": "ok"},
+                ),
+            ):
+                result = run_sprint_ctx(
+                    config,
+                    manifest_path,
+                    reexec=True,
+                    dropped_slugs=dropped,
+                )
+
+            dispatched = [call.args[1].slug for call in mock_run_task.call_args_list]
+            assert sorted(dispatched) == sorted([pending_slug, sibling_slug])
+            assert result.specs_succeeded == 2
+            assert result.specs_skipped == 0
+            assert result.cost_complete
+            assert result.unmeasured_spend_sources == ()
+        finally:
+            from theforge.sprint.lock import release_story_locks
+
+            release_story_locks(locked_fds)
 
     def test_prior_outcomes_none_degrades_to_active_collision(self, tmp_path) -> None:
         """Passing no prior_outcomes (today's default) keeps the collision path."""

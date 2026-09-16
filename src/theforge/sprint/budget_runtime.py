@@ -55,6 +55,7 @@ from .budget import (
     evaluate_budget,
 )
 from .carry import load_sprint_carry_budget_snapshot, prior_unmeasured_spend_sources
+from .preserved_resume import preserved_review_command
 from .story_state import StoryOutcome
 from .unmeasured import AcceptedUnmeasuredSpend, UnmeasuredSource
 
@@ -546,6 +547,29 @@ class SprintBudgetRuntime:
             self._source_cache[key] = cached
         return cached
 
+    def _source_detail(self, raw: str, *, occurrence: str | None = None) -> str:
+        """Describe an unknown and name a real recovery when it is unbounded."""
+        source = self.describe_source(raw, occurrence=occurrence)
+        detail = source.describe()
+        slug = unmeasured_spend_policy.attributed_story_slug(raw)
+        if source.acceptable or slug is None:
+            return detail
+        story_context = self.context.slug_to_context.get(slug)
+        canonical_ref = story_context[2] if story_context is not None else None
+        command = preserved_review_command(canonical_ref=canonical_ref, slug=slug)
+        return (
+            f"{detail}; recovery: resolve {slug}'s preserved work with `{command}`, "
+            "then rerun the sprint"
+        )
+
+    def _is_terminal_story_source_for_other_story(self, raw: str, dispatch_slug: str) -> bool:
+        """Whether *raw* belongs only to another already-terminal story."""
+        attributed_slug = unmeasured_spend_policy.attributed_story_slug(raw)
+        if attributed_slug is None or attributed_slug == dispatch_slug:
+            return False
+        entry = self._state.stories.get(attributed_slug)
+        return entry is not None and entry.outcome.is_terminal
+
     # -- startup -----------------------------------------------------------
     def load_operator_acceptances(self) -> None:
         """Apply the operator resolutions of unmeasured spend in force (#2310).
@@ -698,7 +722,7 @@ class SprintBudgetRuntime:
         _log(_budget_line)
         _startup_budget_details = (
             {
-                raw: self.describe_source(raw, occurrence=_OCCURRENCE_CARRIED).describe()
+                raw: self._source_detail(raw, occurrence=_OCCURRENCE_CARRIED)
                 for raw in _carry_snapshot.unresolved_unmeasured_sources
             }
             if _carry_snapshot.unresolved_unmeasured_sources
@@ -731,7 +755,9 @@ class SprintBudgetRuntime:
         return _decision
 
     # -- enforcement -------------------------------------------------------
-    def decision_for(self, snapshot: SprintCostSnapshot) -> BudgetBlock | None:
+    def decision_for(
+        self, snapshot: SprintCostSnapshot, *, dispatch_slug: str | None = None
+    ) -> BudgetBlock | None:
         """Evaluate the cap against one ledger read, in-flight spend included.
 
         The sprint's single cap decision, asked from both enforcement moments:
@@ -745,13 +771,19 @@ class SprintBudgetRuntime:
             current_generation=set(snapshot.current_generation_unmeasured),
             occurrence_ids=self._carried_occurrence_ids,
         )
+        if dispatch_slug is not None:
+            # A terminal story's preserved-work unknown still remains in the
+            # sprint's final accounting, but it does not make an unrelated
+            # story unsafe to dispatch. Whole-run unknowns, unknowns without a
+            # terminal attribution, and the measured cap remain global.
+            _unresolved = [
+                raw
+                for raw in _unresolved
+                if not self._is_terminal_story_source_for_other_story(raw, dispatch_slug)
+            ]
         # Origin/ceiling lookup reads per-story audits, so it runs off the
         # snapshot — it is reporting, not accounting.
-        _details = (
-            {raw: self.describe_source(raw).describe() for raw in _unresolved}
-            if _unresolved
-            else None
-        )
+        _details = {raw: self._source_detail(raw) for raw in _unresolved} if _unresolved else None
         _sources = {raw: self.describe_source(raw) for raw in _unresolved}
         return evaluate_budget(
             accumulated_cost=snapshot.accumulated + snapshot.in_flight,
@@ -767,9 +799,9 @@ class SprintBudgetRuntime:
             ],
         )
 
-    def decision_before_dispatch(self) -> BudgetBlock | None:
+    def decision_before_dispatch(self, slug: str | None = None) -> BudgetBlock | None:
         """The cap decision the scheduler asks before launching a story."""
-        return self.decision_for(self._state.cost.snapshot())
+        return self.decision_for(self._state.cost.snapshot(), dispatch_slug=slug)
 
     def checkpoint(self, slug: str, measured_cost: SprintCostObservation | None) -> None:
         """Charge a running story's spend to the cap, and halt if it is met.

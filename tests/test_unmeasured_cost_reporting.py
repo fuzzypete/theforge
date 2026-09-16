@@ -864,14 +864,20 @@ class TestUnmeasuredSourceIdentity:
         assert normalize_source_id(None) == ""
 
     def test_only_story_sources_resolve_to_a_slug(self) -> None:
-        from theforge.sprint.unmeasured import source_slug
+        from theforge.sprint.unmeasured import attributed_story_slug, source_slug
 
         assert source_slug("carried:issue-2206") == "issue-2206"
         assert source_slug("issue-2206") == "issue-2206"
         # Kind-prefixed sources are not story runs, and the whole-generation
         # marker is not work at all — neither has a per-story audit to read.
         assert source_slug("intake:issue-2206") is None
+        assert source_slug("dropped-with-work:issue-2206") is None
         assert source_slug("carried:prior-generation") is None
+        # Attribution is a separate contract used only for recovery and
+        # dispatch scoping; it must not opt a prefixed source into audit lookup.
+        assert attributed_story_slug("dropped-with-work:issue-2206") == "issue-2206"
+        assert attributed_story_slug("carried:stranded-unmeasured:issue-2206") == "issue-2206"
+        assert attributed_story_slug("intake:issue-2206") is None
 
 
 class TestUnmeasuredSourceDerivation:

@@ -503,12 +503,8 @@ def test_absent_worktree_is_determined_empty(tmp_path: Path) -> None:
 # ── audit record for a drop that abandoned work ──────────────────────
 
 
-def test_dropped_story_with_commits_is_unmeasured_and_evidenced(tmp_path: Path) -> None:
-    """A drop that abandoned committed work is never recorded as free and silent.
-
-    The run that produced commits is precisely the run an operator needs evidence
-    for; ``cost_usd: 0.0`` plus no detail is the record that hid it.
-    """
+def test_dropped_story_with_old_commits_is_zero_cost_but_evidenced(tmp_path: Path) -> None:
+    """Commits stay visible without being misbooked as this sprint's spend."""
     _make_spec_file(tmp_path, "Issue 2048", "issue-2048")
     _make_spec_file(tmp_path, "Issue 2060", "issue-2060")
     manifest_path = _make_manifest(tmp_path, ["issue-2048.md", "issue-2060.md"])
@@ -535,27 +531,25 @@ def test_dropped_story_with_commits_is_unmeasured_and_evidenced(tmp_path: Path) 
     story = {s["slug"]: s for s in summary["stories"]}["issue-2048"]
 
     assert story["outcome"] == "DROPPED"
-    # Not free: the spend happened, it just cannot be recovered here.
-    assert story["cost_usd"] is None
+    assert story["cost_usd"] == 0.0
     assert story["unmerged_commits"] == 1
     assert story["unmerged_work_determined"] is True
     assert story["branch"] == "forge/issue-2048"
     # The recorded detail names the abandoned work, not an unrelated fragment.
     assert "unmerged commit" in story["error"]
     assert REASON_ACTIVE_WORKTREE in story["error"]
-    # The sprint total is a lower bound, and says so.
-    assert result.cost_complete is False
-    assert "dropped-with-work:issue-2048" in result.unmeasured_spend_sources
+    assert result.cost_complete is True
+    assert "dropped-with-work:issue-2048" not in result.unmeasured_spend_sources
 
     # The same evidence reaches the audit trail, which is where an operator
     # reconstructing the run actually looks.
     audit = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
     spec = {s["path"]: s for s in audit["specs"]}["issue-2048.md"]
     assert spec["outcome"] == "DROPPED"
-    assert spec["cost_usd"] is None
+    assert spec["cost_usd"] == 0.0
     assert spec["unmerged_commits"] == 1
     assert "unmerged commit" in spec["error"]
-    assert audit["sprint"]["total_cost_usd"] is None
+    assert audit["sprint"]["total_cost_usd"] == 1.0
 
 
 def test_dropped_story_without_a_worktree_stays_a_free_drop(tmp_path: Path) -> None:

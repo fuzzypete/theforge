@@ -254,10 +254,34 @@ class TestEnforcementMoments:
         state = _state(budget_usd=100.0)
         state.cost.record_story_cost("story-a", 1.0, measured=None)
 
-        decision = state.budget.decision_before_dispatch()
+        decision = state.budget.decision_before_dispatch("story-b")
 
         assert decision is not None
         assert decision.kind == "unverifiable"
+
+    def test_terminal_story_unknown_does_not_block_unrelated_dispatch(self) -> None:
+        state = _state(budget_usd=100.0)
+        state.stories.register(
+            "issue-2951", "Issue 2951", outcome=StoryOutcome.DROPPED, cost_usd=None
+        )
+        state.cost.flag_unmeasured_here("dropped-with-work:issue-2951")
+
+        assert state.budget.decision_before_dispatch("issue-1802") is None
+        # Isolation changes admission only; terminal accounting remains honest.
+        assert state.budget.verification(state.cost.snapshot()).unresolved_sources == (
+            "dropped-with-work:issue-2951",
+        )
+
+    def test_unbounded_story_unknown_names_a_runnable_recovery(self) -> None:
+        state = _state(budget_usd=100.0)
+        state.cost.flag_unmeasured_here("stranded-unmeasured:issue-2951")
+
+        decision = state.budget.decision_for(state.cost.snapshot())
+
+        assert decision is not None and decision.kind == "unverifiable"
+        assert "recovery:" in decision.detail
+        assert "forge review --issue 2951" in decision.detail
+        assert "--accept-unmeasured-spend stranded-unmeasured:issue-2951" not in decision.detail
 
     def test_in_flight_spend_is_charged_to_the_decision(self) -> None:
         """A sprint that has paid for a running story has spent that money."""

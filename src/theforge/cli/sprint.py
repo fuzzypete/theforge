@@ -6,6 +6,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import yaml
+
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import (
     _find_config,
@@ -516,14 +518,17 @@ def _resolve_story_liveness(config: object, slugs: list[str]) -> LivenessResolut
         return unresolved_liveness(slugs, reason=f"liveness lookup unavailable: {exc}")
 
 
-def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]:
+def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict] | None:
     """Best-effort map of slug -> prior-generation story record for the guard.
 
     Resolves the logical sprint id the same way the runner does (from the
     manifest ``name``) and reads the prior generation's accumulated story
-    entries from ``.forge/sprints/<id>/state.yaml``. Returns an empty map on any
-    failure so a lookup miss degrades to today's collision behavior — this must
-    never fail the launch.
+    entries from ``.forge/sprints/<id>/state.yaml``. Returns an empty map when
+    the state was read successfully and contains no story entries *or has not
+    yet been written for this sprint's first generation*, and ``None`` when the
+    lookup could not be established. The distinction lets the launch guard
+    preserve genuinely pending stories without treating a failed lookup as
+    proof that this sprint owns an active worktree.
 
     The whole recorded entry is carried forward, not just its ``outcome``: the
     guard's reconciliation decision needs the landing evidence recorded beside
@@ -534,15 +539,38 @@ def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]
     :mod:`theforge.sprint.prior_landing`; this is only the data hand-off.
     """
     try:
-        from theforge.sprint.audit import (  # noqa: PLC0415
-            _get_or_create_sprint_id,
-            _load_accumulated_stories,
-        )
+        from theforge.sprint.audit import _get_or_create_sprint_id  # noqa: PLC0415
         from theforge.sprint.prior_landing import as_prior_record  # noqa: PLC0415
 
         sprint_id = _get_or_create_sprint_id(sprint_name, config.project_root)
+        # ``_get_or_create_sprint_id`` has an availability fallback that returns
+        # a fresh id when it cannot read or persist the stable id file. Do not
+        # let that synthetic id turn its necessarily absent state file into a
+        # first-generation empty record: it has not established which sprint
+        # generation the worktree belongs to.
+        sprint_id_path = config.project_root / ".forge" / "logs" / sprint_name / ".sprint_id"
+        if not sprint_id or sprint_id_path.read_text(encoding="utf-8").strip() != sprint_id:
+            return None
+        state_path = config.project_root / ".forge" / "sprints" / sprint_id / "state.yaml"
+        # ``_load_accumulated_stories`` deliberately degrades unreadable state
+        # to ``[]`` for reporting callers. At this launch-safety boundary, that
+        # same value must mean either a successfully read, explicitly empty
+        # record, or the normal first-generation bootstrap window before the
+        # runner has written state. A corrupt or inaccessible *existing* state
+        # remains unresolved: otherwise a re-exec could mistake it for proof
+        # that every active worktree belongs to this sprint.
+        try:
+            state_text = state_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        state_data = yaml.safe_load(state_text)
+        if not isinstance(state_data, dict):
+            return None
+        stories = state_data.get("stories")
+        if not isinstance(stories, list):
+            return None
         records: dict[str, dict] = {}
-        for story in _load_accumulated_stories(sprint_id, config.project_root):
+        for story in stories:
             if not isinstance(story, dict):
                 continue
             slug = story.get("slug")
@@ -551,7 +579,7 @@ def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]
             records[slug] = as_prior_record(story)
         return records
     except Exception:
-        return {}
+        return None
 
 
 def _resolve_base_branch_sha(config: object) -> str | None:
