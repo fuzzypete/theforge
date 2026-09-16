@@ -15,7 +15,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
+from tests.test_sprint_launch_liveness import (
+    _make_config,
+    _make_coordinator_result,
+    _make_manifest,
+    _make_spec_file,
+    _triage_full,
+    _worktree_with_commit,
+)
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.preserved_resume import preserved_escalated_detail
@@ -431,6 +440,71 @@ class TestReexecPriorOutcomeClassification:
         assert "issue-829" not in dropped
         assert "DROPPED issue-829" not in err
         assert lock_count == 2
+
+    def test_pending_committed_worktree_reaches_dispatch_without_blocking_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """The launch classification must survive the scheduler handoff.
+
+        A re-exec sees a selected story's preattached worktree and its ahead
+        commit, but no prior outcome or dispatch-ownership record because the
+        story was still pending. The guard must keep it scheduled, and the
+        runner must dispatch both it and the unrelated remaining story without
+        inventing unverifiable sprint spend from the old commit.
+        """
+        pending_slug = "issue-829"
+        sibling_slug = "issue-267"
+        _make_spec_file(tmp_path, "Issue 829", pending_slug)
+        _make_spec_file(tmp_path, "Issue 267", sibling_slug)
+        _worktree_with_commit(tmp_path, pending_slug)
+        manifest_path = _make_manifest(
+            tmp_path,
+            [f"{pending_slug}.md", f"{sibling_slug}.md"],
+        )
+        config = _make_config(tmp_path)
+
+        locked_fds, launch_error, dropped = acquire_launch_story_locks(
+            slugs=[pending_slug, sibling_slug],
+            config=config,
+            resume=False,
+            allow_drop=True,
+            prior_outcomes={},
+        )
+
+        try:
+            assert launch_error is None
+            assert dropped == {}
+            assert len(locked_fds) == 2
+
+            with (
+                patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+                patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+                patch(
+                    "theforge.sprint.runner.run_task",
+                    return_value=_make_coordinator_result(),
+                ) as mock_run_task,
+                patch(
+                    "theforge.sprint.runner._run_baseline_gate",
+                    return_value={"passed": True, "message": "ok"},
+                ),
+            ):
+                result = run_sprint_ctx(
+                    config,
+                    manifest_path,
+                    reexec=True,
+                    dropped_slugs=dropped,
+                )
+
+            dispatched = [call.args[1].slug for call in mock_run_task.call_args_list]
+            assert sorted(dispatched) == sorted([pending_slug, sibling_slug])
+            assert result.specs_succeeded == 2
+            assert result.specs_skipped == 0
+            assert result.cost_complete
+            assert result.unmeasured_spend_sources == ()
+        finally:
+            from theforge.sprint.lock import release_story_locks
+
+            release_story_locks(locked_fds)
 
     def test_prior_outcomes_none_degrades_to_active_collision(self, tmp_path) -> None:
         """Passing no prior_outcomes (today's default) keeps the collision path."""
