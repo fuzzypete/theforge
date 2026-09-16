@@ -72,6 +72,14 @@ Tests sometimes fail flakily on CI.
 Tests pass deterministically.
 """
 
+_HOOK_FILED_NO_DIAGNOSIS_BUG_BODY = """\
+**Observed:** Groom points this finding at diagnose.
+
+**Expected:** Diagnose can accept the finding at fetch.
+
+**Evidence:** The post-run hook emits bold inline capture labels.
+"""
+
 # A shape-authored placeholder stub left in place above a landed artifact
 # (#2263, hdp#259). The stub is a non-canonical-level (### not ##) heading
 # that merely contains the word "diagnosis" in "no diagnosis yet".
@@ -374,6 +382,21 @@ def test_groom_refuses_bug_with_no_diagnosis():
     assert "forge diagnose" in result.refusal_reason
     assert result.proposed_body == result.original_body  # No body edits proposed
     assert result.next_command == "forge diagnose 1234"
+
+
+def test_groom_hook_filed_body_still_requires_diagnosis():
+    fetch = _fake_fetch(
+        {
+            "title": "diagnose refuses hook-filed findings",
+            "body": _HOOK_FILED_NO_DIAGNOSIS_BUG_BODY,
+            "labels": ["bug"],
+        }
+    )
+    result = run_groom("2660", fetch_issue=fetch, edit_issue_body=_no_op_edit)
+
+    assert result.action is GroomAction.REFUSED
+    assert result.bug_state is BugDiagnosisState.NO_DIAGNOSIS
+    assert result.next_command == "forge diagnose 2660"
 
 
 def test_groom_cause_unknown_normalizes_only_and_refuses_ready():

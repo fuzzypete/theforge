@@ -7,6 +7,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 from theforge.intake.shape_classify import DiagnosisState, _detect_diagnosis_state
 from theforge.shape_check import (
     DEFAULT_CLUSTER_THRESHOLD,
@@ -297,6 +299,51 @@ class TestBugObservedExpectedRequirement:
         )
         assert check_bug_missing_observed("Crash", body, ["bug"]) is None
         assert check_bug_missing_expected("Crash", body, ["bug"]) is None
+
+    def test_hook_bold_labels_satisfy_required_bug_capture(self):
+        body = (
+            "**Observed:** The hook files a finding with inline labels.\n\n"
+            "**Expected:** Diagnose accepts the finding without a manual rewrite.\n\n"
+            "**Evidence:** Post-run hook output reproduces the body shape.\n"
+        )
+
+        assert check_bug_missing_observed("Hook finding", body, ["bug"]) is None
+        assert check_bug_missing_expected("Hook finding", body, ["bug"]) is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "```markdown\n**Observed:** quoted example\n**Expected:** quoted example\n```\n",
+            "> **Observed:** quoted prose\n> **Expected:** quoted prose\n",
+            "- **Observed:** bullet prose\n- **Expected:** bullet prose\n",
+        ],
+    )
+    def test_non_top_level_hook_labels_do_not_satisfy_bug_capture(self, body):
+        assert check_bug_missing_observed("Hook finding", body, ["bug"]) is not None
+        assert check_bug_missing_expected("Hook finding", body, ["bug"]) is not None
+
+    def test_diagnosis_observed_symptom_does_not_satisfy_observed_capture(self):
+        body = (
+            "**Expected:** Diagnose proceeds past fetch.\n\n"
+            "## Diagnosis\n\n"
+            "- **Observed symptom:** Diagnose refuses the hook-filed body.\n"
+        )
+
+        assert check_bug_missing_observed("Hook finding", body, ["bug"]) is not None
+        assert check_bug_missing_expected("Hook finding", body, ["bug"]) is None
+
+    @pytest.mark.parametrize(
+        "value, condition",
+        [("", "empty"), ("<fill in>", "placeholder")],
+    )
+    def test_hook_bold_observed_label_still_rejects_empty_or_placeholder_content(
+        self, value, condition
+    ):
+        body = f"**Observed:** {value}\n\n**Expected:** Diagnose proceeds past fetch.\n"
+
+        reason = check_bug_missing_observed("Hook finding", body, ["bug"])
+        assert reason is not None
+        assert condition in reason.detail.lower()
 
     def test_summary_prefixed_prose_still_passes(self):
         body = textwrap.dedent(
