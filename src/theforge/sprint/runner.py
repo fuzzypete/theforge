@@ -6832,9 +6832,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # kept for human review, and counts as skipped (not failed) in aggregates.
     _dropped_slugs: dict[str, str] = dict(_ctx.dropped_slugs or {})
     _dropped_work: dict[str, WorktreeWork] = {}
-    # slug -> description of the work the drop abandoned. Membership is the
-    # single test for "this drop was not free and not evidence-free".
-    _dropped_with_work: dict[str, str] = {}
+    # Worktree history is audit detail, not proof this sprint paid to create it:
+    # a selected story can reattach commits from an older, unrelated sprint.
+    _dropped_work_details: dict[str, str] = {}
+    # Membership means the worktree detail is backed by positive same-sprint
+    # dispatch evidence and therefore represents unknown spend when no measured
+    # prior-generation cost survived.
+    _dropped_with_sprint_spend: set[str] = set()
 
     def _inspect_dropped_work(slug: str) -> WorktreeWork:
         work = inspect_worktree_work(
@@ -7015,7 +7019,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             # money was also in the accumulated row, attribution settled on one
             # occurrence of it and this row must report that same number.
             return carried.get("attributed_row_cost_usd", carried.get("recoverable_cost_usd"))
-        return None if slug in _dropped_with_work else 0.0
+        return None if slug in _dropped_with_sprint_spend else 0.0
 
     for slug, reason in list(_dropped_slugs.items()):
         if slug not in _ctx.slug_to_context:
@@ -7121,16 +7125,15 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 failure_cause=_stranded_cause or None,
             )
         else:
-            # A dropped story is normally a story that never ran — but if its
-            # worktree holds commits, it did run, and recording that as a $0.00
-            # no-evidence drop erases exactly the run an operator needs evidence
-            # for. The spend was the previous process image's, so it is recovered
-            # from the audit that generation flushed when there is one (#2214),
-            # and recorded as unmeasured — never as zero — when there is not.
+            # A dropped story is normally a story that never ran. Worktree
+            # commits alone do not change that: they may predate this sprint.
+            # Preserve them as audit detail, but only account for spend when a
+            # prior-generation audit or this run's dispatch ownership proves the
+            # sprint actually ran the story (#2214, #2998).
             work = _inspect_dropped_work(slug)
             work_detail = describe_worktree_work(work)
             if work_detail:
-                _dropped_with_work[slug] = work_detail
+                _dropped_work_details[slug] = work_detail
             _detail_msg = f"{reason}: {work_detail}" if work_detail else reason
             _log(f"DROPPED {slug} (reason: {_detail_msg})")
             _sprint_state.dag.mark_skipped(slug)
@@ -7149,14 +7152,22 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _extras["prior_generation_final_phase"] = _carried.get("final_phase")
             _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
-                if _carried_cost is None:
+                _has_sprint_spend_evidence = bool(
+                    _carried
+                    or slug in _sprint_state.owned_story_executions
+                    or slug in _sprint_state.ran_this_generation
+                )
+                if _has_sprint_spend_evidence:
+                    _dropped_with_sprint_spend.add(slug)
+                if _has_sprint_spend_evidence and _carried_cost is None:
                     _sprint_state.cost.flag_unmeasured_here(f"dropped-with-work:{slug}")
+                _row_cost = _carried_cost if _has_sprint_spend_evidence else 0.0
                 _set_outcome(
                     _sprint_state,
                     slug,
                     StoryOutcome.DROPPED,
                     reason=_detail_msg,
-                    cost_usd=_carried_cost,
+                    cost_usd=_row_cost,
                     detail={"final_outcome": "DROPPED", **_extras},
                     failure_cause=_drop_cause or None,
                 )
@@ -7165,7 +7176,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     "DROPPED",
                     error=_detail_msg,
                     error_type="dropped",
-                    cost_usd=_carried_cost,
+                    cost_usd=_row_cost,
                     extras=_extras,
                     failure_cause=_drop_cause or None,
                 )
@@ -7356,7 +7367,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 # named — an operator reading this row must not have to infer
                 # from a zero cost that nothing was produced.
                 _work = _dropped_work.get(_slug)
-                _work_detail = _dropped_with_work.get(_slug)
+                _work_detail = _dropped_work_details.get(_slug)
                 if _work is not None and _work_detail:
                     _blocked_by = [f"dropped: {_drop_reason}: {_work_detail}"]
                     _detail = {
@@ -7888,7 +7899,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 if len(_sprint_state.active) >= max_parallel:
                     break
 
-                _budget_decision = _sprint_state.budget.decision_before_dispatch()
+                _budget_decision = _sprint_state.budget.decision_before_dispatch(task.slug)
                 if _budget_decision is not None:
                     _sprint_state.budget.skip_story(task.slug, _budget_decision)
                     continue

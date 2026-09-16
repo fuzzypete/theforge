@@ -4,9 +4,8 @@ Covers two behaviors:
 
 1. Escalated worktrees are recognized by their state metadata and are not
    treated as active-worktree collisions during re-exec.
-2. A genuine active-worktree collision after re-exec does not abort the whole
-   sprint — the conflicted story is marked failed, visibly, and the remaining
-   stories continue.
+2. A legacy re-exec call with unresolved generation ownership fails closed on
+   an active worktree, while a resolved current-sprint pending story proceeds.
 """
 
 from __future__ import annotations
@@ -323,6 +322,7 @@ class TestGenuineCollisionDuringReexec:
                 config=config,
                 resume=False,
                 allow_drop=True,
+                prior_outcomes={},
             )
 
             try:
@@ -370,13 +370,13 @@ class TestGenuineCollisionDuringReexec:
 
 class TestReexecPriorOutcomeClassification:
     """Issue #1838: an active worktree after re-exec is classified against the
-    prior generation's recorded outcomes — a 3-way split so a completed story is
-    reconciled, an unfinished prior story is reported as stranded, and only a
-    worktree with no prior record remains a genuine fresh collision."""
+    prior generation's recorded outcomes: completed stories reconcile,
+    unfinished prior stories are stranded, and current-sprint stories with no
+    prior record remain pending and schedulable."""
 
     def _drop_for(
         self, tmp_path: Path, capsys, prior_outcomes: dict[str, str]
-    ) -> tuple[dict[str, str], str]:
+    ) -> tuple[dict[str, str], str, int]:
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase=None)
         config = _mock_config(tmp_path)
         completed = MagicMock(returncode=0, stdout="3\n")
@@ -390,9 +390,10 @@ class TestReexecPriorOutcomeClassification:
             )
         from theforge.sprint.lock import release_story_locks
 
+        lock_count = len(locked_fds)
         release_story_locks(locked_fds)
         assert launch_error is None
-        return dropped, capsys.readouterr().err
+        return dropped, capsys.readouterr().err, lock_count
 
     def test_prior_done_worktree_is_reconciled_not_collision(self, tmp_path, capsys) -> None:
         from theforge.sprint.launch_guard import (
@@ -400,7 +401,7 @@ class TestReexecPriorOutcomeClassification:
             REASON_RECONCILE_PRIOR_DONE,
         )
 
-        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "DONE"})
+        dropped, err, _lock_count = self._drop_for(tmp_path, capsys, {"issue-829": "DONE"})
         assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
         assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
         assert "issue-267" not in dropped
@@ -409,7 +410,9 @@ class TestReexecPriorOutcomeClassification:
     def test_prior_already_done_worktree_is_reconciled(self, tmp_path, capsys) -> None:
         from theforge.sprint.launch_guard import REASON_RECONCILE_PRIOR_DONE
 
-        dropped, _err = self._drop_for(tmp_path, capsys, {"issue-829": "ALREADY_DONE"})
+        dropped, _err, _lock_count = self._drop_for(
+            tmp_path, capsys, {"issue-829": "ALREADY_DONE"}
+        )
         assert dropped["issue-829"] == REASON_RECONCILE_PRIOR_DONE
 
     def test_prior_unfinished_worktree_is_stranded(self, tmp_path, capsys) -> None:
@@ -418,17 +421,16 @@ class TestReexecPriorOutcomeClassification:
             REASON_STRANDED_WORKTREE,
         )
 
-        dropped, err = self._drop_for(tmp_path, capsys, {"issue-829": "FAILED"})
+        dropped, err, _lock_count = self._drop_for(tmp_path, capsys, {"issue-829": "FAILED"})
         assert dropped["issue-829"] == REASON_STRANDED_WORKTREE
         assert dropped["issue-829"] != REASON_ACTIVE_WORKTREE
         assert "STRANDED" in err
 
-    def test_no_prior_record_is_unchanged_active_collision(self, tmp_path, capsys) -> None:
-        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
-
-        dropped, err = self._drop_for(tmp_path, capsys, {})
-        assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
-        assert "DROPPED" in err
+    def test_resolved_no_prior_record_stays_scheduled_with_a_lock(self, tmp_path, capsys) -> None:
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, {})
+        assert "issue-829" not in dropped
+        assert "DROPPED issue-829" not in err
+        assert lock_count == 2
 
     def test_prior_outcomes_none_degrades_to_active_collision(self, tmp_path) -> None:
         """Passing no prior_outcomes (today's default) keeps the collision path."""
