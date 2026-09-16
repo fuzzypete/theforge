@@ -1,11 +1,11 @@
 schema_version: 2
 run_id: 0c37115fbe59
 authoritative_run_record: .forge/audits/runs/0c37115fbe59.json
-generated_at: '2026-09-15T16:43:18.267541+00:00'
+generated_at: '2026-09-15T17:16:49.529759+00:00'
 generation:
   model: gpt-5.4
   transport: api
-  cost_usd: 0.0111625
+  cost_usd: 0.0060265
   input_digest: aed0619a991f0f6eaf36176e0a73716188e2476f666c2d2d1871bd7f899b212a
 story:
   slug: issue-2503
@@ -44,77 +44,50 @@ changed_files: &id002
 - tests/test_validate_phase.py
 - tests/test_validation_profile_seam.py
 what_changed:
-  description: The run changed how post-gate sweep provenance is captured and surfaced
-    so landed-story reporting can distinguish reviewed work from worktree state auto-committed
-    after validation, and it propagated that detail through coordinator state, audit
-    output, and sprint-facing summaries.
-  approach: It threaded sweep metadata from VALIDATE-phase commit creation through
-    coordinator context and persisted state, then taught the audit and sprint renderers
-    to display that provenance consistently, with review tightening the presentation
-    details.
+  description: This run changed the coordinator and sprint/audit reporting so post-gate
+    worktree sweeps are captured as explicit provenance in run state, review context,
+    audit output, and sprint landing summaries instead of remaining implicit in landed
+    history.
+  approach: "It threaded sweep metadata through the coordinator\u2019s validation\
+    \ and state paths, then exposed that metadata in audit and digest renderers with\
+    \ focused verification around the validate-phase and reporting seams."
   files_modified: *id002
 what_was_learned:
-- claim: When provenance is surfaced through multiple reporting views, each renderer
-    needs its own output-level verification because a shared data-path can still produce
-    misleading presentation in one consumer.
+- claim: When a change introduces a new audit/detail line in existing CLI hierarchies,
+    review should verify indentation and nesting alongside content, because rendering
+    regressions can survive even when the underlying provenance data is correct.
   evidence:
   - type: review_finding
     finding_id: eaf9793d114e595d
-    description: The review found that the same post-gate sweep detail was present
-      but mis-indented in the audit renderer, showing that carrying correct metadata
-      end-to-end was not sufficient; each presentation layer required its own formatting
-      check to keep the provenance legible.
+    description: The review found that the new post-gate sweep detail rendered at
+      the wrong indentation level relative to sibling Validation details, showing
+      that adding a field to audit output requires checking structural presentation,
+      not just that the data is emitted.
   - type: review_cycle
     cycle: '2'
-    description: Cycle 2 approved after the audit-indentation issue was fixed, demonstrating
-      that the remaining work was not data capture but per-renderer presentation correctness
-      for the surfaced provenance.
+    description: Cycle 2 records the cycle-1 audit-indentation finding as fixed, confirming
+      that presentation hierarchy was a distinct review concern that needed explicit
+      correction after the provenance plumbing itself was already in place.
   - type: file
     path: src/theforge/cli/audit.py
-    description: This renderer was the location of the indentation defect, demonstrating
-      that one consumer of the shared sweep metadata could misrepresent the information
-      even when upstream capture was correct.
-  - type: file
-    path: src/theforge/cli/sprint_digest.py
-    description: A separate CLI consumer was updated alongside audit output, showing
-      that the same provenance had to be validated independently in more than one
-      rendered view.
-- claim: Review and gate provenance must be tied to the exact reviewed HEAD, because
-    approval on one commit and validation evidence from another leaves post-gate sweep
-    behavior needing explicit re-verification.
-  evidence:
-  - type: review_cycle
-    cycle: '2'
-    description: Cycle 2 explicitly notes that the supplied PASS was for 10d4da52
-      while the reviewed HEAD was 339deb12, and that focused verification was performed
-      on the changed sweep paths, showing that commit mismatches force re-checking
-      of post-gate landing behavior.
-  - type: diff
-    ref: 10d4da52655fe637bb66aee3d720934d944c9ece
-    description: This diff reference is the commit for which PASS evidence existed,
-      illustrating one side of the gate-versus-reviewed-HEAD mismatch called out during
-      review.
-  - type: diff
-    ref: 339deb12b6fccecf10057f7f6604f66c1c2cb2aa
-    description: This diff reference is the reviewed HEAD in cycle 2, demonstrating
-      that provenance-sensitive behavior was assessed against a different commit than
-      the one with the supplied PASS.
+    description: This renderer was the site of the indentation defect, demonstrating
+      that CLI output changes can introduce readability regressions independent of
+      the underlying state model.
 learned_patterns:
-- provenance-through-multiple-renderers
-- head-specific-gate-verification
+- post-gate-sweep-provenance
+- cli-rendering-hierarchy
 review_insights:
   recurring_findings: []
   resolved_findings: []
   observations:
-  - The review loop centered on whether post-gate sweep provenance stayed legible
-    and trustworthy across every consumer, first catching a renderer-specific audit
-    formatting defect and then checking behavior against a reviewed HEAD that differed
-    from the supplied PASS commit.
+  - Review concentrated on whether post-gate sweep provenance stayed consistent across
+    coordinator state, landing summaries, and both CLI renderers, and then on whether
+    the new audit detail rendered at the correct nesting level.
 complexity_signal:
   actual_iterations: 1
   review_cycles: 2
   plan_regenerations: null
   cost_usd: 5.3524821
-  dominant_difficulty: Preserving and presenting exact post-gate provenance consistently
-    across coordinator state, landing records, and multiple CLI views while review
-    and validation evidence referred to different commits.
+  dominant_difficulty: Keeping one piece of post-gate sweep provenance consistent
+    across validation, persisted state, review context, landing summaries, and human-facing
+    CLI formatting.
