@@ -253,6 +253,49 @@ def test_dropped_worktree_with_commits_reports_recovered_cost_not_unknown(
     )
 
 
+def test_old_worktree_commits_without_sprint_dispatch_evidence_cost_zero(
+    tmp_path: Path,
+) -> None:
+    """Pre-existing commits are audit context, not proof this sprint spent."""
+    work = WorktreeWork(
+        slug=DROPPED_SLUG,
+        path=str(tmp_path / DROPPED_SLUG),
+        branch=f"feat/{DROPPED_SLUG}",
+        exists=True,
+        commits_ahead=3,
+        dirty=False,
+    )
+
+    result = _run_sprint_with_drop(tmp_path, worktree_work=work)
+
+    row = _sprint_story_row(tmp_path)
+    assert row["cost_usd"] == 0.0
+    assert "3 unmerged commit(s)" in (row["error"] or "")
+    assert f"dropped-with-work:{DROPPED_SLUG}" not in result.unmeasured_spend_sources
+    assert result.cost_complete
+
+
+def test_dispatch_ownership_keeps_dropped_work_spend_unmeasured(tmp_path: Path) -> None:
+    """A live runner-owned dispatch is positive same-sprint spend evidence."""
+    from theforge.sprint.story_executions import register_story_execution
+
+    register_story_execution(DROPPED_SLUG, project_root=tmp_path, run_id="run-2214")
+    work = WorktreeWork(
+        slug=DROPPED_SLUG,
+        path=str(tmp_path / DROPPED_SLUG),
+        branch=f"feat/{DROPPED_SLUG}",
+        exists=True,
+        commits_ahead=1,
+        dirty=False,
+    )
+
+    result = _run_sprint_with_drop(tmp_path, worktree_work=work)
+
+    assert _sprint_story_row(tmp_path)["cost_usd"] is None
+    assert f"dropped-with-work:{DROPPED_SLUG}" in result.unmeasured_spend_sources
+    assert not result.cost_complete
+
+
 def test_unmeasured_prior_spend_stays_unknown_never_zero(tmp_path: Path) -> None:
     """A prior generation whose spend was never measured is not recorded as free."""
     _write_prior_audit(tmp_path, _prior_generation_audit(cost=None))

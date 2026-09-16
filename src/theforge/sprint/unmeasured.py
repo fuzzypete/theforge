@@ -47,6 +47,16 @@ CARRIED_PREFIX = "carried:"
 #: :func:`acceptable_prior_sources`.
 PRIOR_GENERATION_SOURCE = "prior-generation"
 
+# These sources describe unknown spend attached to one story that has already
+# reached a terminal sprint outcome. They are intentionally separate from
+# ``source_slug``: that function controls which per-story audit is trusted to
+# derive a monetary ceiling, while this attribution is used only for recovery
+# guidance and dispatch isolation (#2998).
+_STORY_ATTRIBUTED_PREFIXES = (
+    "dropped-with-work:",
+    "stranded-unmeasured:",
+)
+
 #: Where a ceiling came from. Only ``derived`` bounds may be accepted.
 CEILING_BASIS_ALLOCATION = "story_allocation"
 CEILING_BASIS_CONFIGURED = "story_allocation_configured_fallback"
@@ -75,6 +85,22 @@ def source_slug(raw: object) -> str | None:
     if ":" in normalized:
         return None
     return normalized
+
+
+def attributed_story_slug(raw: object) -> str | None:
+    """Return the terminal story explicitly named by a scoped source.
+
+    Unlike :func:`source_slug`, this does not authorize a per-story audit read
+    or make the source acceptable. It only identifies which preserved story an
+    unbounded source belongs to, so unrelated stories need not inherit that
+    terminal story's recovery block.
+    """
+    normalized = normalize_source_id(raw)
+    for prefix in _STORY_ATTRIBUTED_PREFIXES:
+        if normalized.startswith(prefix):
+            slug = normalized[len(prefix) :].strip()
+            return slug or None
+    return None
 
 
 @dataclass(frozen=True)
