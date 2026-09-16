@@ -6,6 +6,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import yaml
+
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import (
     _find_config,
@@ -536,15 +538,24 @@ def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]
     :mod:`theforge.sprint.prior_landing`; this is only the data hand-off.
     """
     try:
-        from theforge.sprint.audit import (  # noqa: PLC0415
-            _get_or_create_sprint_id,
-            _load_accumulated_stories,
-        )
+        from theforge.sprint.audit import _get_or_create_sprint_id  # noqa: PLC0415
         from theforge.sprint.prior_landing import as_prior_record  # noqa: PLC0415
 
         sprint_id = _get_or_create_sprint_id(sprint_name, config.project_root)
+        state_path = config.project_root / ".forge" / "sprints" / sprint_id / "state.yaml"
+        # ``_load_accumulated_stories`` deliberately degrades unreadable state
+        # to ``[]`` for reporting callers. At this launch-safety boundary, that
+        # same value must mean a successfully read, explicitly empty record:
+        # otherwise a re-exec could mistake a missing or corrupt state file for
+        # proof that every active worktree belongs to this sprint.
+        state_data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state_data, dict):
+            return None
+        stories = state_data.get("stories")
+        if not isinstance(stories, list):
+            return None
         records: dict[str, dict] = {}
-        for story in _load_accumulated_stories(sprint_id, config.project_root):
+        for story in stories:
             if not isinstance(story, dict):
                 continue
             slug = story.get("slug")

@@ -439,14 +439,13 @@ class TestReexecPriorOutcomeClassification:
         from theforge.cli.sprint import _resolve_prior_outcomes
 
         config = _mock_config(tmp_path)
-        with (
-            patch(
-                "theforge.sprint.audit._get_or_create_sprint_id",
-                return_value="sprint-1",
-            ),
-            patch("theforge.sprint.audit._load_accumulated_stories", return_value=[]),
-        ):
-            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        (sprint_log_dir / ".sprint_id").write_text("sprint-1", encoding="utf-8")
+        state_path = tmp_path / ".forge" / "sprints" / "sprint-1" / "state.yaml"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("stories: []\n", encoding="utf-8")
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
 
         assert prior_outcomes == {}
         dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
@@ -454,25 +453,35 @@ class TestReexecPriorOutcomeClassification:
         assert "DROPPED issue-829" not in err
         assert lock_count == 2
 
-    def test_failed_cli_prior_outcome_resolution_keeps_active_worktree_fail_closed(
+    def test_malformed_prior_state_keeps_active_worktree_fail_closed(
         self, tmp_path, capsys
     ) -> None:
-        """A failed state read must not masquerade as a resolved empty sprint."""
+        """A real malformed state file must not masquerade as an empty sprint."""
         from theforge.cli.sprint import _resolve_prior_outcomes
         from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
 
         config = _mock_config(tmp_path)
-        with (
-            patch(
-                "theforge.sprint.audit._get_or_create_sprint_id",
-                return_value="sprint-1",
-            ),
-            patch(
-                "theforge.sprint.audit._load_accumulated_stories",
-                side_effect=OSError("state unavailable"),
-            ),
-        ):
-            prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        (sprint_log_dir / ".sprint_id").write_text("sprint-1", encoding="utf-8")
+        state_path = tmp_path / ".forge" / "sprints" / "sprint-1" / "state.yaml"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("stories: [\n", encoding="utf-8")
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
+
+        assert prior_outcomes is None
+        dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
+        assert dropped["issue-829"] == REASON_ACTIVE_WORKTREE
+        assert "DROPPED issue-829" in err
+        assert lock_count == 1
+
+    def test_missing_prior_state_keeps_active_worktree_fail_closed(self, tmp_path, capsys) -> None:
+        """A freshly created id without state has no resolved ownership record."""
+        from theforge.cli.sprint import _resolve_prior_outcomes
+        from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE
+
+        config = _mock_config(tmp_path)
+        prior_outcomes = _resolve_prior_outcomes(config, "Test Sprint")
 
         assert prior_outcomes is None
         dropped, err, lock_count = self._drop_for(tmp_path, capsys, prior_outcomes)
