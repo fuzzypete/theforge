@@ -1867,6 +1867,43 @@ class TestDiagnoseFlow:
         phases = [entry["phase"] for entry in audit["phase_transitions"]]
         assert "INVESTIGATE" not in phases
 
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_hook_bold_capture_labels_proceed_past_fetch(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        """The legacy post-run hook body reaches investigation without edits."""
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2660,
+            "title": "diagnose refuses hook-filed findings",
+            "body": (
+                "**Observed:** Diagnose refuses the hook-filed finding at fetch.\n\n"
+                "**Expected:** Diagnose accepts the finding and investigates it.\n\n"
+                "**Evidence:** The post-run hook emits these inline labels.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "bug"}],
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://github.com/test/repo/issues/2660#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2660,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert mock_agent.called
+        assert result.state.phase is DiagnosePhase.DONE
+        assert "missing_observed" not in (result.state.error or "")
+        assert "missing_expected" not in (result.state.error or "")
+
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
