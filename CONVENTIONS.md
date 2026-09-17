@@ -385,37 +385,39 @@ The boundary between TheForge and whatever executes agents is the **execution
 attempt**: immutable input head (plus a comparison base for review), task and
 role, routing constraint, requested budget and capabilities in; a role-dependent
 optional output revision, structured outcome, per-agent provider, model and
-usage, evidence and terminal status out. Running the project's gate commands is
-itself a verify attempt; the verdict stays TheForge's. Inside the attempt is execution machinery
+usage, evidence and terminal status out. The terminal gate is itself a verify
+attempt and the verdict stays TheForge's; ADR-0007's in-attempt verification
+requests stay inside the attempt and never produce the verdict. Inside the attempt is execution machinery
 (sessions, retries, process supervision, workspace, sandbox, credentials,
 transcript parsing). Outside it is product (readiness and refusal, DAG,
 cross-provider selection and review, evidence normalization, budget policy, story
 state, audit, landing). Multi-provider neutrality is non-negotiable: a vendor
 harness may be a backend, never the control plane, and TheForge owns which
-providers and models nested agents may use. Today's CLI runners, sandbox,
+providers and models nested agents may use — an adapter that cannot enforce that
+is refused, not negotiated with. Today's CLI runners, sandbox,
 worktree lifecycle, and the sprint process's daemonization, locks, re-exec and
 process supervision are the local harness adapter, in **maintenance-only**
 status: blocking fixes and safety or integrity fixes only. The scheduling, story
 state and budget policy hosted by that same process are product, not adapter.
 
-Classify every defect or proposed change with two tests before choosing a
-milestone or a fix:
+Sort every defect or proposed change with two orthogonal tests before choosing a
+milestone or a fix. The first classifies; the second can only change the
+disposition, never the classification.
 
-1. Would this mechanism still need to exist in TheForge if every attempt ran
-   through a conforming external harness? If not, it is execution machinery.
-2. Does this behavior affect TheForge's independent ability to decide readiness,
-   trust, spend, review, or landing? If yes, it is product work, whatever module
-   it lives in. When the tests disagree, this one wins: fix under the integrity
-   exception, scoped to restoring the record rather than hardening the mechanism.
+1. **Classification.** Would this mechanism still need to exist in TheForge if
+   every attempt ran through a conforming external harness? Yes: product work,
+   normal floor test. No: execution machinery, not worth hardening.
+2. **Override.** Does the defect corrupt or withhold something TheForge decides
+   from (readiness, trust, spend, review, landing), or breach a safety boundary
+   (credential exposure, repository corruption, discarded work)?
 
 Execution machinery is filed and backlogged, not fixed, unless it blocks current
-work with no workaround or violates a current safety or integrity boundary
-(credential exposure, repository corruption, discarded work, untrustworthy
-evidence or cost records). Product work gets the normal floor test. Module path
-is not an argument either way — the line runs through `sprint/runner.py`, not
-around it — and a backlog disposition must say which test the work failed.
-Everything is still captured through intake; the rule changes the milestone and
-the fix decision, never whether the defect is recorded.
+work with no workaround or the override applies. In those cases it is fixed now,
+scoped to unblocking or restoring the record, without hardening the mechanism.
+Module path is not an argument either way — the line runs through
+`sprint/runner.py`, not around it — and a backlog disposition must state both
+answers. Everything is still captured through intake; the rule changes the
+milestone and the fix decision, never whether the defect is recorded.
 
 Full decision, contract, and worked examples:
 [ADR-0011](docs/adr/0011-execution-boundary-and-multi-provider-neutrality.md).

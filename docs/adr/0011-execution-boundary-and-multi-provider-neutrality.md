@@ -80,18 +80,42 @@ A branch name is a mutable transport locator, never the handoff unit. No attempt
 may depend on a workspace left behind by another attempt; everything an attempt
 needs is named by immutable revisions in its input.
 
-**Verification is its own attempt.** Running the project's declared gate commands
-is a `verify` attempt: input head in; per-command exit status, captured output and
-the environment identity it ran under out; no output revision. TheForge turns that
-evidence into the gate verdict. The verdict is never harness-reported (ADR-0007's
-authority is retained).
+**The terminal gate is its own attempt.** Running the project's declared gate
+commands against a finished revision is a `verify` attempt: input head in;
+per-command exit status, captured output and the environment identity it ran
+under out; no output revision. TheForge turns that evidence into the gate
+verdict. The verdict is never harness-reported.
+
+**In-attempt verification is a different thing and is preserved.** ADR-0007 lets
+a dev agent, mid-loop, request one of the project's declared whole commands and
+receive the result back into the same loop. That runs against the attempt's own
+uncommitted workspace, so it is not a `verify` attempt and does not cross the
+boundary: it is a capability of the adapter hosting the attempt, and it does not
+violate the no-shared-workspace rule because the workspace never leaves the
+attempt. What stays TheForge's is the policy ADR-0007 fixed — the project
+declares the commands, they are whole commands, the agent requests and never
+executes — plus an audit record of every request. Its results inform the agent;
+they are never the gate verdict, which comes only from the terminal `verify`
+attempt. Whether an external harness offers this natively, or needs a
+checkpoint-and-continuation protocol back to forge, is adapter design for the
+follow-on spike, not decided here.
 
 **Nested routing has an owner.** The harness owns subagent *loops*; TheForge owns
-which providers and models those loops may use. A harness that cannot honor a
-routing constraint, or cannot report per-agent identity and usage, must declare
-that (§3), and policy decides whether the attempt is acceptable. An attempt whose
-result shows a model outside its constraint is untrustworthy evidence, not a
-successful run.
+which providers and models those loops may use. Two obligations follow, and they
+are not equally negotiable:
+
+- **Enforcement is mandatory.** An adapter that can create nested agents and
+  cannot confine them to the routing constraint is refused for any such attempt.
+  This is not a capability policy may waive; waiving it would hand provider
+  choice to the harness. An adapter that cannot create nested agents satisfies it
+  trivially.
+- **Observability is negotiable only when explicit.** An adapter that cannot
+  report per-agent identity and usage must say so in the result, marking identity
+  or usage as *aggregate* or *unmeasured* rather than omitting it. Policy then
+  decides, under the same unmeasured-spend rules that govern any cost record.
+
+An attempt whose result shows a model outside its constraint is untrustworthy
+evidence, not a successful run.
 
 **Inside the attempt belongs to the harness:** agent and subagent loops and
 within-attempt scheduling; sessions, session resume, retries, process
@@ -137,7 +161,8 @@ cancellation.
 
 Each adapter declares what it can enforce and what it can report. TheForge's
 policy states the minimum it accepts for a given piece of work, and a mismatch is
-a refusal with a legible reason — not a silent weakening. This replaces ADR-0004
+a refusal with a legible reason — not a silent weakening. One item is not
+policy's to waive: enforcement of the routing constraint on nested agents (§1). This replaces ADR-0004
 §4's one-time "operator must accept the ceiling-only budget model" with a
 standing per-adapter check.
 
@@ -157,43 +182,48 @@ permanently local.
 
 ### 5. The execution-machinery backlog rule
 
-Two tests classify any defect or proposed work:
+Two tests apply to any defect or proposed work. They are orthogonal: the first
+classifies the *architecture*, the second can only change the *disposition*.
+Neither reclassifies the other's answer.
 
-1. **Would this mechanism still need to exist in TheForge if every attempt ran
-   through a conforming external harness?** If not, it is execution machinery.
-2. **Does this behavior affect TheForge's independent ability to decide
-   readiness, trust, spend, review, or landing?** If yes, it is product work,
-   whatever module it lives in.
+1. **Classification — would this mechanism still need to exist in TheForge if
+   every attempt ran through a conforming external harness?** Yes: it is product
+   work. No: it is execution machinery. This answer alone decides whether the
+   area is worth hardening.
+2. **Override — does the defect corrupt or withhold something TheForge decides
+   from (readiness, trust, spend, review, landing), or breach a safety boundary
+   (credential exposure, repository corruption, discarded work)?** This never
+   turns machinery into product. It only decides whether machinery gets fixed
+   anyway.
 
-Execution machinery defaults to **file and backlog, do not fix**, unless it
-**blocks current work with no workaround, or violates a current safety or
-integrity boundary** (credential exposure, repository corruption, discarded
-work, untrustworthy evidence or cost records). Product work gets the normal floor
-test. Everything is still captured through the intake pipeline; the rule changes
-the milestone and the fix decision, never whether the defect is recorded.
+| Classification | Override or blocking? | Disposition |
+|---|---|---|
+| Product work | n/a | normal floor test |
+| Execution machinery | neither | file and backlog; do not fix |
+| Execution machinery | blocks current work with no workaround, or test 2 is yes | fix now, **scoped to unblocking or restoring the record** — no hardening of the mechanism |
 
-When the two tests disagree — a mechanism that is local-only but whose failure
-corrupts what forge believes about spend, evidence or landing — test 2 wins: the
-defect is fixed under the integrity exception, scoped to restoring the record,
-not to hardening the mechanism.
+Everything is still captured through the intake pipeline; the rule changes the
+milestone and the fix decision, never whether the defect is recorded. A backlog
+disposition must state both answers.
 
 The operative statement of this rule lives in `CONVENTIONS.md`.
 
 ### Illustrative classification — the 2026-09-14 cases
 
-| Defect | Test 1: still needed in TheForge behind a conforming harness? | Test 2: affects forge's independent decisions? | Disposition |
+| Defect | Test 1: still needed in TheForge behind a conforming harness? | Test 2: corrupts what forge decides from, or breaches safety? | Disposition |
 |---|---|---|---|
-| Sprint re-exec drops per-story cost | no — re-exec is local process supervision | yes — the cost record forge decides spend from is wrong | execution machinery **under the integrity exception** → fix, as a maintenance-only fix to the local adapter |
-| RCA reports an unknown failure class | yes — evidence interpretation | yes — what forge learns from the record | product work → floor test |
-| An advisory is rendered as a skip | yes — story state and operator status | yes — operator trust in story state | product work → floor test |
-| Carried spend is unbounded | yes — aggregate budget arithmetic | yes — forge's ability to decide spend | product work → floor test |
+| Sprint re-exec drops per-story cost | no — re-exec is local process supervision | yes — the cost record forge decides spend from is wrong | execution machinery, override applies → fix now, scoped to restoring the cost record; re-exec itself is not hardened |
+| RCA reports an unknown failure class | yes — evidence interpretation | n/a — already product | product work → floor test |
+| An advisory is rendered as a skip | yes — story state and operator status | n/a — already product | product work → floor test |
+| Carried spend is unbounded | yes — aggregate budget arithmetic | n/a — already product | product work → floor test |
 | *(hypothetical)* Stuck detection fires early on a slow toolchain; the operator resumes and the story completes with its record intact | no — session supervision | no — nothing forge decides from is wrong | execution machinery → file and backlog |
 
 The rule as first recorded in operator memory named all four real categories —
 re-exec, budget carry, RCA classes, status rendering — as backlog, because they
 "live in the sprint runner." Under the interface rule none of the four is a
-routine backlog item: three are product work, and the fourth is machinery whose
-failure corrupts a record forge decides from. That difference is the reason this
+routine backlog item: three are product work, and the fourth is machinery that
+stays machinery but is fixed under the override because it corrupts a record
+forge decides from. That difference is the reason this
 ADR exists. It also shows the shape of a true backlog item: the mechanism is
 local, a workaround exists, and every record forge relies on stays correct.
 
@@ -205,9 +235,11 @@ local, a workaround exists, and every record forge relies on stays correct.
   re-entry conditions for that product are unchanged. Its §2 ownership table is
   superseded by §1 here, and its §4 operator-acceptance gate is superseded by §3.
 - **ADR-0007's verification authority is retained; its executor is not
-  privileged.** Coordinator-owned gate verdicts are product. Running the declared
-  commands is a `verify` attempt (§1), and a future adapter may run it elsewhere
-  so long as forge derives the verdict itself from the returned evidence.
+  privileged.** Coordinator-owned gate verdicts are product. Running the terminal
+  gate is a `verify` attempt (§1), and a future adapter may run it elsewhere so
+  long as forge derives the verdict itself from the returned evidence. ADR-0007's
+  in-attempt verification requests are preserved as an adapter capability under
+  forge-owned policy (§1); they never produce the verdict.
 - **No migration is scheduled by this ADR.** It defines the boundary and the
   sorting rule. Introducing a first-class adapter interface with capability
   declarations (ADR-0004 §2's `TransportSpec(kind="remote")` is one input), and
@@ -220,9 +252,9 @@ local, a workaround exists, and every record forge relies on stays correct.
 - **#1846 (durable HITL resumption for remote execution) is a sub-decision** of
   this boundary and should be read against §1: HITL state is outside the attempt.
 - **Risk: the rule becomes an excuse.** "Execution machinery" is a cheap label
-  for anything unpleasant to fix. The safety-or-integrity exception and the
-  test-2-wins tiebreak exist to stop that; a backlog disposition must name which
-  test it failed.
+  for anything unpleasant to fix. The override test exists to stop that, and a
+  backlog disposition must state both answers. The opposite risk is scope creep
+  through the override: a fix admitted by test 2 restores the record and stops.
 
 ## Alternatives considered
 
