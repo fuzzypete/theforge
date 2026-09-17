@@ -55,25 +55,49 @@ call to a harness adapter.
 
 It receives:
 
-- an immutable starting revision (base SHA),
-- the task and role (dev, review, plan, diagnose),
-- the selected provider and model,
+- an immutable **input head** (the SHA the attempt starts from or evaluates),
+- an optional immutable **comparison base** (required for review: the subject is
+  the commit range comparison-base..input-head, per ADR-0005),
+- the task and role (dev, review, plan, diagnose, verify),
+- a **routing constraint**: the provider and model TheForge selected for the
+  attempt, and the set of providers and models any nested agent may use (by
+  default, only the selected one),
 - the requested budget and capabilities (tools, toolchain, network).
 
 It returns:
 
-- an immutable resulting revision (head SHA; the reviewable object is the commit
-  range base..head, per ADR-0005 — a branch name is a mutable transport locator,
-  not the handoff unit),
-- a structured outcome (the handoff artifact),
-- usage and cost as the harness measured them,
+- an **output revision, role-dependent and optional**: a dev attempt returns an
+  immutable output head descended from the input head, and the reviewable object
+  is the range input-head..output-head; review, plan, diagnose and verify
+  attempts normally return none and must not be read as an empty range,
+- a structured outcome (handoff, verdict, plan, diagnosis, or verification result),
+- usage and cost as the harness measured them, **attributed per agent**: the
+  actual provider and model of every nested agent that ran, with its usage,
 - evidence (capture sufficient for review verdicts and audit replay, per ADR-0002),
 - a terminal status.
+
+A branch name is a mutable transport locator, never the handoff unit. No attempt
+may depend on a workspace left behind by another attempt; everything an attempt
+needs is named by immutable revisions in its input.
+
+**Verification is its own attempt.** Running the project's declared gate commands
+is a `verify` attempt: input head in; per-command exit status, captured output and
+the environment identity it ran under out; no output revision. TheForge turns that
+evidence into the gate verdict. The verdict is never harness-reported (ADR-0007's
+authority is retained).
+
+**Nested routing has an owner.** The harness owns subagent *loops*; TheForge owns
+which providers and models those loops may use. A harness that cannot honor a
+routing constraint, or cannot report per-agent identity and usage, must declare
+that (§3), and policy decides whether the attempt is acceptable. An attempt whose
+result shows a model outside its constraint is untrustworthy evidence, not a
+successful run.
 
 **Inside the attempt belongs to the harness:** agent and subagent loops and
 within-attempt scheduling; sessions, session resume, retries, process
 supervision and timeouts; workspace checkout, sandboxing and credentials; tool
-execution and transcript parsing; provider-native accounting and telemetry.
+execution and transcript parsing; provider-native accounting and telemetry —
+all within the routing constraint the attempt was given.
 
 **Outside the attempt remains TheForge:** readiness and refusal; DAG and story
 scheduling; cross-provider selection and availability; review-cycle policy and
@@ -84,12 +108,14 @@ operator status, and landing authority.
 The line therefore runs *through* `sprint/runner.py`, not around it. A
 story-level retry after a review rejection is policy; resuming an agent session
 inside one cycle is machinery. The gate *verdict* recorded as coordinator-owned is
-policy; the process that runs the project's gate commands is machinery.
+policy; the process that runs the project's gate commands is machinery, reached
+through a `verify` attempt.
 
 ### 2. Multi-provider neutrality is non-negotiable
 
-Provider-operated harnesses orchestrate their own models well and other
-providers' models not at all. TheForge's routing across providers, review of one
+Vendor harnesses, however capable, do not provide an independently governed,
+provider-neutral policy and evidence boundary: their model choice, economics,
+telemetry and failure semantics are the vendor's. TheForge's routing across providers, review of one
 provider's work by another, failover when a provider or credential is
 unavailable, and normalization of cost, provenance and outcomes across harnesses
 are wedge properties (restart plan: adaptive cross-provider routing is "refuted
@@ -117,8 +143,10 @@ standing per-adapter check.
 
 ### 4. The local harness is an adapter in maintenance-only status
 
-Today's CLI runners, seatbelt sandbox, worktree lifecycle and sprint daemon are,
-together, the **local harness adapter**. It is presently required: the live
+Today's CLI runners, seatbelt sandbox, worktree lifecycle, and the sprint
+process's daemonization, locks, re-exec and process supervision are, together, the
+**local harness adapter**. The scheduling, story state and budget policy that the
+same sprint process hosts are not part of it. It is presently required: the live
 adopter workload (Apple toolchains) has no hosted home today, and it is the
 dogfood substrate. This ADR does not claim hosted execution can never serve those
 workloads, and does not make local execution permanent architecture.
@@ -131,8 +159,8 @@ permanently local.
 
 Two tests classify any defect or proposed work:
 
-1. **Would this mechanism exist behind every external harness adapter?** If not,
-   it is execution machinery.
+1. **Would this mechanism still need to exist in TheForge if every attempt ran
+   through a conforming external harness?** If not, it is execution machinery.
 2. **Does this behavior affect TheForge's independent ability to decide
    readiness, trust, spend, review, or landing?** If yes, it is product work,
    whatever module it lives in.
@@ -145,22 +173,29 @@ test. Everything is still captured through the intake pipeline; the rule changes
 the milestone and the fix decision, never whether the defect is recorded.
 
 When the two tests disagree — a mechanism that is local-only but whose failure
-corrupts what forge believes about spend, evidence or landing — test 2 wins.
+corrupts what forge believes about spend, evidence or landing — test 2 wins: the
+defect is fixed under the integrity exception, scoped to restoring the record,
+not to hardening the mechanism.
 
 The operative statement of this rule lives in `CONVENTIONS.md`.
 
 ### Illustrative classification — the 2026-09-14 cases
 
-| Defect | Test 1 | Test 2 | Disposition |
+| Defect | Test 1: still needed in TheForge behind a conforming harness? | Test 2: affects forge's independent decisions? | Disposition |
 |---|---|---|---|
-| Sprint re-exec drops per-story cost | local process supervision; would not exist behind an external adapter | the loss is in the re-exec mechanism, not in forge's cost policy | execution machinery → backlog unless blocking |
-| RCA reports an unknown failure class | evidence interpretation exists behind every adapter | affects what forge learns from the record | product work → floor test |
-| An advisory is rendered as a skip | story state and operator status exist behind every adapter | affects operator trust in story state | product work → floor test |
-| Carried spend is unbounded | aggregate budget arithmetic exists behind every adapter | affects forge's ability to decide spend | product work → floor test |
+| Sprint re-exec drops per-story cost | no — re-exec is local process supervision | yes — the cost record forge decides spend from is wrong | execution machinery **under the integrity exception** → fix, as a maintenance-only fix to the local adapter |
+| RCA reports an unknown failure class | yes — evidence interpretation | yes — what forge learns from the record | product work → floor test |
+| An advisory is rendered as a skip | yes — story state and operator status | yes — operator trust in story state | product work → floor test |
+| Carried spend is unbounded | yes — aggregate budget arithmetic | yes — forge's ability to decide spend | product work → floor test |
+| *(hypothetical)* Stuck detection fires early on a slow toolchain; the operator resumes and the story completes with its record intact | no — session supervision | no — nothing forge decides from is wrong | execution machinery → file and backlog |
 
-The rule as first recorded in operator memory named all four categories —
+The rule as first recorded in operator memory named all four real categories —
 re-exec, budget carry, RCA classes, status rendering — as backlog, because they
-"live in the sprint runner." Under the interface rule, one does. That difference is the reason this ADR exists.
+"live in the sprint runner." Under the interface rule none of the four is a
+routine backlog item: three are product work, and the fourth is machinery whose
+failure corrupts a record forge decides from. That difference is the reason this
+ADR exists. It also shows the shape of a true backlog item: the mechanism is
+local, a workaround exists, and every record forge relies on stays correct.
 
 ## Consequences
 
@@ -170,9 +205,9 @@ re-exec, budget carry, RCA classes, status rendering — as backlog, because the
   re-entry conditions for that product are unchanged. Its §2 ownership table is
   superseded by §1 here, and its §4 operator-acceptance gate is superseded by §3.
 - **ADR-0007's verification authority is retained; its executor is not
-  privileged.** Coordinator-owned gate verdicts pass test 2. Running the declared
-  commands is inside the attempt, and a future adapter may run them elsewhere so
-  long as the verdict remains one forge can trust independently.
+  privileged.** Coordinator-owned gate verdicts are product. Running the declared
+  commands is a `verify` attempt (§1), and a future adapter may run it elsewhere
+  so long as forge derives the verdict itself from the returned evidence.
 - **No migration is scheduled by this ADR.** It defines the boundary and the
   sorting rule. Introducing a first-class adapter interface with capability
   declarations (ADR-0004 §2's `TransportSpec(kind="remote")` is one input), and
