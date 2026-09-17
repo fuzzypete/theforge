@@ -379,6 +379,43 @@ diagnosed work should not pay full ceremony tax without justification.
 
 Source: `project_release_floor_dogfood.md`
 
+### TheForge governs agent work; it does not supervise agent processes
+
+The boundary between TheForge and whatever executes agents is the **execution
+attempt**: immutable starting revision, task, provider and model, requested budget
+and capabilities in; immutable resulting revision, structured outcome, usage,
+evidence and terminal status out. Inside the attempt is execution machinery
+(sessions, retries, process supervision, workspace, sandbox, credentials,
+transcript parsing). Outside it is product (readiness and refusal, DAG,
+cross-provider selection and review, evidence normalization, budget policy, story
+state, audit, landing). Multi-provider neutrality is non-negotiable: a vendor
+harness may be a backend, never the control plane. Today's CLI runners, sandbox,
+worktree lifecycle and sprint daemon are the local harness adapter, in
+**maintenance-only** status: blocking fixes and safety or integrity fixes only.
+
+Classify every defect or proposed change with two tests before choosing a
+milestone or a fix:
+
+1. Would this mechanism exist behind every external harness adapter? If not, it
+   is execution machinery.
+2. Does this behavior affect TheForge's independent ability to decide readiness,
+   trust, spend, review, or landing? If yes, it is product work, whatever module
+   it lives in. When the tests disagree, this one wins.
+
+Execution machinery is filed and backlogged, not fixed, unless it blocks current
+work with no workaround or violates a current safety or integrity boundary
+(credential exposure, repository corruption, discarded work, untrustworthy
+evidence or cost records). Product work gets the normal floor test. Module path
+is not an argument either way — the line runs through `sprint/runner.py`, not
+around it — and a backlog disposition must say which test the work failed.
+Everything is still captured through intake; the rule changes the milestone and
+the fix decision, never whether the defect is recorded.
+
+Full decision, contract, and worked examples:
+[ADR-0011](docs/adr/0011-execution-boundary-and-multi-provider-neutrality.md).
+
+Source: `feedback_fix_or_backlog_rule.md`
+
 ### Review should stay commit-centric and PR-shaped
 
 The architectural direction is HDP-style review:
