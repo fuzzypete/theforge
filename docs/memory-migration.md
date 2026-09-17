@@ -55,6 +55,7 @@ for the project-level subset.
 | `project_full_audit_trail.md` | `### Preserve full audit evidence when the platform is still learning` | Preserved audit-visibility principle. |
 | `project_hdp_vision.md` | `### Review should stay commit-centric and PR-shaped` | Preserved HDP origin and PR-shaped review model. |
 | `project_north_star.md` | `### TheForge's core property is refusal-capable execution` | Preserved product north star. |
+| `feedback_fix_or_backlog_rule.md` | `### TheForge governs agent work; it does not supervise agent processes` | Promoted 2026-09-17 with ADR-0011; the memory's module-based sorting is replaced by the two-test rule. |
 | `project_phase_module_ownership.md` | `### Coordinator phase ownership currently maps to split modules` | Preserved as codebase map, marked time-bound. |
 | `project_release_floor_dogfood.md` | `### Use released TheForge to build unreleased TheForge` | Preserved release-floor dogfood policy and proportionality rule. |
 | `project_stories_gh_only.md` | `### TheForge uses GitHub issues as stories in this repo` | Preserved repo-vs-tool distinction for story storage. |
