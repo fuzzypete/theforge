@@ -384,8 +384,9 @@ Source: `project_release_floor_dogfood.md`
 The boundary between TheForge and whatever executes agents is the **execution
 attempt**: immutable input head (plus a comparison base for review), task and
 role, routing constraint, requested budget and capabilities in; a role-dependent
-optional output revision, structured outcome, per-agent provider, model and
-usage, evidence and terminal status out. The terminal gate is itself a verify
+optional output revision, structured outcome, usage with explicit measurement
+status (per-agent provider, model and usage when available, otherwise marked
+aggregate or unmeasured), evidence and terminal status out. The terminal gate is itself a verify
 attempt and the verdict stays TheForge's; ADR-0007's in-attempt verification
 requests stay inside the attempt and never produce the verdict. Inside the attempt is execution machinery
 (sessions, retries, process supervision, workspace, sandbox, credentials,

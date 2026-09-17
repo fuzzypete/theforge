@@ -71,8 +71,11 @@ It returns:
   is the range input-head..output-head; review, plan, diagnose and verify
   attempts normally return none and must not be read as an empty range,
 - a structured outcome (handoff, verdict, plan, diagnosis, or verification result),
-- usage and cost as the harness measured them, **attributed per agent**: the
-  actual provider and model of every nested agent that ran, with its usage,
+- usage and cost as the harness measured them, **with explicit measurement
+  status**: per-agent attribution (the actual provider and model of every nested
+  agent that ran, with its usage) when the adapter can supply it, and otherwise an
+  explicit *aggregate* or *unmeasured* marker for identity, usage, or both —
+  never silent omission,
 - evidence (capture sufficient for review verdicts and audit replay, per ADR-0002),
 - a terminal status.
 
