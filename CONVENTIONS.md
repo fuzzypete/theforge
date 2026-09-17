@@ -379,6 +379,52 @@ diagnosed work should not pay full ceremony tax without justification.
 
 Source: `project_release_floor_dogfood.md`
 
+### TheForge governs agent work; it does not supervise agent processes
+
+The boundary between TheForge and whatever executes agents is the **execution
+attempt**: immutable input head (plus a comparison base for review), task and
+role, routing constraint, requested budget and capabilities in; a role-dependent
+optional output revision, structured outcome, usage with explicit measurement
+status (per-agent provider, model and usage when available, otherwise marked
+aggregate or unmeasured), evidence and terminal status out. The terminal gate is itself a verify
+attempt and the verdict stays TheForge's; ADR-0007's in-attempt verification
+requests stay inside the attempt and never produce the verdict. Inside the attempt is execution machinery
+(sessions, retries, process supervision, workspace, sandbox, credentials,
+transcript parsing). Outside it is product (readiness and refusal, DAG,
+cross-provider selection and review, evidence normalization, budget policy, story
+state, audit, landing). Multi-provider neutrality is non-negotiable: a vendor
+harness may be a backend, never the control plane, and TheForge owns which
+providers and models nested agents may use — an adapter that cannot enforce that
+is refused, not negotiated with. Today's CLI runners, sandbox,
+worktree lifecycle, and the sprint process's daemonization, locks, re-exec and
+process supervision are the local harness adapter, in **maintenance-only**
+status: blocking fixes and safety or integrity fixes only. The scheduling, story
+state and budget policy hosted by that same process are product, not adapter.
+
+Sort every defect or proposed change with two orthogonal tests before choosing a
+milestone or a fix. The first classifies; the second can only change the
+disposition, never the classification.
+
+1. **Classification.** Would this mechanism still need to exist in TheForge if
+   every attempt ran through a conforming external harness? Yes: product work,
+   normal floor test. No: execution machinery, not worth hardening.
+2. **Override.** Does the defect corrupt or withhold something TheForge decides
+   from (readiness, trust, spend, review, landing), or breach a safety boundary
+   (credential exposure, repository corruption, discarded work)?
+
+Execution machinery is filed and backlogged, not fixed, unless it blocks current
+work with no workaround or the override applies. In those cases it is fixed now,
+scoped to unblocking or restoring the record, without hardening the mechanism.
+Module path is not an argument either way — the line runs through
+`sprint/runner.py`, not around it — and a backlog disposition must state both
+answers. Everything is still captured through intake; the rule changes the
+milestone and the fix decision, never whether the defect is recorded.
+
+Full decision, contract, and worked examples:
+[ADR-0011](docs/adr/0011-execution-boundary-and-multi-provider-neutrality.md).
+
+Source: `feedback_fix_or_backlog_rule.md`
+
 ### Review should stay commit-centric and PR-shaped
 
 The architectural direction is HDP-style review:
