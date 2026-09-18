@@ -123,6 +123,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dev iteration ended by the sprint budget cap no longer leaves its work
+  uncommitted (#3059):** the checkpoint-commit that preserves stranded dev work
+  only ran on the dev agent's *failure* branches. When a sprint budget cap (or an
+  operator stop) fired on the cost report of a *successful* iteration, the story
+  was cancelled in the window between DEV and VALIDATE — so neither the
+  failure-branch checkpoint nor VALIDATE's post-gate sweep ran, and the preserved
+  worktree carried the iteration's edits and new files as uncommitted state on a
+  branch with zero commits. At re-entry, review then read those untracked files as
+  foreign content and failed the story for their absence.
+
+  Preservation is now structural rather than per-branch: the dev phase commits any
+  dirty work on every terminal exit (including the successful ones no failure
+  branch can reach), and the coordinator does the same at each phase-boundary
+  cancellation check. A checkpoint that cannot be made over a confirmed-dirty
+  worktree is logged as a warning naming the workspace and emitted as a
+  `dev_checkpoint_commit_failed` event, instead of being silently
+  indistinguishable from "nothing to commit".
 - **A scope decision you were asked for is no longer discarded by a resume
   (#2860):** a story that opened the preflight complexity gate at complexity 9,
   was left with the operator's approve/decompose decision unanswered, and was

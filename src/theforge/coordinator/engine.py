@@ -60,6 +60,7 @@ from . import live_state as _live_state
 from . import story_budget as _story_budget
 from .agent_failure import is_infrastructure_abort
 from .cancellation import StoryCancelled, cancel_cause
+from .commit_guard import preserve_dev_output
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
     _end_run_log_tee,
@@ -271,6 +272,41 @@ def _cancelled_result(
         phase=Phase.ESCALATE,
         state=state,
         message=reason,
+    )
+
+
+def _preserve_dev_output_before_cancel(
+    state: CoordinatorState,
+    workspace_path: "Path | None",
+    stop_event: "threading.Event | None",
+    logger: StructuredLogger | None,
+) -> None:
+    """Checkpoint-commit dirty dev work before a phase-boundary cancellation.
+
+    A sprint budget cap or an operator stop can set the stop signal in the window
+    between a DEV attempt returning and the next durable phase boundary — most
+    consequentially right after a *successful* dev iteration, whose work no
+    failure-branch checkpoint covers and which VALIDATE's post-gate sweep never
+    reaches because the cancellation preempts VALIDATE entirely. The story is
+    about to be recorded as ended and the worktree preserved for re-entry, so the
+    work is committed here first (#3059).
+
+    Gated on an attempt counter, not on which raise site called: the loop-top
+    check runs both before the first DEV attempt and after every later one, and a
+    cancellation before any attempt must not commit whatever the workspace
+    happened to be carrying. ``dev_trace_count`` is incremented immediately before
+    each ``_run_dev_phase`` call and never reset, unlike the per-cycle
+    ``dev_iteration``.
+    """
+    if state.dev_trace_count <= 0 or workspace_path is None:
+        return
+    reason, _error_type = cancel_cause(stop_event)
+    preserve_dev_output(
+        workspace_path,
+        f"cancelled at a phase boundary: {reason}",
+        log_fn=_log,
+        logger=logger,
+        iteration=state.dev_iteration,
     )
 
 
@@ -748,6 +784,7 @@ def _coordinator_loop(
 
     while True:
         if stop_event is not None and stop_event.is_set():
+            _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
             raise StoryCancelled()
         if not _skip_dev:
             # ── DEV ───────────────────────────────────────────────
@@ -886,6 +923,10 @@ def _coordinator_loop(
             _scrub_forge_history(workspace_path, branch_name, config.workspace.base_branch)
 
             if stop_event is not None and stop_event.is_set():
+                # The dev iteration succeeded and its work may still be sitting in
+                # the worktree: VALIDATE (which owns the post-gate sweep commit)
+                # never runs once this raises, so preserve the work here (#3059).
+                _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
                 raise StoryCancelled()
 
             # ── VALIDATE ──────────────────────────────────────────
@@ -1093,6 +1134,7 @@ def _coordinator_loop(
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
 
         if stop_event is not None and stop_event.is_set():
+            _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
             raise StoryCancelled()
 
         # ── REVIEW ────────────────────────────────────────────

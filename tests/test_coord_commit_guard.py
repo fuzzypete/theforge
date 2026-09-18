@@ -498,6 +498,79 @@ def test_dev_phase_empty_killed_iteration_still_escalates(tmp_path: Path) -> Non
     assert _has_commits_ahead_of_base(tmp_path, "main") is False
 
 
+# ── Successful-dev terminal exits also preserve their work (#3059) ───
+
+
+def test_dev_phase_preserves_work_on_successful_dev_terminal_escalation(tmp_path: Path) -> None:
+    """A dev iteration can end the story while reporting success — here the
+    spent-past-the-estimate-with-no-commits escalation. No failure-branch
+    checkpoint can reach that exit, so the dev phase's own exit seam must still
+    commit the work rather than leave it for a VALIDATE that never runs."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    task = TaskStory(name="t", slug="t", story_path="specs/t.md")
+    state = CoordinatorState()
+    state.budget.max_iterations = 2
+    # Any spend exceeds the estimate → the successful iteration takes the
+    # "no usable output (no commits)" escalation instead of advancing.
+    state.adaptive_dev_cost_estimate_usd = 0.0001
+
+    spec = tmp_path / "specs" / "t.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# t\n", encoding="utf-8")
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+
+    def _succeed_without_committing(*_args, **_kwargs):
+        (tmp_path / "README.md").write_text("seed\nedited\n")
+        (tmp_path / "new_runner.py").write_text("print('x')\n")
+        return AgentResult(
+            success=True,
+            output="done",
+            session_id=None,
+            cost_usd=5.0,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+            dev_handoff={
+                "summary": "did the thing",
+                "commits": [],
+                "acceptance_criteria": [{"criterion": "c", "status": "PARTIAL", "notes": "n"}],
+                "story_deviations": "none",
+                "deferred_items": "none",
+            },
+        )
+
+    with (
+        patch(
+            "theforge.coordinator.dev_phase.run_agent",
+            side_effect=_succeed_without_committing,
+        ),
+        patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock()),
+    ):
+        result = _run_dev_phase(
+            state, config, task, "# t\n", tmp_path, "feat/x", notify=False, logger=None
+        )
+
+    assert isinstance(result, CoordinatorResult)
+    assert result.success is False
+    assert state.phase == Phase.ESCALATE
+    # The successful iteration's work is committed, not stranded in the worktree.
+    assert _last_commit_subject(tmp_path) == CHECKPOINT_COMMIT_SUBJECT
+    assert _has_commits_ahead_of_base(tmp_path, "main") is True
+    files = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "new_runner.py" in files
+    assert "README.md" in files
+
+
 # ── REVIEW-phase guard: documented via helper behaviour ─────────────
 
 
