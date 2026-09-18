@@ -38,9 +38,15 @@ Codex (FAKE_CODEX_MODE):
                   starts, then the provider returns an immediate HTTP 400
                   invalid_request_error for an unsupported model, and the CLI
                   exits 1 with no usage anywhere (#2913). Nothing was billed.
+  model_refused_noisy
+                — model_refused with non-JSON CLI preamble/trailer noise around
+                  the refusal event, which must still be recorded as $0.00
   upstream_error — the same shape but with an unmeasurable failure: the turn
                   starts and fails on an upstream 500, which could have consumed
                   tokens and so must stay cost-unknown
+  upstream_error_noisy
+                — upstream_error with CLI preamble noise; the noise must not
+                  manufacture a measured-zero cost
   launch_refusal — always refuse at launch (deprecation warning + trust-gate
                   stderr, exit 1, no JSONL events at all), so the pre-turn
                   launch-failure classification can be exercised
@@ -209,13 +215,15 @@ if any(a.startswith("@openai/codex") for a in args):
         while time.monotonic() < deadline:
             time.sleep(0.1)
         sys.exit(0)
-    if mode in ("model_refused", "upstream_error"):
+    if mode in ("model_refused", "model_refused_noisy", "upstream_error", "upstream_error_noisy"):
         if "--json" not in args:
             sys.stderr.write("fake npx(codex): event mode requested without --json\n")
             sys.exit(2)
         print(json.dumps({"type": "thread.started", "thread_id": "th_fake"}))
         print(json.dumps({"type": "turn.started"}))
-        if mode == "model_refused":
+        if mode.endswith("_noisy"):
+            print("npm notice: a new minor version is available")
+        if mode.startswith("model_refused"):
             # Verbatim shape of the provider's pre-generation refusal (#2913).
             print(
                 json.dumps(
@@ -234,6 +242,8 @@ if any(a.startswith("@openai/codex") for a in args):
             )
         else:
             print(json.dumps({"type": "turn.failed", "error": {"message": "upstream 500"}}))
+        if mode.endswith("_noisy"):
+            print("npm notice: run npm install -g npm@latest")
         sys.stdout.flush()
         sys.exit(1)
     if mode in ("git_trust_gate", "launch_refusal"):
