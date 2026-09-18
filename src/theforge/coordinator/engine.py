@@ -59,8 +59,12 @@ from theforge.task import (
 from . import live_state as _live_state
 from . import story_budget as _story_budget
 from .agent_failure import is_infrastructure_abort
-from .cancellation import StoryCancelled, cancel_cause
-from .commit_guard import preserve_dev_output
+from .cancellation import PRESERVATION_FAILED_ERROR_TYPE, StoryCancelled, cancel_cause
+from .commit_guard import (
+    preservation_failure_detail,
+    preservation_left_work_stranded,
+    preserve_dev_output,
+)
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
     _end_run_log_tee,
@@ -261,8 +265,34 @@ def _cancelled_result(
     The cause comes off the signal itself (``cancel_cause``), so a story the
     sprint killed for its budget is not reported as an unresponsive worker
     (#2547). A bare ``threading.Event`` still yields the timeout wording.
+
+    One cancellation is not an ordinary one: when the stop landed on a dev
+    iteration whose work could not be preserved
+    (``state.dev_output_preservation_failure``), the story is ending with work
+    stranded as working-tree state in the worktree about to be kept for re-entry.
+    That is an infrastructure failure about the substrate, not a story ending the
+    operator can read as "stopped, nothing lost" (#3059), so the result names the
+    stranded workspace and is stamped ``infrastructure_failure``.
     """
     reason, error_type = cancel_cause(stop_event)
+    _stranded = state.dev_output_preservation_failure
+    if _stranded:
+        message = (
+            f"{reason} — and the dev iteration's work could NOT be preserved: "
+            f"{_stranded}. The worktree is being kept with uncommitted dev output; "
+            "re-entering the story would treat that work as foreign content"
+        )
+        _log(f"✗ ABORT   {task.slug}: {message}")
+        state.phase = Phase.ESCALATE
+        state.error = message
+        state.error_type = PRESERVATION_FAILED_ERROR_TYPE
+        return CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=state,
+            message=message,
+            infrastructure_failure=True,
+        )
     _log(f"INFO {task.slug}: cancelled by sprint stop_event ({reason})")
     state.phase = Phase.ESCALATE
     state.error = reason
@@ -278,6 +308,7 @@ def _cancelled_result(
 def _preserve_dev_output_before_cancel(
     state: CoordinatorState,
     workspace_path: "Path | None",
+    branch_name: str | None,
     stop_event: "threading.Event | None",
     logger: StructuredLogger | None,
 ) -> None:
@@ -297,17 +328,32 @@ def _preserve_dev_output_before_cancel(
     happened to be carrying. ``dev_trace_count`` is incremented immediately before
     each ``_run_dev_phase`` call and never reset, unlike the per-cycle
     ``dev_iteration``.
+
+    Records a preservation that left work stranded on
+    ``state.dev_output_preservation_failure``, which turns the cancellation that
+    follows into a fail-closed infrastructure failure rather than an ordinary
+    stop. ``branch_name`` is the story branch: a checkpoint anywhere else is not a
+    preservation and is refused.
     """
     if state.dev_trace_count <= 0 or workspace_path is None:
         return
     reason, _error_type = cancel_cause(stop_event)
-    preserve_dev_output(
+    outcome = preserve_dev_output(
         workspace_path,
         f"cancelled at a phase boundary: {reason}",
+        expected_branch=branch_name,
         log_fn=_log,
         logger=logger,
         iteration=state.dev_iteration,
     )
+    if preservation_left_work_stranded(outcome):
+        state.dev_output_preservation_failure = (
+            f"{preservation_failure_detail(outcome)} ({workspace_path})"
+        )
+    else:
+        # Work an earlier iteration could not preserve has now been committed (or
+        # there was none): the cancellation that follows is an ordinary stop.
+        state.dev_output_preservation_failure = None
 
 
 def _maybe_recover_failed_challenger(
@@ -784,7 +830,9 @@ def _coordinator_loop(
 
     while True:
         if stop_event is not None and stop_event.is_set():
-            _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
+            _preserve_dev_output_before_cancel(
+                state, workspace_path, branch_name, stop_event, logger
+            )
             raise StoryCancelled()
         if not _skip_dev:
             # ── DEV ───────────────────────────────────────────────
@@ -926,7 +974,9 @@ def _coordinator_loop(
                 # The dev iteration succeeded and its work may still be sitting in
                 # the worktree: VALIDATE (which owns the post-gate sweep commit)
                 # never runs once this raises, so preserve the work here (#3059).
-                _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
+                _preserve_dev_output_before_cancel(
+                    state, workspace_path, branch_name, stop_event, logger
+                )
                 raise StoryCancelled()
 
             # ── VALIDATE ──────────────────────────────────────────
@@ -1134,7 +1184,9 @@ def _coordinator_loop(
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
 
         if stop_event is not None and stop_event.is_set():
-            _preserve_dev_output_before_cancel(state, workspace_path, stop_event, logger)
+            _preserve_dev_output_before_cancel(
+                state, workspace_path, branch_name, stop_event, logger
+            )
             raise StoryCancelled()
 
         # ── REVIEW ────────────────────────────────────────────

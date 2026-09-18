@@ -253,11 +253,23 @@ def _dirty_work_file_count(workspace_path: Path) -> int:
         return 0
 
 
-def _git_operation_in_progress(workspace_path: Path) -> bool:
-    """True when the worktree is mid-rebase/merge/cherry-pick/revert or detached.
+def _unsafe_preservation_state(workspace_path: Path, expected_branch: str | None) -> str | None:
+    """Why committing here would not preserve the work on the story branch.
 
-    Fail-open (returns False) on any git error: the caller's next step is a
-    checkpoint commit, and that already fails closed on a broken repository.
+    Returns a human-readable detail when preservation must refuse, else ``None``.
+    Three states disqualify a checkpoint, all for the same reason — the commit
+    would not land where the story's work belongs:
+
+    - a multi-step git operation is mid-flight (rebase/merge/cherry-pick/revert),
+    - HEAD is detached, so the commit is reachable from no branch at all,
+    - HEAD is attached to some *other* branch than the coordinator's story
+      branch, so the commit would land on a ref the story never publishes and the
+      preserved worktree would still re-enter dirty.
+
+    ``expected_branch`` is the branch the coordinator created the worktree on;
+    pass ``None`` only where no story branch is known. Fail-open (returns
+    ``None``) on any git error: the caller's next step is a checkpoint commit,
+    which already fails closed on a broken repository.
     """
     try:
         proc = subprocess.run(
@@ -268,27 +280,35 @@ def _git_operation_in_progress(workspace_path: Path) -> bool:
             timeout=10,
         )
         if proc.returncode != 0:
-            return False
+            return None
         git_dir = Path(proc.stdout.strip())
-        if any((git_dir / marker).exists() for marker in _GIT_OPERATION_MARKERS):
-            return True
+        for marker in _GIT_OPERATION_MARKERS:
+            if (git_dir / marker).exists():
+                return f"a git operation is in progress ({marker})"
         head = subprocess.run(
-            ["git", "symbolic-ref", "-q", "HEAD"],
+            ["git", "symbolic-ref", "-q", "--short", "HEAD"],
             cwd=str(workspace_path),
             capture_output=True,
             text=True,
             timeout=10,
         )
-        # Detached HEAD: a commit here would not land on the story branch at all.
-        return head.returncode != 0
+        if head.returncode != 0:
+            return "HEAD is detached"
+        current = str(head.stdout).strip()
+        if expected_branch and current and current != expected_branch:
+            return (
+                f"the worktree is on branch '{current}', not the story branch '{expected_branch}'"
+            )
+        return None
     except Exception:  # noqa: BLE001
-        return False
+        return None
 
 
 def preserve_dev_output(
     workspace_path: Path,
     reason: str,
     *,
+    expected_branch: str | None = None,
     log_fn: Callable[[str], None] | None = None,
     logger: Any = None,
     iteration: int | None = None,
@@ -304,12 +324,19 @@ def preserve_dev_output(
     integration, and to review — which reads untracked files at re-entry as
     foreign content (#3059).
 
+    ``expected_branch`` is the coordinator's story branch. Preservation refuses
+    rather than committing work anywhere else (see
+    :func:`_unsafe_preservation_state`): a commit on a foreign ref preserves
+    nothing the story can publish and still leaves the worktree re-entering
+    dirty, so it is a failure to be reported, not a preservation.
+
     Returns one of :data:`PRESERVE_COMMITTED`, :data:`PRESERVE_NOTHING`,
-    :data:`PRESERVE_FAILED`, or :data:`PRESERVE_UNSAFE`. A failed preservation
-    over a genuinely dirty worktree is the one outcome an operator must be able
-    to see, so it is logged as a warning naming the workspace and emitted as its
-    own ``dev_checkpoint_commit_failed`` event rather than being indistinguishable
-    from "nothing to commit".
+    :data:`PRESERVE_FAILED`, or :data:`PRESERVE_UNSAFE`. Both failure outcomes
+    over a genuinely dirty worktree are outcomes an operator must be able to see,
+    so each is logged as a warning naming the workspace and emitted as its own
+    ``dev_checkpoint_commit_failed`` event rather than being indistinguishable
+    from "nothing to commit" — and callers at a story-ending seam fail the story
+    closed on them instead of recording an ordinary ending.
     """
 
     def _log(message: str) -> None:
@@ -320,11 +347,12 @@ def preserve_dev_output(
     if not dirty:
         return PRESERVE_NOTHING
 
-    if _git_operation_in_progress(workspace_path):
+    _unsafe = _unsafe_preservation_state(workspace_path, expected_branch)
+    if _unsafe is not None:
         _log(
             f"  ⚠ DEV   {dirty} uncommitted file(s) left in {workspace_path} — "
-            "NOT checkpoint-committed: the worktree is mid git operation or on a "
-            "detached HEAD, so a commit would not land on the story branch"
+            f"NOT checkpoint-committed: {_unsafe}, so a commit would not preserve "
+            "the work on the story branch"
         )
         if logger:
             logger._safe_emit(
@@ -334,7 +362,7 @@ def preserve_dev_output(
                 reason=reason,
                 workspace=str(workspace_path),
                 dirty_file_count=dirty,
-                detail="git operation in progress or detached HEAD",
+                detail=_unsafe,
             )
         return PRESERVE_UNSAFE
 
@@ -364,3 +392,25 @@ def preserve_dev_output(
             detail="checkpoint commit did not complete",
         )
     return PRESERVE_FAILED
+
+
+def preservation_left_work_stranded(outcome: str) -> bool:
+    """True when a preservation attempt ended with dev work still uncommitted.
+
+    The two failure outcomes differ in cause (the commit did not complete vs. it
+    was refused because it would not land on the story branch) but not in
+    consequence: the worktree is preserved still carrying the iteration's work.
+    Callers at a story-ending seam use this to fail closed instead of recording
+    the story as ordinarily ended.
+    """
+    return outcome in (PRESERVE_FAILED, PRESERVE_UNSAFE)
+
+
+def preservation_failure_detail(outcome: str) -> str:
+    """A short operator-facing phrase for a stranded-work outcome."""
+    if outcome == PRESERVE_UNSAFE:
+        return (
+            "the checkpoint was refused because the worktree is not on the story "
+            "branch (detached, mid git operation, or checked out elsewhere)"
+        )
+    return "the checkpoint commit did not complete"
