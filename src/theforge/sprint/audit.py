@@ -14,6 +14,7 @@ from ..advisory_conventions import noteworthy_advisory_entries
 from ..coordinator.config_snapshot import load_audit_record as load_config_snapshot_record
 from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
+from ..coordinator.workspace import BASE_BRANCH_UNPUBLISHED_ERROR_TYPE
 from ..log_util import _log_line
 from .abnormal import accumulate_failure_history, carry_failure_cause
 from .budget import budget_overrun_usd, budget_status
@@ -1352,6 +1353,12 @@ def _write_sprint_audit(
                 else (res.state.preflight_verdict or _preflight_fallback(res.state))
             )
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
+            if res.state.error_type == BASE_BRANCH_UNPUBLISHED_ERROR_TYPE:
+                # The scheduler stopped this story before it could continue on
+                # an unpublished base. Its synthetic result keeps ESCALATE for
+                # coordinator diagnostics, while the sprint audit must record
+                # the dependency-style skip operators actually need to see.
+                outcome = "SKIPPED"
 
             # Build reviews summary for this spec
             reviews_summary = []

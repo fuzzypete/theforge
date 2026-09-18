@@ -34,6 +34,7 @@ from theforge.config import (
 from theforge.coordinator.completion import _finalize_approve
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.coordinator.workspace import _publish_landed_base_branch
 from theforge.review import ReviewResult
 
 # ── Workspace failure ─────────────────────────────────────────────
@@ -531,6 +532,7 @@ class TestCoordinatorAutoPush:
         ]
         assert len(push_calls) == 1
         assert push_calls[0].args[0] == ["git", "push", "origin", "main"]
+        assert push_calls[0].kwargs["timeout"] == config.workspace.landing_push_timeout
 
     @patch("theforge.coordinator.workspace.subprocess.run")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -571,10 +573,10 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_auto_push_failure_non_fatal(
+    def test_auto_push_failure_is_failed_landing_after_reconciliation_retries(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
-        """auto_push=True + push fails -> warning logged, run still DONE."""
+        """A locally merged branch is not landed until its publish succeeds."""
         import subprocess as _subprocess
 
         config = self._make_auto_push_config(tmp_path, auto_push=True)
@@ -588,17 +590,94 @@ class TestCoordinatorAutoPush:
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
-        mock_subprocess.side_effect = _subprocess.CalledProcessError(
-            1, ["git", "push", "origin", "main"], stderr=b"auth error"
+        push_results = iter(
+            [
+                _subprocess.TimeoutExpired(["git", "push", "origin", "main"], 120),
+                _subprocess.CalledProcessError(1, ["git", "push", "origin", "main"]),
+                _subprocess.CalledProcessError(1, ["git", "push", "origin", "main"]),
+            ]
         )
+
+        def _git_run(command, **_kwargs):
+            # Patching workspace.subprocess patches the shared subprocess module,
+            # so coordinator checks before landing also arrive here. Only the
+            # publish commands consume the failure script; reconciliation and
+            # unrelated Git probes succeed.
+            if command[:3] == ["git", "push", "origin"]:
+                result = next(push_results)
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+            return MagicMock(returncode=0)
+
+        mock_subprocess.side_effect = _git_run
 
         result = run_task(config, task, auto_merge=True)
 
-        # Run still succeeds even though push failed
-        assert result.success is True
-        assert result.phase == Phase.DONE
+        assert result.success is False
+        assert result.phase == Phase.MERGE_FAILED
         assert result.merge is not None
         assert result.merge["merged"] is True
+        assert result.merge["landing_path"] == "merged-unpublished"
+        assert result.merge["publish_attempts"] == 3
+        assert "could not publish main" in result.merge["error"]
+        push_calls = [
+            c
+            for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "push", "origin"]
+        ]
+        assert len(push_calls) == 3
+        assert all(
+            c.kwargs["timeout"] == config.workspace.landing_push_timeout for c in push_calls
+        )
+        commands = [call.args[0] for call in mock_subprocess.call_args_list]
+        assert commands.count(["git", "fetch", "origin", "main"]) == 2
+        assert commands.count(["git", "rebase", "origin/main"]) == 2
+
+    @patch("theforge.coordinator.engine._create_workspace")
+    def test_unpublished_base_branch_is_workspace_skip_not_escalation(
+        self, mock_create_workspace, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        message = (
+            "WORKSPACE abort: base branch 'main' has 1 local commit(s) not on origin/main. "
+            "Worktrees cut from it would attribute that content to the running story. "
+            "Run: git push origin main"
+        )
+        mock_create_workspace.return_value = (None, None, message)
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase is Phase.WORKSPACE
+        assert result.state.error_type == "inherited_base_branch_unpublished"
+        assert result.message == message
+
+    @patch("theforge.coordinator.workspace.subprocess.run")
+    def test_failed_publish_reconcile_aborts_rebase(self, mock_subprocess, tmp_path):
+        """A conflict while reconciling a push must not strand the root mid-rebase."""
+        import subprocess as _subprocess
+
+        def _git_run(command, **_kwargs):
+            if command == ["git", "push", "origin", "main"]:
+                raise _subprocess.CalledProcessError(1, command)
+            if command == ["git", "rebase", "origin/main"]:
+                raise _subprocess.CalledProcessError(1, command)
+            return MagicMock(returncode=0)
+
+        mock_subprocess.side_effect = _git_run
+
+        result = _publish_landed_base_branch(tmp_path, "main", timeout_seconds=120)
+
+        assert result["success"] is False
+        assert result["attempts"] == 1
+        abort_call = next(
+            call
+            for call in mock_subprocess.call_args_list
+            if call.args[0] == ["git", "rebase", "--abort"]
+        )
+        assert abort_call.kwargs["timeout"] == 30
 
 
 # ── _finalize_approve no-git contract ─────────────────────────────────

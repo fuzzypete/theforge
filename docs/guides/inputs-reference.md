@@ -730,6 +730,9 @@ workspace:
   base_branch: "main"                 # default: "main"
   auto_push: false                    # push base_branch to origin after successful auto-merge;
                                       # required true when on_approve is "merge-pr"
+  landing_push_timeout: 120           # seconds per post-merge publication attempt;
+                                      # a failed push fetches/rebases and retries before
+                                      # the landing is recorded as merged-unpublished
   stale_worktree_days: 1              # remove leftover worktrees older than N days; 0 = always remove
   on_approve: "none"                  # "none" | "merge" | "pr" | "merge-pr"
   merge_strategy: "squash"            # "squash" | "merge" | "rebase" (used by merge-pr)

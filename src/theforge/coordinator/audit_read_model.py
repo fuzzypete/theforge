@@ -1227,6 +1227,12 @@ def derive_assignment_history(
         stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
     out: list[dict] = []
     for record in admissible:
+        outcome_block = record.get("outcome") if isinstance(record.get("outcome"), dict) else {}
+        if outcome_block.get("error_type") == "inherited_base_branch_unpublished":
+            # A workspace was deliberately refused because a prior story's
+            # local merge did not reach origin. The pending story never ran,
+            # so it is operational visibility, not evidence about its model.
+            continue
         slug = (record.get("task") or {}).get("slug")
         if not slug:
             continue
@@ -1326,6 +1332,9 @@ def iter_escalation_records(conn: AuditConnection) -> Iterable[dict]:
         if record is None:
             continue
         if is_tainted(record.get("trust_status")):
+            continue
+        outcome_block = record.get("outcome") if isinstance(record.get("outcome"), dict) else {}
+        if outcome_block.get("error_type") == "inherited_base_branch_unpublished":
             continue
         derived = _derive_escalation(record)
         if derived is not None:

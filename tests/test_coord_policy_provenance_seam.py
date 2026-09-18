@@ -467,7 +467,8 @@ class TestRecordMigration:
         assert audit_storage._migrate_v44_to_v45(record) is record
 
     def test_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 50
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 51
+        assert audit_storage.MIGRATION_HELPERS[50] is audit_storage._migrate_v50_to_v51
         assert audit_storage.MIGRATION_HELPERS[49] is audit_storage._migrate_v49_to_v50
         assert audit_storage.MIGRATION_HELPERS[48] is audit_storage._migrate_v48_to_v49
         assert audit_storage.MIGRATION_HELPERS[47] is audit_storage._migrate_v47_to_v48
