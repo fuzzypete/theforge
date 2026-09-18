@@ -2919,6 +2919,174 @@ class TestImmediateIntegrationLanding:
         assert result_b.landing_status == "landed"
         assert merge_calls == ["story-a", "story-b"]
 
+    def test_unpublished_landing_skips_successful_in_flight_sibling(self, tmp_path: Path) -> None:
+        """A sibling finishing after a failed publish cannot enter integration."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+        for result in (result_a, result_b):
+            result.landing_status = "pending_integration"
+            result.merge = {"action": "merge", "pending": True}
+
+        b_started = threading.Event()
+        release_b = threading.Event()
+        merge_calls: list[str] = []
+
+        def fake_run_task(*args, **_kwargs):  # noqa: ANN001
+            task = args[1]
+            if task.slug == "story-a":
+                assert b_started.wait(timeout=5)
+                return result_a
+            b_started.set()
+            assert release_b.wait(timeout=5)
+            return result_b
+
+        def fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            merge_calls.append(slug)
+            release_b.set()
+            return {
+                "merged": True,
+                "success": False,
+                "action": "merge",
+                "landing_path": "merged-unpublished",
+                "error": "push rejected",
+            }
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
+
+        assert merge_calls == ["story-a"]
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+        assert result_b.success is False
+        assert result_b.state.error_type == "inherited_base_branch_unpublished"
+
+    def test_unpublished_landing_skips_in_flight_worker_exception(self, tmp_path: Path) -> None:
+        """A publication-cancelled sibling that raises is still a skip, not a failure."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+
+        b_started = threading.Event()
+        release_b = threading.Event()
+
+        def fake_run_task(*args, **_kwargs):  # noqa: ANN001
+            task = args[1]
+            if task.slug == "story-a":
+                assert b_started.wait(timeout=5)
+                return result_a
+            b_started.set()
+            assert release_b.wait(timeout=5)
+            raise RuntimeError("cancelled worker surfaced an exception")
+
+        def fake_merge(*args, **_kwargs):  # noqa: ANN001
+            release_b.set()
+            return {
+                "merged": True,
+                "success": False,
+                "action": "merge",
+                "landing_path": "merged-unpublished",
+                "error": "push rejected",
+            }
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+        sprint_audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        sibling = next(
+            entry for entry in sprint_audit["specs"] if entry.get("path") == "story-b.md"
+        )
+        assert sibling["outcome"] == "SKIPPED"
+        assert sibling["error_type"] == "inherited_base_branch_unpublished"
+
+    def test_unpublished_landing_skips_in_flight_worker_timeout(self, tmp_path: Path) -> None:
+        """A publication-cancelled sibling crossing its deadline is still a skip."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            sprint=SprintConfig(max_parallel=2, worker_timeout_seconds=1),
+        )
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+
+        b_started = threading.Event()
+        publication_failed = threading.Event()
+
+        def fake_run_task(*args, **_kwargs):  # noqa: ANN001
+            task = args[1]
+            if task.slug == "story-a":
+                assert b_started.wait(timeout=5)
+                return result_a
+            b_started.set()
+            assert publication_failed.wait(timeout=5)
+            # Deliberately ignore the stop event: exercise the deadline path
+            # that races a publication cancellation.
+            threading.Event().wait(timeout=0.75)
+            threading.Event().wait(timeout=0.75)
+            return _make_coordinator_result(success=True, cost=1.0)
+
+        def fake_merge(*args, **_kwargs):  # noqa: ANN001
+            publication_failed.set()
+            return {
+                "merged": True,
+                "success": False,
+                "action": "merge",
+                "landing_path": "merged-unpublished",
+                "error": "push rejected",
+            }
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+        sprint_audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        sibling = next(
+            entry for entry in sprint_audit["specs"] if entry.get("path") == "story-b.md"
+        )
+        assert sibling["outcome"] == "SKIPPED"
+        assert sibling["error_type"] == "inherited_base_branch_unpublished"
+
     def test_landing_failure_sets_success_false(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = _make_manifest_parallel(

@@ -680,6 +680,7 @@ def _publish_landed_base_branch(
             _cu._log(f"  ⚠ Push attempt {attempt}/{_LANDING_PUSH_ATTEMPTS} failed: {exc}")
         if attempt == _LANDING_PUSH_ATTEMPTS:
             break
+        rebase_started = False
         try:
             fetch = subprocess.run(
                 ["git", "fetch", "origin", base_branch],
@@ -690,6 +691,11 @@ def _publish_landed_base_branch(
                 check=True,
             )
             del fetch
+            # A failed rebase can leave the project-root checkout mid-rebase.
+            # Record that the command was entered so the failure path can restore
+            # a usable checkout without attempting an abort after a fetch-only
+            # failure.
+            rebase_started = True
             subprocess.run(
                 ["git", "rebase", f"origin/{base_branch}"],
                 cwd=str(project_root),
@@ -701,6 +707,21 @@ def _publish_landed_base_branch(
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             last_error = f"publish reconciliation failed: {exc}"
             _cu._log(f"  ⚠ Publish reconciliation failed: {exc}")
+            if rebase_started:
+                try:
+                    subprocess.run(
+                        ["git", "rebase", "--abort"],
+                        cwd=str(project_root),
+                        timeout=30,
+                        capture_output=True,
+                        text=True,
+                    )
+                    _cu._log("  Aborted failed publication reconciliation rebase")
+                except Exception as abort_exc:  # pragma: no cover - best-effort cleanup
+                    _cu._log(
+                        "  ⚠ Could not abort failed publication reconciliation rebase: "
+                        f"{abort_exc}"
+                    )
             break
     return {
         "success": False,

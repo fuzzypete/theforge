@@ -34,6 +34,7 @@ from theforge.config import (
 from theforge.coordinator.completion import _finalize_approve
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.coordinator.workspace import _publish_landed_base_branch
 from theforge.review import ReviewResult
 
 # ── Workspace failure ─────────────────────────────────────────────
@@ -652,6 +653,31 @@ class TestCoordinatorAutoPush:
         assert result.phase is Phase.WORKSPACE
         assert result.state.error_type == "inherited_base_branch_unpublished"
         assert result.message == message
+
+    @patch("theforge.coordinator.workspace.subprocess.run")
+    def test_failed_publish_reconcile_aborts_rebase(self, mock_subprocess, tmp_path):
+        """A conflict while reconciling a push must not strand the root mid-rebase."""
+        import subprocess as _subprocess
+
+        def _git_run(command, **_kwargs):
+            if command == ["git", "push", "origin", "main"]:
+                raise _subprocess.CalledProcessError(1, command)
+            if command == ["git", "rebase", "origin/main"]:
+                raise _subprocess.CalledProcessError(1, command)
+            return MagicMock(returncode=0)
+
+        mock_subprocess.side_effect = _git_run
+
+        result = _publish_landed_base_branch(tmp_path, "main", timeout_seconds=120)
+
+        assert result["success"] is False
+        assert result["attempts"] == 1
+        abort_call = next(
+            call
+            for call in mock_subprocess.call_args_list
+            if call.args[0] == ["git", "rebase", "--abort"]
+        )
+        assert abort_call.kwargs["timeout"] == 30
 
 
 # ── _finalize_approve no-git contract ─────────────────────────────────

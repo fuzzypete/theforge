@@ -3332,6 +3332,7 @@ def _inherited_base_branch_unpublished(result: CoordinatorResult) -> bool:
 
 def _mark_story_publication_cancelled(result: CoordinatorResult, *, reason: str) -> None:
     """Record a sprint-issued stop as an inherited base-publication skip."""
+    result.success = False
     result.state.error = reason
     result.state.error_type = BASE_BRANCH_UNPUBLISHED_ERROR_TYPE
     result.message = reason
@@ -8476,6 +8477,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _mark_story_routing_cancelled(_timeout_result, reason=_cancel_reason)
                             _timeout_outcome = StoryOutcome.SKIPPED
                             _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.publication_cancelled_slugs:
+                            _sprint_state.publication_cancelled_slugs.discard(affected_slug)
+                            _mark_story_publication_cancelled(
+                                _timeout_result,
+                                reason=_sprint_state.publication_stop_reason,
+                            )
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(
+                                f"SKIPPED {affected_slug} "
+                                f"({_sprint_state.publication_stop_reason})"
+                            )
                         elif affected_slug in auth_cancelled_slugs:
                             auth_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
@@ -8621,6 +8633,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _mark_story_routing_cancelled(_exc_result, reason=_cancel_reason)
                             _exc_outcome = StoryOutcome.SKIPPED
                             _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.publication_cancelled_slugs:
+                            _sprint_state.publication_cancelled_slugs.discard(affected_slug)
+                            _mark_story_publication_cancelled(
+                                _exc_result,
+                                reason=_sprint_state.publication_stop_reason,
+                            )
+                            _exc_outcome = StoryOutcome.SKIPPED
+                            _log(
+                                f"SKIPPED {affected_slug} "
+                                f"({_sprint_state.publication_stop_reason})"
+                            )
                         elif affected_slug in auth_cancelled_slugs:
                             auth_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
@@ -8830,7 +8853,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     )
                     continue
 
-                if slug in _sprint_state.publication_cancelled_slugs and not result.success:
+                if slug in _sprint_state.publication_cancelled_slugs:
                     _sprint_state.publication_cancelled_slugs.discard(slug)
                     _mark_story_publication_cancelled(
                         result, reason=_sprint_state.publication_stop_reason
