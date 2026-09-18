@@ -105,6 +105,23 @@ def test_cli_refusal_exits_nonzero(tmp_path, monkeypatch, capsys):
     assert "forge diagnose 1234" in captured.out
 
 
+def test_cli_refuses_untyped_bug_body_without_reporting_a_restructure(
+    tmp_path, monkeypatch, capsys
+):
+    body = _NO_DIAGNOSIS_BUG_BODY + "\n## Acceptance criteria\n\n- The failure is fixed.\n"
+    _patch_fetch(monkeypatch, {"title": "t", "body": body, "labels": []})
+    _patch_edit(monkeypatch, ok=True)
+
+    rc = cli_groom.cmd_groom(_build_args("3054", tmp_path, apply=True, want_next=True))
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "REFUSED" in captured.out
+    assert "recognized type label" in captured.out
+    assert "forge shape 3054 --apply" in captured.out
+    assert "Applied body restructure" not in captured.out
+
+
 def test_cli_proposal_exits_2_without_apply(tmp_path, monkeypatch, capsys):
     body_dirty = _CONFIRMED_BUG_BODY + "   \n"
     _patch_fetch(monkeypatch, {"title": "t", "body": body_dirty, "labels": ["bug"]})
