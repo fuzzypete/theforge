@@ -16,6 +16,7 @@ have never heard of — is written back intact.
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -53,6 +54,7 @@ from theforge.shape_check.parsing import (
     authoritative_section_span,
     find_authoritative_heading,
     has_heading,
+    iter_headings,
 )
 from theforge.shape_check.types import ShapeVerdict
 
@@ -69,9 +71,10 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
     """Return the proposed restructured body for the issue, or ``current_body``
     unchanged when no restructure is proposed.
 
-    The restructure is strictly additive: it adds the modeled sections the
-    specification asks of this type and nothing else. Existing operator
-    structure is never rewritten, re-levelled, or demoted into quoted prose — a
+    The restructure adds the modeled sections the specification asks of this
+    type. It also removes a section the selected type explicitly forbids: a bug
+    body cannot retain a feature-style acceptance-criteria section and pass the
+    shape gate. Every other part of the operator's structure is left intact — a
     remediation offered toward a gate must be a no-op on input that gate already
     accepts, and additive on input that is partially conformant (#2053).
     """
@@ -86,7 +89,12 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
 
 
 def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
-    body = current_body
+    # ``classify`` can correctly recognize an untyped bug from its
+    # observed/expected shape even when a stray feature-style acceptance
+    # criteria section is present. That section is forbidden by ``BUG_SPEC``;
+    # retaining it means ``forge shape --apply`` labels the issue as a bug but
+    # leaves it blocked by the very gate it is meant to repair (#3054).
+    body = _remove_acceptance_criteria_sections(current_body)
     missing_observed = not has_heading(body, _OBSERVED_HEADING_PATTERN)
     missing_expected = not has_heading(body, _EXPECTED_HEADING_PATTERN)
 
@@ -135,6 +143,46 @@ def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
             document, DIAGNOSIS_SECTION.key, _diagnosis_section_body(proposal), type_spec=BUG_SPEC
         )
     return render_issue_document(document)
+
+
+def _remove_acceptance_criteria_sections(body: str) -> str:
+    """Remove every acceptance-criteria section from a bug-body repair.
+
+    Section boundaries come from the same fence-aware heading scanner used by
+    the gate. This deliberately removes the heading and its whole owned block,
+    rather than merely relabelling it as Notes: acceptance-criteria checklists
+    are feature shape, not diagnostic evidence, and bugs have a separate
+    fix-success field in their Diagnosis section.
+    """
+    headings = iter_headings(body)
+    acceptance_criteria_heading = re.compile(ACCEPTANCE_CRITERIA_HEADING_PATTERN, re.IGNORECASE)
+    removals: list[tuple[int, int]] = []
+
+    for index, heading in enumerate(headings):
+        if not acceptance_criteria_heading.search(heading.group(2)):
+            continue
+        start = heading.start()
+        level = len(heading.group(1))
+        end = len(body)
+        for following in headings[index + 1 :]:
+            if len(following.group(1)) <= level:
+                end = following.start()
+                break
+        if removals and start < removals[-1][1]:
+            # A nested matching heading belongs to an already removed parent.
+            continue
+        removals.append((start, end))
+
+    if not removals:
+        return body
+
+    chunks: list[str] = []
+    cursor = 0
+    for start, end in removals:
+        chunks.append(body[cursor:start])
+        cursor = end
+    chunks.append(body[cursor:])
+    return "".join(chunks)
 
 
 def _diagnosis_status_line(proposal: ShapeProposal) -> str:

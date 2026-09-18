@@ -62,6 +62,20 @@ def test_restructure_bug_is_noop_on_gate_passing_body():
     assert restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body) == body
 
 
+def test_restructure_bug_removes_feature_acceptance_criteria_section():
+    body = (
+        _complete_bug_body()
+        + "\n## Acceptance criteria\n\n- The failure is fixed.\n\n"
+        + "## Notes\n\nKeep this context.\n"
+    )
+
+    new = restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body)
+
+    assert "## Acceptance criteria" not in new
+    assert "The failure is fixed." not in new
+    assert "## Notes\n\nKeep this context.\n" in new
+
+
 def test_restructure_bug_adds_only_missing_component_in_place():
     body = _complete_bug_body().replace("- **Evidence:** issue #2050 at baseline `f2caf7d`.\n", "")
     assert diagnosis_completeness(body) == (False, ["evidence"])
