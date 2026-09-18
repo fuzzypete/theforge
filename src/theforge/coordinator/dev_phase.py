@@ -50,11 +50,12 @@ from .agent_failure import (
     zero_charge_no_model_artifacts,
 )
 from .commit_guard import (
-    _checkpoint_commit,
     _commits_exist_strict,
     _has_commits_ahead_of_base,
     _worktree_changed_since_commit,
-    _worktree_has_changes,
+    preservation_failure_detail,
+    preservation_left_work_stranded,
+    preserve_dev_output,
 )
 from .dev_verification import DevVerificationBroker
 from .gate import _is_gate_skip
@@ -1016,6 +1017,117 @@ def _run_dev_phase(
     logger: StructuredLogger | None,
     stop_event: "threading.Event | None" = None,
 ) -> CoordinatorResult | None:
+    """Run one DEV iteration, never letting it end with its work uncommitted.
+
+    Thin wrapper around :func:`_run_dev_iteration` that owns one invariant for
+    every way the iteration can end: when the dev phase returns a terminal
+    CoordinatorResult (the story ends here) or raises, any dev work still sitting
+    in the worktree is checkpoint-committed first (#3059). The individual
+    retry/escalate branches inside ``_run_dev_iteration`` checkpoint at their own
+    seams where the reason is more specific; this wrapper is the backstop that
+    makes the guarantee structural instead of per-branch — including for the
+    *successful*-dev terminal returns (unproven completion, spent-without-commits)
+    that no failure-branch checkpoint can reach.
+
+    A ``None`` return means the iteration did not end the story — it either
+    re-enters DEV or advances to VALIDATE — so nothing is preserved here; the
+    engine's cancellation seams cover a stop landing in that window.
+
+    ``branch_name`` is passed through as the expected story branch: a checkpoint
+    on any other ref would not preserve the work anywhere the story can publish
+    it, so it is refused and reported. A preservation that leaves work stranded —
+    refused, or attempted and failed — is recorded on
+    ``state.dev_output_preservation_failure`` and named in the terminal result's
+    message, so the story never ends claiming a clean stop over a dirty worktree.
+    """
+    try:
+        result = _run_dev_iteration(
+            state,
+            config,
+            task,
+            story_content,
+            workspace_path,
+            branch_name,
+            notify=notify,
+            logger=logger,
+            stop_event=stop_event,
+        )
+    except BaseException:
+        _preserve_or_record_stranded(
+            state,
+            workspace_path,
+            branch_name,
+            "dev phase ended by exception",
+            logger=logger,
+        )
+        raise
+    if result is not None:
+        _stranded = _preserve_or_record_stranded(
+            state,
+            workspace_path,
+            branch_name,
+            f"dev iteration ended: {state.error or result.message or 'no detail available'}",
+            logger=logger,
+        )
+        if _stranded is not None:
+            # The story is ending either way; what must not happen is ending with
+            # a message that reads as a clean stop while the worktree still holds
+            # the iteration's work.
+            _stranded_note = f" [dev output NOT preserved: {_stranded}]"
+            result.message = (
+                f"{result.message or state.error or 'dev phase ended'}{_stranded_note}"
+            )
+            if state.error:
+                state.error = f"{state.error}{_stranded_note}"
+    return result
+
+
+def _preserve_or_record_stranded(
+    state: CoordinatorState,
+    workspace_path: Path,
+    branch_name: str,
+    reason: str,
+    *,
+    logger: StructuredLogger | None,
+) -> str | None:
+    """Preserve dirty dev output; return the detail when work stayed stranded.
+
+    Returns ``None`` when there was nothing to preserve or the checkpoint was
+    made. Otherwise records the failure on ``state`` (read by the cancellation
+    seam to fail closed) and returns the operator-facing detail.
+
+    The marker always reflects the *latest* attempt: a successful preservation
+    clears an earlier iteration's failure, so a later cancellation does not fail
+    closed on work that has since been committed.
+    """
+    outcome = preserve_dev_output(
+        workspace_path,
+        reason,
+        expected_branch=branch_name,
+        log_fn=_log,
+        logger=logger,
+        iteration=state.dev_iteration,
+    )
+    if not preservation_left_work_stranded(outcome):
+        state.dev_output_preservation_failure = None
+        return None
+    detail = f"{preservation_failure_detail(outcome)} ({workspace_path})"
+    state.dev_output_preservation_failure = detail
+    return detail
+
+
+def _run_dev_iteration(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    story_content: str,
+    workspace_path: Path,
+    branch_name: str,
+    *,
+    notify: bool,
+    logger: StructuredLogger | None,
+    stop_event: "threading.Event | None" = None,
+) -> CoordinatorResult | None:
     """Run one DEV iteration. Returns CoordinatorResult on budget escalation, else None.
 
     Caller must increment state.dev_iteration and _dev_calls_this_cycle before calling.
@@ -1723,16 +1835,13 @@ def _run_dev_phase(
         # reasoning as the timeout and max-iterations paths: uncommitted work is
         # invisible to the next iteration's baseline, and the coordinator is the
         # party that owns the worktree.
-        if _worktree_has_changes(workspace_path):
-            if _checkpoint_commit(workspace_path, "specification gap raised"):
-                _log("  ⎇ DEV   checkpoint-committed work before the specification-gap pause")
-                if logger:
-                    logger._safe_emit(
-                        "dev_checkpoint_commit",
-                        phase="DEV",
-                        iteration=state.dev_iteration,
-                        reason="spec_gap",
-                    )
+        _preserve_or_record_stranded(
+            state,
+            workspace_path,
+            branch_name,
+            "specification gap raised",
+            logger=logger,
+        )
         state.retry_reason = RetryReason.SPEC_GAP_RESUME
         record_dev_iteration_telemetry(
             state,
@@ -1925,21 +2034,13 @@ def _run_dev_phase(
             # without committing, so whatever it produced is uncommitted
             # working-tree state the next attempt would otherwise branch from as
             # if empty. Checkpoint it so the retry continues from committed work.
-            if _worktree_has_changes(workspace_path):
-                _checkpointed = _checkpoint_commit(
-                    workspace_path, "max_iterations_reached without submit"
-                )
-                if _checkpointed:
-                    _log(
-                        "  ⎇ DEV   checkpoint-committed stranded work before max-iterations retry"
-                    )
-                    if logger:
-                        logger._safe_emit(
-                            "dev_checkpoint_commit",
-                            phase="DEV",
-                            iteration=state.dev_iteration,
-                            reason="max_iterations_reached",
-                        )
+            _preserve_or_record_stranded(
+                state,
+                workspace_path,
+                branch_name,
+                "max_iterations_reached without submit",
+                logger=logger,
+            )
             return None
 
     if (
@@ -2017,20 +2118,13 @@ def _run_dev_phase(
         # produced as a checkpoint commit BEFORE any retry/escalate decision
         # runs. Committing only happens when the worktree is genuinely dirty,
         # so a truly empty iteration still escalates as before.
-        if _worktree_has_changes(workspace_path):
-            _checkpointed = _checkpoint_commit(workspace_path, _failure_detail)
-            if _checkpointed:
-                _log(
-                    f"  ⎇ DEV   checkpoint-committed stranded work before "
-                    f"failure handling ({_failure_detail})"
-                )
-                if logger:
-                    logger._safe_emit(
-                        "dev_checkpoint_commit",
-                        phase="DEV",
-                        iteration=state.dev_iteration,
-                        reason=_failure_detail,
-                    )
+        _preserve_or_record_stranded(
+            state,
+            workspace_path,
+            branch_name,
+            _failure_detail,
+            logger=logger,
+        )
         # ── Provider quota exhausted with no applicable fallback (#2298) ─
         # The provider stated when its limit resets and no configured transport
         # fallback applied, so every remaining iteration would re-ask a provider
