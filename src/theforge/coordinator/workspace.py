@@ -39,6 +39,13 @@ run_agent = None
 
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
+_LANDING_PUSH_ATTEMPTS = 3
+
+# This is a dependency-style WORKSPACE refusal: another story merged locally
+# but its publication failed, so this story must not inherit that unpublished
+# content. The engine and sprint scheduler use the typed marker to avoid
+# recording the victim as an escalation.
+BASE_BRANCH_UNPUBLISHED_ERROR_TYPE = "inherited_base_branch_unpublished"
 
 # Cap on the porcelain excerpt quoted back to the operator in a dirty-root refusal.
 _DIRTY_ROOT_SUMMARY_LIMIT = 200
@@ -621,17 +628,15 @@ def _merge_branch(
     _cu._log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
 
     if auto_push:
-        try:
-            subprocess.run(
-                ["git", "push", "origin", base_branch],
-                cwd=str(project_root),
-                timeout=30,
-                capture_output=True,
-                check=True,
-            )
-            _cu._log(f"  Pushed {base_branch} to origin")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            _cu._log(f"  ⚠ Push failed: {e} (merge succeeded locally)")
+        publish = _publish_landed_base_branch(
+            project_root,
+            base_branch,
+            timeout_seconds=(config.workspace.landing_push_timeout if config is not None else 120),
+        )
+        if not publish["success"]:
+            info["error"] = publish["error"]
+            info["landing_path"] = "merged-unpublished"
+            info["publish_attempts"] = publish["attempts"]
 
     worktree_rel = f".forge/worktrees/{slug}"
     ok_rm, rm_out = _cu._run_shell(f"git worktree remove --force {worktree_rel}", project_root)
@@ -642,6 +647,69 @@ def _merge_branch(
         _remove_leftover_worktree_dir(workspace_path)
 
     return info
+
+
+def _publish_landed_base_branch(
+    project_root: Path,
+    base_branch: str,
+    *,
+    timeout_seconds: int,
+) -> dict:
+    """Publish a local landing, reconciling the base branch before retrying.
+
+    A successful merge is a local git fact, but a landing is incomplete until
+    origin accepts it.  Retrying uses the same fetch/rebase shape as the PR
+    landing path and never resets the local branch: a reconcile failure leaves
+    the repository fail-closed for an operator to inspect.
+    """
+    last_error = "unknown publish failure"
+    for attempt in range(1, _LANDING_PUSH_ATTEMPTS + 1):
+        try:
+            subprocess.run(
+                ["git", "push", "origin", base_branch],
+                cwd=str(project_root),
+                timeout=timeout_seconds,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            _cu._log(f"  Pushed {base_branch} to origin (attempt {attempt})")
+            return {"success": True, "attempts": attempt, "error": None}
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last_error = str(exc)
+            _cu._log(f"  ⚠ Push attempt {attempt}/{_LANDING_PUSH_ATTEMPTS} failed: {exc}")
+        if attempt == _LANDING_PUSH_ATTEMPTS:
+            break
+        try:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
+                cwd=str(project_root),
+                timeout=timeout_seconds,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            del fetch
+            subprocess.run(
+                ["git", "rebase", f"origin/{base_branch}"],
+                cwd=str(project_root),
+                timeout=timeout_seconds,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last_error = f"publish reconciliation failed: {exc}"
+            _cu._log(f"  ⚠ Publish reconciliation failed: {exc}")
+            break
+    return {
+        "success": False,
+        "attempts": attempt,
+        "error": (
+            f"Landing merged locally but could not publish {base_branch} after {attempt} "
+            f"attempt(s): {last_error}"
+        ),
+    }
 
 
 # ── Workspace ────────────────────────────────────────────────────────
@@ -1076,6 +1144,15 @@ def _assert_base_branch_published(
         f"WORKSPACE abort: base branch '{base_branch}' has {ahead} local commit(s) not on "
         f"origin/{base_branch}. Worktrees cut from it would attribute that content to the "
         f"running story. Run: git push origin {base_branch}"
+    )
+
+
+def is_base_branch_unpublished_classification(message: str) -> bool:
+    """Whether a WORKSPACE refusal is inherited unpublished base content."""
+    return (
+        message.startswith("WORKSPACE abort: base branch '")
+        and "local commit(s) not on origin/" in message
+        and "Worktrees cut from it would attribute that content" in message
     )
 
 
