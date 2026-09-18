@@ -27,9 +27,15 @@ from theforge.config import (
 )
 from theforge.coordinator.commit_guard import (
     CHECKPOINT_COMMIT_SUBJECT,
+    PRESERVE_COMMITTED,
+    PRESERVE_FAILED,
+    PRESERVE_NOTHING,
+    PRESERVE_UNSAFE,
     _checkpoint_commit,
     _has_commits_ahead_of_base,
     _worktree_has_changes,
+    preservation_left_work_stranded,
+    preserve_dev_output,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.validate_phase import _run_validate_phase, _ValidateOutcome
@@ -187,6 +193,12 @@ def test_dev_phase_escalates_on_failed_agent_with_no_commits(tmp_path: Path) -> 
 
 
 # ── Checkpoint-commit helpers (#1746) ────────────────────────────────
+
+
+def _porcelain(path: Path) -> str:
+    return subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
 def _last_commit_subject(path: Path) -> str:
@@ -495,6 +507,206 @@ def test_dev_phase_empty_killed_iteration_still_escalates(tmp_path: Path) -> Non
     assert result.success is False
     assert state.phase == Phase.ESCALATE
     assert "no commits ahead of base" in (state.error or "")
+    assert _has_commits_ahead_of_base(tmp_path, "main") is False
+
+
+# ── Successful-dev terminal exits also preserve their work (#3059) ───
+
+
+def test_dev_phase_preserves_work_on_successful_dev_terminal_escalation(tmp_path: Path) -> None:
+    """A dev iteration can end the story while reporting success — here the
+    spent-past-the-estimate-with-no-commits escalation. No failure-branch
+    checkpoint can reach that exit, so the dev phase's own exit seam must still
+    commit the work rather than leave it for a VALIDATE that never runs."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+
+    config = _make_config(tmp_path)
+    task = TaskStory(name="t", slug="t", story_path="specs/t.md")
+    state = CoordinatorState()
+    state.budget.max_iterations = 2
+    # Any spend exceeds the estimate → the successful iteration takes the
+    # "no usable output (no commits)" escalation instead of advancing.
+    state.adaptive_dev_cost_estimate_usd = 0.0001
+
+    spec = tmp_path / "specs" / "t.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# t\n", encoding="utf-8")
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+
+    def _succeed_without_committing(*_args, **_kwargs):
+        (tmp_path / "README.md").write_text("seed\nedited\n")
+        (tmp_path / "new_runner.py").write_text("print('x')\n")
+        return AgentResult(
+            success=True,
+            output="done",
+            session_id=None,
+            cost_usd=5.0,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+            dev_handoff={
+                "summary": "did the thing",
+                "commits": [],
+                "acceptance_criteria": [{"criterion": "c", "status": "PARTIAL", "notes": "n"}],
+                "story_deviations": "none",
+                "deferred_items": "none",
+            },
+        )
+
+    with (
+        patch(
+            "theforge.coordinator.dev_phase.run_agent",
+            side_effect=_succeed_without_committing,
+        ),
+        patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock()),
+    ):
+        result = _run_dev_phase(
+            state, config, task, "# t\n", tmp_path, "feat/x", notify=False, logger=None
+        )
+
+    assert isinstance(result, CoordinatorResult)
+    assert result.success is False
+    assert state.phase == Phase.ESCALATE
+    # The successful iteration's work is committed, not stranded in the worktree.
+    assert _last_commit_subject(tmp_path) == CHECKPOINT_COMMIT_SUBJECT
+    assert _has_commits_ahead_of_base(tmp_path, "main") is True
+    files = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "new_runner.py" in files
+    assert "README.md" in files
+
+
+# ── Preservation refuses anywhere but the story branch (#3059) ───────
+
+
+def test_preserve_dev_output_commits_on_the_story_branch(tmp_path: Path) -> None:
+    """Baseline for the refusals below: on the expected branch, dirty work is
+    preserved."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "work.py").write_text("x = 1\n")
+
+    logger = MagicMock()
+    outcome = preserve_dev_output(
+        tmp_path, "cancelled", expected_branch="feat/x", logger=logger, iteration=0
+    )
+
+    assert outcome == PRESERVE_COMMITTED
+    assert preservation_left_work_stranded(outcome) is False
+    assert _last_commit_subject(tmp_path) == CHECKPOINT_COMMIT_SUBJECT
+
+
+def test_preserve_dev_output_refuses_when_checked_out_on_another_branch(tmp_path: Path) -> None:
+    """A dev iteration that left the worktree on some other attached branch must
+    NOT have its output committed there: that commit lands on a ref the story
+    never publishes, while the story branch stays empty and the worktree still
+    re-enters dirty. Refuse and report instead."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    # The iteration wandered onto another branch and left work behind.
+    subprocess.run(["git", "checkout", "-q", "-b", "somewhere-else"], cwd=tmp_path, check=True)
+    (tmp_path / "work.py").write_text("x = 1\n")
+
+    logger = MagicMock()
+    logged: list[str] = []
+    outcome = preserve_dev_output(
+        tmp_path,
+        "cancelled",
+        expected_branch="feat/x",
+        log_fn=logged.append,
+        logger=logger,
+        iteration=0,
+    )
+
+    assert outcome == PRESERVE_UNSAFE
+    assert preservation_left_work_stranded(outcome) is True
+    # Nothing was committed — not on the foreign branch, not anywhere.
+    assert _last_commit_subject(tmp_path) == "seed"
+    assert _has_commits_ahead_of_base(tmp_path, "main") is False
+    assert "work.py" in _porcelain(tmp_path)
+    # The refusal is reported, naming the branch it found and the one it wanted.
+    assert any("somewhere-else" in line and "feat/x" in line for line in logged), logged
+    events = [call.args[0] for call in logger._safe_emit.call_args_list if call.args]
+    assert events == ["dev_checkpoint_commit_failed"]
+
+
+def test_preserve_dev_output_refuses_on_detached_head(tmp_path: Path) -> None:
+    """A commit on a detached HEAD is reachable from no branch at all."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "--detach", head], cwd=tmp_path, check=True)
+    (tmp_path / "work.py").write_text("x = 1\n")
+
+    logged: list[str] = []
+    outcome = preserve_dev_output(
+        tmp_path, "cancelled", expected_branch="feat/x", log_fn=logged.append
+    )
+
+    assert outcome == PRESERVE_UNSAFE
+    assert "work.py" in _porcelain(tmp_path)
+    assert any("detached" in line for line in logged), logged
+
+
+def test_preserve_dev_output_refuses_mid_git_operation(tmp_path: Path) -> None:
+    """A half-applied merge/rebase/cherry-pick is not a state to commit into."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (tmp_path / ".git" / "MERGE_HEAD").write_text(f"{head}\n")
+    (tmp_path / "work.py").write_text("x = 1\n")
+
+    logged: list[str] = []
+    outcome = preserve_dev_output(
+        tmp_path, "cancelled", expected_branch="feat/x", log_fn=logged.append
+    )
+
+    assert outcome == PRESERVE_UNSAFE
+    assert _has_commits_ahead_of_base(tmp_path, "main") is False
+    assert any("MERGE_HEAD" in line for line in logged), logged
+
+
+def test_preserve_dev_output_reports_a_checkpoint_that_did_not_complete(tmp_path: Path) -> None:
+    """A confirmed-dirty worktree whose checkpoint commit fails is a reported
+    failure, never indistinguishable from 'nothing to commit'."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / "work.py").write_text("x = 1\n")
+
+    logged: list[str] = []
+    with patch("theforge.coordinator.commit_guard._checkpoint_commit", return_value=False):
+        outcome = preserve_dev_output(
+            tmp_path, "cancelled", expected_branch="feat/x", log_fn=logged.append
+        )
+
+    assert outcome == PRESERVE_FAILED
+    assert preservation_left_work_stranded(outcome) is True
+    assert any("FAILED to checkpoint-commit" in line for line in logged), logged
+
+
+def test_preserve_dev_output_does_nothing_when_only_forge_state_is_dirty(tmp_path: Path) -> None:
+    """Transient coordinator state is not dev work, so there is nothing to
+    preserve and no failure to report."""
+    _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp_path, check=True)
+    (tmp_path / ".forge").mkdir(exist_ok=True)
+    (tmp_path / ".forge" / "handoff.yaml").write_text("summary: partial\n")
+
+    outcome = preserve_dev_output(tmp_path, "cancelled", expected_branch="feat/x")
+
+    assert outcome == PRESERVE_NOTHING
+    assert preservation_left_work_stranded(outcome) is False
     assert _has_commits_ahead_of_base(tmp_path, "main") is False
 
 

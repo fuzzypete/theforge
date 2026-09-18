@@ -786,6 +786,15 @@ class CoordinatorState:
     # coordinator-terminated run out of the model's capability statistics
     # (#2921).
     dev_max_iterations_no_submit_terminated: bool = False
+    # Why a dev iteration's uncommitted work could NOT be preserved as a
+    # checkpoint commit before the story ended (#3059). Set by the preservation
+    # seams in dev_phase/engine when the worktree is confirmed dirty and the
+    # checkpoint either did not complete or was refused (the worktree is not on
+    # the story branch). Load-bearing rather than cosmetic: a cancellation that
+    # reads this fails the story closed as an infrastructure failure instead of
+    # being recorded as an ordinary stop, because the preserved worktree still
+    # carries the work every later phase reads as foreign content.
+    dev_output_preservation_failure: str | None = None
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
         default_factory=list

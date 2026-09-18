@@ -28,6 +28,13 @@ DEFAULT_CANCEL_ERROR_TYPE = "StoryCancelled"
 #: unresponsive worker, and neither reads as a judgment about the work (#2547).
 BUDGET_CANCEL_ERROR_TYPE = "SprintBudgetExhausted"
 
+#: Error type stamped when the cancellation itself was clean but the dev
+#: iteration's work could not be preserved before the worktree was kept. The stop
+#: reason is then no longer the whole story: the run ends with uncommitted dev
+#: output in a worktree a later phase will read as foreign, which is a substrate
+#: failure rather than an ordinary stop (#3059).
+PRESERVATION_FAILED_ERROR_TYPE = "DevOutputPreservationFailed"
+
 
 class StoryCancelled(Exception):
     """Raised when a sprint-level stop_event signals worker cancellation."""
