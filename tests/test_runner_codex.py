@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from theforge.agent_types import COST_ESTIMATED, COST_UNKNOWN
 from theforge.config import ModelProfile
 from theforge.coordinator.state import CoordinatorState
 from theforge.runners.runner_codex import (
@@ -438,12 +439,16 @@ class TestCodexPreGenerationRefusal:
         )
         assert _classify_pre_generation_refusal(stdout) is None
 
-    def test_unreadable_stdout_fails_closed(self) -> None:
-        """Output this parser cannot account for un-proves 'nothing was generated'."""
-        assert _classify_pre_generation_refusal("some prose\n" + self._REFUSAL) is None
+    def test_cli_preamble_noise_does_not_hide_a_refusal(self) -> None:
+        """A genuine refusal remains visible through non-JSON CLI chatter."""
+        stdout = "npm notice: update available\n" + self._REFUSAL + "progress complete\n"
+        reason = _classify_pre_generation_refusal(stdout)
+        assert reason is not None
+        assert "not supported" in reason
 
     def test_a_stream_with_no_refusal_event_is_none(self) -> None:
-        assert _classify_pre_generation_refusal('{"type":"thread.started"}\n') is None
+        stdout = "npm notice\n" + '{"type":"thread.started"}\n'
+        assert _classify_pre_generation_refusal(stdout) is None
 
 
 class TestCodexCachedTokenPricing:
@@ -792,6 +797,7 @@ class TestCodexLifecycle:
 
         assert result.success is False
         assert result.cost_usd == 0.0
+        assert result.cost_provenance == COST_ESTIMATED
         assert result.model_usage == ()
         assert result.startup_failure is True
         assert result.failure_code == "cli_launch_failure"
@@ -844,12 +850,42 @@ class TestCodexLifecycle:
 
         assert result.success is False
         assert result.cost_usd == 0.0
+        assert result.cost_provenance == COST_ESTIMATED
         assert result.model_usage == ()
         assert result.failure_code == "provider_refused_before_generation"
         # The CLI launched and reached the provider: this is not a startup failure.
         assert result.startup_failure is False
         # The operator-facing text names the refused model, not a budget problem.
         assert "not supported" in result.output
+
+    def test_noisy_pre_generation_refusal_is_measured_zero_not_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """CLI preambles must not turn an explicit provider refusal into unknown cost."""
+        self._patch_env(monkeypatch, "model_refused_noisy")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd == 0.0
+        assert result.cost_provenance == COST_ESTIMATED
+        assert result.model_usage == ()
+        assert result.failure_code == "provider_refused_before_generation"
+        assert result.startup_failure is False
+
+    def test_noisy_non_refusal_stays_cost_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Noise alone is not evidence that an unrecognised failure was free."""
+        self._patch_env(monkeypatch, "upstream_error_noisy")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd is None
+        assert result.cost_provenance == COST_UNKNOWN
+        assert result.failure_code is None
+        assert result.startup_failure is False
 
     def test_upstream_failure_after_turn_start_stays_cost_unknown(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -524,12 +524,10 @@ def _is_pre_generation_refusal_event(event: dict[str, Any]) -> bool:
 def _classify_pre_generation_refusal(stdout: str) -> str | None:
     """Return the provider's refusal message when nothing was ever generated.
 
-    Fails closed the same way ``_exited_before_any_turn`` does, and for the same
-    reason: a line this parser cannot read means output exists that is not
-    accounted for, so "nothing was generated" stops being an established fact.
-    Any evidence of generation — reported usage, a completed turn, agent text —
-    likewise disqualifies the stream, because a refusal alongside real work is a
-    run that spent something.
+    Non-JSON CLI preamble noise is ignored so a later, explicitly-shaped provider
+    refusal remains visible. Any evidence of generation — reported usage, a
+    completed turn, agent text — still disqualifies the stream, because a refusal
+    alongside real work is a run that spent something.
     """
     refusal: str | None = None
     for raw in stdout.splitlines():
@@ -537,13 +535,13 @@ def _classify_pre_generation_refusal(stdout: str) -> str | None:
         if not line:
             continue
         if not line.startswith("{"):
-            return None
+            continue
         try:
             event = json.loads(line)
         except (json.JSONDecodeError, ValueError):
-            return None
+            continue
         if not isinstance(event, dict):
-            return None
+            continue
         if event.get("type") == "turn.completed":
             return None
         if refusal is None and _is_pre_generation_refusal_event(event):
