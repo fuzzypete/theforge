@@ -3046,6 +3046,7 @@ class TestImmediateIntegrationLanding:
 
         b_started = threading.Event()
         publication_failed = threading.Event()
+        deadline_elapsed = threading.Event()
 
         def fake_run_task(*args, **_kwargs):  # noqa: ANN001
             task = args[1]
@@ -3054,10 +3055,10 @@ class TestImmediateIntegrationLanding:
                 return result_a
             b_started.set()
             assert publication_failed.wait(timeout=5)
-            # Deliberately ignore the stop event: exercise the deadline path
-            # that races a publication cancellation.
-            threading.Event().wait(timeout=0.75)
-            threading.Event().wait(timeout=0.75)
+            # Wait until the scheduler's deadline poll has elapsed. This keeps
+            # the worker in flight through the publication cancellation without
+            # depending on wall-clock scheduling between independent sleeps.
+            assert deadline_elapsed.wait(timeout=5)
             return _make_coordinator_result(success=True, cost=1.0)
 
         def fake_merge(*args, **_kwargs):  # noqa: ANN001
@@ -3070,9 +3071,18 @@ class TestImmediateIntegrationLanding:
                 "error": "push rejected",
             }
 
+        real_wait = _runner.wait
+
+        def release_worker_after_deadline(*args, **kwargs):  # noqa: ANN001
+            done, pending = real_wait(*args, **kwargs)
+            if publication_failed.is_set() and not done:
+                deadline_elapsed.set()
+            return done, pending
+
         with (
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
             patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
+            patch("theforge.sprint.runner.wait", side_effect=release_worker_after_deadline),
         ):
             sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
