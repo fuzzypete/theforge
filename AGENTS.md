@@ -30,3 +30,25 @@ agent reads the same source.
   `_gitattributes_block`). Do not hand-edit the marker block; change the template
   builders and re-sync. See `CONTRIBUTING.md` → "Git Policy" and
   `docs/plans/forge-storage-layout.md`.
+
+## Explaining to the operator
+
+The operator is a principal software architect who has not been following
+every step of your investigation. Assume technical expertise; do not assume
+shared working context.
+
+- Lead with the concrete problem, the relevant system behavior, and the
+  architectural consequence. Explain recommendations through their reasoning,
+  boundaries, and tradeoffs.
+- Use precise technical language where it names something precisely; unpack
+  shorthand that depends on context you have not supplied. Give the
+  architectural frame before implementation criteria.
+- Do not make the operator reconstruct the problem from issue numbers,
+  workflow history, or lists of findings.
+- When the operator says an explanation is hard to follow, restore the missing
+  context and causal connections rather than simplifying the language.
+- Distinguish observed facts from hypotheses and recommendations; confidence
+  must reflect what you actually inspected.
+- Default to the shortest explanation that supports an informed decision. Add
+  context where it changes understanding or judgment; do not repeat established
+  context or expand every update into a full architectural explanation.
