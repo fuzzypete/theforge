@@ -63,7 +63,10 @@ from ..coordinator.util import (
     _generate_run_id,
     resolve_timeout,
 )
-from ..coordinator.workspace import sweep_orphan_worktrees
+from ..coordinator.workspace import (
+    BASE_BRANCH_UNPUBLISHED_ERROR_TYPE,
+    sweep_orphan_worktrees,
+)
 from ..intake import (
     AgentRewriteResult,
     IntakeOutcome,
@@ -3322,6 +3325,19 @@ def _routing_stop_reason(result: CoordinatorResult) -> str | None:
     return str(getattr(result, "message", "") or getattr(result.state, "error", "") or "").strip()
 
 
+def _inherited_base_branch_unpublished(result: CoordinatorResult) -> bool:
+    """Whether this result was refused before dispatch by an unpublished landing."""
+    return str(getattr(result.state, "error_type", "") or "") == BASE_BRANCH_UNPUBLISHED_ERROR_TYPE
+
+
+def _mark_story_publication_cancelled(result: CoordinatorResult, *, reason: str) -> None:
+    """Record a sprint-issued stop as an inherited base-publication skip."""
+    result.success = False
+    result.state.error = reason
+    result.state.error_type = BASE_BRANCH_UNPUBLISHED_ERROR_TYPE
+    result.message = reason
+
+
 def _fatal_auth_cause(result: CoordinatorResult) -> dict | None:
     """Return the structured cause when *result* died on a credential rejection.
 
@@ -4069,6 +4085,12 @@ class SprintExecutionState:
     # cannot diverge when another stop condition already owns the sprint.
     routing_stop_reason: str = ""
     routing_cancelled_slugs: set[str] = field(default_factory=set)
+    # A local merge whose push could not be published contaminates the base for
+    # every next workspace. This is a sprint-wide dependency stop, distinct from
+    # model availability: it identifies the landing story and keeps the victims
+    # out of escalation history.
+    publication_stop_reason: str = ""
+    publication_cancelled_slugs: set[str] = field(default_factory=set)
     # The latest measured lower bound each active story reported through live
     # state updates. Used to recover spend when a worker dies before it can
     # return a terminal CoordinatorResult (#2547 follow-up).
@@ -5209,7 +5231,7 @@ def _attempt_integration(
         observer=LANDING_OBSERVER_INTEGRATION,
     )
 
-    if merge_info.get("merged"):
+    if landing_status != "failed" and merge_info.get("merged"):
         state.merged_slugs.add(slug)
         state.dag.mark_complete(slug)
         _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
@@ -5247,6 +5269,23 @@ def _attempt_integration(
 
     result.state.error = merge_info.get("error") or "integration failed"
     _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
+    if merge_info.get("landing_path") == "merged-unpublished":
+        base_branch = state.context.config.workspace.base_branch
+        reason = (
+            f"Landing publication failed for {slug} on {base_branch}; the local merge is "
+            f"unpublished and remaining stories are skipped to avoid inheriting it. "
+            f"{result.state.error}"
+        )
+        state.publication_stop_reason = state.publication_stop_reason or reason
+        state.stop.stop_if_unset(state.publication_stop_reason, halt_slug=slug)
+        _log(f"HALT sprint: {state.stop.reason}")
+        for pending_slug, stop_event in state.stop_events.items():
+            state.publication_cancelled_slugs.add(pending_slug)
+            stop_event.set()
+        for gate_slug, gate in state.plan_gates.items():
+            _log(f"Releasing plan gate for {gate_slug} (unpublished landing)")
+            gate.set()
+        state.plan_gates.clear()
     _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
     _resolve_batch_leader_landing(state, slug, "failed", carrier=merge_info)
     return True
@@ -7867,6 +7906,25 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         _sprint_state.state_writer.update(task.slug, status="skipped")
                     continue
 
+                if _sprint_state.publication_stop_reason:
+                    _sprint_state.dag.mark_skipped(task.slug)
+                    _set_outcome(
+                        _sprint_state,
+                        task.slug,
+                        StoryOutcome.SKIPPED,
+                        reason=_sprint_state.publication_stop_reason,
+                    )
+                    _log(f"SKIPPED {task.slug} ({_sprint_state.publication_stop_reason})")
+                    _record_current_story_entry(
+                        task.slug,
+                        "SKIPPED",
+                        error=_sprint_state.publication_stop_reason,
+                        error_type=BASE_BRANCH_UNPUBLISHED_ERROR_TYPE,
+                    )
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(task.slug, status="skipped")
+                    continue
+
                 # Both hard (depends_on) and soft (collision_deps) parents must
                 # honor the queued-PR reachability gate. dag.ready() releases a
                 # collision edge the instant its parent reaches a terminal state,
@@ -8419,6 +8477,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _mark_story_routing_cancelled(_timeout_result, reason=_cancel_reason)
                             _timeout_outcome = StoryOutcome.SKIPPED
                             _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.publication_cancelled_slugs:
+                            _sprint_state.publication_cancelled_slugs.discard(affected_slug)
+                            _mark_story_publication_cancelled(
+                                _timeout_result,
+                                reason=_sprint_state.publication_stop_reason,
+                            )
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(
+                                f"SKIPPED {affected_slug} "
+                                f"({_sprint_state.publication_stop_reason})"
+                            )
                         elif affected_slug in auth_cancelled_slugs:
                             auth_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
@@ -8564,6 +8633,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _mark_story_routing_cancelled(_exc_result, reason=_cancel_reason)
                             _exc_outcome = StoryOutcome.SKIPPED
                             _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.publication_cancelled_slugs:
+                            _sprint_state.publication_cancelled_slugs.discard(affected_slug)
+                            _mark_story_publication_cancelled(
+                                _exc_result,
+                                reason=_sprint_state.publication_stop_reason,
+                            )
+                            _exc_outcome = StoryOutcome.SKIPPED
+                            _log(
+                                f"SKIPPED {affected_slug} "
+                                f"({_sprint_state.publication_stop_reason})"
+                            )
                         elif affected_slug in auth_cancelled_slugs:
                             auth_cancelled_slugs.discard(affected_slug)
                             _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
@@ -8679,6 +8759,38 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     )
                     continue
 
+                if _inherited_base_branch_unpublished(result):
+                    _base_reason = (
+                        _sprint_state.publication_stop_reason
+                        or result.state.error
+                        or result.message
+                    )
+                    _sprint_state.publication_stop_reason = _base_reason
+                    _end_collision_claim(_sprint_state, slug, "unpublished base branch")
+                    _log(f"SKIPPED {slug} ({_base_reason})")
+                    _record_current_story_entry(
+                        slug,
+                        "SKIPPED",
+                        error=_base_reason,
+                        error_type=BASE_BRANCH_UNPUBLISHED_ERROR_TYPE,
+                    )
+                    _set_outcome(
+                        _sprint_state,
+                        slug,
+                        StoryOutcome.SKIPPED,
+                        reason=_base_reason,
+                        phase=result.phase.name,
+                    )
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
+                    _sprint_state.stop.stop_if_unset(_base_reason)
+                    _settle_terminal_story_audit(slug, task, result)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
+                    continue
+
                 # Auth circuit breaker (#1952): the launch gate proves the
                 # credential was usable at t=0, but an interactive sign-in can
                 # revoke it mid-sprint. The first fatal credential rejection is
@@ -8732,6 +8844,34 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     _log(f"SKIPPED {slug} ({_cancel_reason})")
                     _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
                     _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
+                    _settle_terminal_story_audit(slug, task, result)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
+                    continue
+
+                if slug in _sprint_state.publication_cancelled_slugs:
+                    _sprint_state.publication_cancelled_slugs.discard(slug)
+                    _mark_story_publication_cancelled(
+                        result, reason=_sprint_state.publication_stop_reason
+                    )
+                    _end_collision_claim(_sprint_state, slug, "cancelled by unpublished landing")
+                    _log(f"SKIPPED {slug} ({_sprint_state.publication_stop_reason})")
+                    _record_current_story_entry(
+                        slug,
+                        "SKIPPED",
+                        error=_sprint_state.publication_stop_reason,
+                        error_type=BASE_BRANCH_UNPUBLISHED_ERROR_TYPE,
+                    )
+                    _set_outcome(
+                        _sprint_state,
+                        slug,
+                        StoryOutcome.SKIPPED,
+                        reason=_sprint_state.publication_stop_reason,
+                    )
                     if _sprint_state.state_writer is not None:
                         _sprint_state.state_writer.update(slug, status="skipped")
                     _sprint_state.dag.mark_skipped(slug)

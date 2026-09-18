@@ -259,6 +259,29 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="workspace.setup_timeout must be positive"):
             load_config(config_path)
 
+    def test_landing_push_timeout_default_is_120(self, tmp_path):
+        config_path = _write_config({"project": "p"}, tmp_path)
+        config = load_config(config_path)
+        assert config.workspace.landing_push_timeout == 120
+
+    def test_landing_push_timeout_valid_int_loads(self, tmp_path):
+        config_path = _write_config({"workspace": {"landing_push_timeout": 480}}, tmp_path)
+        config = load_config(config_path)
+        assert config.workspace.landing_push_timeout == 480
+
+    def test_landing_push_timeout_non_numeric_raises(self, tmp_path):
+        config_path = _write_config({"workspace": {"landing_push_timeout": "slow"}}, tmp_path)
+        with pytest.raises(
+            ValueError,
+            match="workspace.landing_push_timeout must be an integer number of seconds",
+        ):
+            load_config(config_path)
+
+    def test_landing_push_timeout_non_positive_raises(self, tmp_path):
+        config_path = _write_config({"workspace": {"landing_push_timeout": 0}}, tmp_path)
+        with pytest.raises(ValueError, match="workspace.landing_push_timeout must be positive"):
+            load_config(config_path)
+
     def test_custom_retry(self, tmp_path):
         config_path = _write_config(
             {

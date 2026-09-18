@@ -174,7 +174,7 @@ SUBSTRATE_SCHEMA_VERSION = 13
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 50
+CURRENT_RECORD_SCHEMA_VERSION = 51
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2901,6 +2901,17 @@ def _migrate_v49_to_v50(record: dict) -> dict:
     return record
 
 
+def _migrate_v50_to_v51(record: dict) -> dict:
+    """Advance v50 records across ``workspace.landing_push_timeout`` (#3018).
+
+    v51 records the configured per-attempt budget for publishing a local
+    landing.  Older records ran before the setting existed, so leaving the
+    recorded-configuration entry absent accurately preserves that history
+    without attributing today's default to an earlier run.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2959,6 +2970,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     47: _migrate_v47_to_v48,
     48: _migrate_v48_to_v49,
     49: _migrate_v49_to_v50,
+    50: _migrate_v50_to_v51,
 }
 
 

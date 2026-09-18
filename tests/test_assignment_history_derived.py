@@ -137,6 +137,27 @@ def test_derive_assignment_history_skips_records_without_routing(tmp_path: Path)
     assert [d["story"] for d in derived] == ["modern"]
 
 
+def test_unpublished_base_branch_skip_is_excluded_from_assignment_history(tmp_path: Path) -> None:
+    skipped = _audit_record(run_id="r-skipped", slug="victim", success=False)
+    skipped["outcome"]["error_type"] = "inherited_base_branch_unpublished"
+    _seed_substrate(
+        tmp_path,
+        [
+            skipped,
+            _audit_record(run_id="r-real", slug="real-escalation", success=False),
+        ],
+    )
+    conn = sub.require_substrate(tmp_path)
+    try:
+        derived = sub.derive_assignment_history(conn)
+        projected = list(sub.iter_escalation_records(conn))
+    finally:
+        conn.close()
+
+    assert [item["story"] for item in derived] == ["real-escalation"]
+    assert [item["story"] for item in projected] == ["real-escalation"]
+
+
 # ── preflight seam: substrate → assign_models ────────────────────────────
 
 
