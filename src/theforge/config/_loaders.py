@@ -47,6 +47,22 @@ def _validated_workspace_setup_timeout(raw: Any) -> int:
     return raw
 
 
+def _validated_landing_push_timeout(raw: Any) -> int:
+    """Validate ``workspace.landing_push_timeout``."""
+    if raw is None:
+        return DEFAULT_WORKSPACE.landing_push_timeout
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            "forge.yaml workspace.landing_push_timeout must be an integer number of "
+            f"seconds, got {raw!r} ({type(raw).__name__})."
+        )
+    if raw <= 0:
+        raise ValueError(
+            f"forge.yaml workspace.landing_push_timeout must be positive, got {raw!r}."
+        )
+    return raw
+
+
 def _validate_v0_8_schema(raw: dict[str, Any]) -> None:
     """Reject mixed legacy/v0.8 shapes that are no longer supported."""
     if "models" not in raw:
@@ -115,6 +131,7 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
             "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
         ),
         auto_push=auto_push,
+        landing_push_timeout=_validated_landing_push_timeout(ws_data.get("landing_push_timeout")),
         setup_command=setup_command,
         setup_timeout=_validated_workspace_setup_timeout(ws_data.get("setup_timeout")),
         python_interpreter=python_interpreter,

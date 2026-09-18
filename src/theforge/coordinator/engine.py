@@ -96,8 +96,10 @@ from .util import (
     live_complexity_fields,
 )
 from .workspace import (
+    BASE_BRANCH_UNPUBLISHED_ERROR_TYPE,
     _base_branch_lands_locally,
     _create_workspace,
+    is_base_branch_unpublished_classification,
     landing_precondition_error,
     pull_base_branch,
 )
@@ -1345,6 +1347,27 @@ def run_task(
         # two to have (#2309).
         _record_gate_teardowns(state, _setup_teardowns, source=SHELL_WORKSPACE_SETUP)
         if err:
+            if is_base_branch_unpublished_classification(err):
+                # The story never received a workspace.  This is a dependency
+                # refusal caused by an earlier local merge that was not
+                # published, not an escalation of the pending story.
+                state.phase = Phase.WORKSPACE
+                state.error = err
+                state.error_type = BASE_BRANCH_UNPUBLISHED_ERROR_TYPE
+                _log(f"⊘ SKIPPED    {state.error}")
+                logger._safe_emit("phase_end", phase="WORKSPACE", outcome="skipped")
+                logger._safe_emit(
+                    "run_end", outcome="skipped", total_cost_usd=0.0, total_duration_s=0.0
+                )
+                return _attach_runtime_config(
+                    CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=err,
+                    ),
+                    config,
+                )
             state.phase = Phase.ESCALATE
             state.error = err
             _log(f"✗ ESCALATE   {state.error}")
@@ -1706,11 +1729,7 @@ def run_task(
             )
             result.merge = _merge_info
             result.landing_status = _landing_status
-            if _merge_info.get("merged"):
-                result.message += " Merged."
-            elif _merge_info.get("merge_queued"):
-                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
-            elif _landing_status == "failed":
+            if _landing_status == "failed":
                 mark_merge_failed(
                     state,
                     result,
@@ -1719,6 +1738,10 @@ def run_task(
                     arming_failed=bool(_merge_info.get("arming_failed")),
                     inherited_dev_residue=bool(_merge_info.get("inherited_dev_residue")),
                 )
+            elif _merge_info.get("merged"):
+                result.message += " Merged."
+            elif _merge_info.get("merge_queued"):
+                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
@@ -2128,11 +2151,7 @@ def _run_resume_coordinator(
             )
             result.merge = _merge_info
             result.landing_status = _landing_status
-            if _merge_info.get("merged"):
-                result.message += " Merged."
-            elif _merge_info.get("merge_queued"):
-                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
-            elif _landing_status == "failed":
+            if _landing_status == "failed":
                 mark_merge_failed(
                     state,
                     result,
@@ -2141,6 +2160,10 @@ def _run_resume_coordinator(
                     arming_failed=bool(_merge_info.get("arming_failed")),
                     inherited_dev_residue=bool(_merge_info.get("inherited_dev_residue")),
                 )
+            elif _merge_info.get("merged"):
+                result.message += " Merged."
+            elif _merge_info.get("merge_queued"):
+                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
 
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)

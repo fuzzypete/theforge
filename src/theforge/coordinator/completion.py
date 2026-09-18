@@ -1371,16 +1371,19 @@ def land_story(
         merge_info = dict(merge_info)
         merge_info["action"] = "merge"
 
-        if merge_info["merged"] and task.story_path:
+        landing_status = (
+            "landed" if merge_info["merged"] and not merge_info.get("error") else "failed"
+        )
+        if landing_status == "landed" and task.story_path:
             _archive_story_to_done(task.story_path, config.project_root, commit=True)
         if logger:
             logger._safe_emit(
                 "merge_result",
-                success=merge_info["merged"],
+                success=landing_status == "landed",
                 branch=branch_name,
                 error=merge_info.get("error"),
             )
-        if merge_info["merged"] and config.hooks and config.hooks.post_merge:
+        if landing_status == "landed" and config.hooks and config.hooks.post_merge:
             from .hooks import build_post_merge_payload
             from .hooks import run_hook as _run_hook
 
@@ -1394,7 +1397,6 @@ def land_story(
                 secrets=config.secrets,
             )
 
-        landing_status = "landed" if merge_info["merged"] else "failed"
         if _rollback is not None:
             merge_info = annotate_gate_green_landing(merge_info, _rollback)
         return merge_info, landing_status

@@ -240,6 +240,34 @@ def test_sibling_artifacts_are_committed_before_land_story_runs(tmp_path: Path) 
     assert sorted(committed) == sorted(artifacts)
 
 
+def test_unpublished_local_merge_stops_the_sprint(tmp_path: Path) -> None:
+    """A failed publish is a failed landing and blocks later workspace creation."""
+    root = _repo(tmp_path)
+    state, task = _state(root)
+    result = _approved_result(task)
+
+    def _land_story(*_args, **_kwargs):
+        return (
+            {
+                "attempted": True,
+                "merged": True,
+                "base_branch": "main",
+                "landing_path": "merged-unpublished",
+                "error": "Landing merged locally but could not publish main after 3 attempt(s)",
+            },
+            "failed",
+        )
+
+    assert _run_integration(state, task, result, _land_story) is True
+
+    assert result.success is False
+    assert result.phase is Phase.MERGE_FAILED
+    assert result.landing_status == "failed"
+    assert task.slug not in state.merged_slugs
+    assert state.stop.halt_slug == task.slug
+    assert "Landing publication failed" in (state.stop.reason or "")
+
+
 def test_the_seam_reuses_the_existing_publish_with_a_local_landing(tmp_path: Path) -> None:
     """The seam is a new call site for the #2595 publish, not a second publish.
 
