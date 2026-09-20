@@ -479,14 +479,15 @@ def _print_failed_by_class(
 ) -> None:
     """Group failed stories under their literal ``primary_failure_class``.
 
-    Stories whose class routes to SKIPPED / INTAKE are excluded here. Class
-    order follows first appearance in sprint order so the layout stays stable.
+    Stories whose class routes to SKIPPED / INTAKE, or whose recorded outcome
+    is SKIPPED, are excluded here. Class order follows first appearance in
+    sprint order so the layout stays stable.
     """
     grouped: dict[str, list[dict]] = {}
     for story in non_done:
         entry = _rca_entry(story, rca_stories)
         primary = _primary_class(entry)
-        if primary in _SKIPPED_INTAKE_CLASSES:
+        if _routes_to_skipped_intake(story, primary):
             continue
         grouped.setdefault(primary, []).append(story)
 
@@ -513,7 +514,7 @@ def _print_skipped_intake(
     rows = [
         story
         for story in non_done
-        if _primary_class(_rca_entry(story, rca_stories)) in _SKIPPED_INTAKE_CLASSES
+        if _routes_to_skipped_intake(story, _primary_class(_rca_entry(story, rca_stories)))
     ]
     if not rows:
         return
@@ -693,6 +694,17 @@ def _issue_number(story: dict) -> str | None:
 
 def _outcome(story: dict) -> str:
     return str(story.get("outcome") or "").upper()
+
+
+def _routes_to_skipped_intake(story: dict, primary: str) -> bool:
+    """Whether the digest reports this story under SKIPPED / INTAKE.
+
+    A recorded SKIPPED outcome controls its presentation even if the RCA class
+    describes a recovery cause such as an in-flight budget halt.  The class
+    explains why the story stopped; it must not recast the recorded outcome as
+    FAILED.
+    """
+    return _outcome(story) == "SKIPPED" or primary in _SKIPPED_INTAKE_CLASSES
 
 
 def _rca_entry(story: dict, rca_stories: dict) -> dict:

@@ -936,11 +936,12 @@ def _classify_story(
             continue
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
-        if skip_rule is not None and rule_id == "review_changes_requested":
+        if recorded_skip_reason is not None and rule_id == "review_changes_requested":
             # A recorded review is important evidence, but the sprint's own
-            # budget-halt/skip outcome remains the primary classification.
-            # Otherwise this primary review rule would rewrite SKIPPED as a
-            # rejection merely because the review completed before the halt.
+            # skip outcome remains the primary classification.  This guard is
+            # keyed to the recorded reason rather than to a matching skip rule:
+            # an unclassified skip reason is a taxonomy gap, not a rejection
+            # rewritten from a review that completed before the halt.
             continue
         if recorded_skip_reason is not None and source_kind != "structured":
             # The reason was recorded but no rule receives it. Other structured
@@ -3152,11 +3153,17 @@ def _budget_halted_in_flight_action(
         f"the sprint's budget cap was reached while {ref} was running, so the sprint "
         "cancelled it at its next phase boundary"
     )
-    if review_verdict is not None:
+    if review_verdict == "REQUEST_CHANGES":
         return (
             f"{prefix}; its recorded final review verdict was{review_verdict_detail} — "
             "inspect and address that verdict before deciding whether a re-sprint needs "
             "additional budget"
+        )
+    if review_verdict is not None:
+        return (
+            f"{prefix}; its recorded final review verdict was{review_verdict_detail} — "
+            f"raise the budget or re-sprint {ref} in a new run; the verdict raised no "
+            "review findings to address, but the work remains unfinished"
         )
     return (
         f"{prefix} — raise the budget or re-sprint {ref} in a new run; its work is "

@@ -260,6 +260,45 @@ def test_intake_story_only_in_skipped_not_failed(tmp_path: Path) -> None:
     assert "FAILED — intake_shape" not in output
 
 
+def test_skipped_budget_halt_stays_under_skipped_with_recorded_review_verdict(
+    tmp_path: Path,
+) -> None:
+    """RCA recovery detail cannot reclassify a recorded SKIPPED outcome as FAILED."""
+    name = "budget-halt"
+    run_id = "runBH"
+    stories = [
+        {
+            "slug": "issue-2206",
+            "path": "Issue #2206",
+            "outcome": "SKIPPED",
+            "cost_usd": 12.0,
+        }
+    ]
+    rca_stories = {
+        "issue-2206": {
+            "primary_failure_class": "sprint_budget_halted_in_flight",
+            "contributing_factors": [],
+            "evidence": [
+                {
+                    "source": "run-runBH-summary.yaml",
+                    "rule_id": "review_changes_requested",
+                    "excerpt": "final review verdict REQUEST_CHANGES (2 P1); outcome=SKIPPED",
+                }
+            ],
+            "partial_value": [],
+            "recommended_next_actions": [],
+        }
+    }
+    _write_summary(tmp_path, name, run_id, stories)
+    _write_rca(tmp_path, name, run_id, rca_stories)
+
+    output = _render(tmp_path, run_id)
+    assert "SKIPPED / INTAKE (1)" in output
+    assert "⊘ #2206" in output
+    assert "sprint_budget_halted_in_flight" in output
+    assert "FAILED — sprint_budget_halted_in_flight" not in output
+
+
 def test_failed_heading_is_literal_primary_class(tmp_path: Path) -> None:
     """The FAILED heading is the classifier's literal string, not a re-mapping."""
     name = "sprint-x"

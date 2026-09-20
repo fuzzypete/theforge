@@ -611,7 +611,8 @@ def test_mid_flight_budget_halt_surfaces_audit_review_verdict(tmp_path: Path) ->
             "reviews": [
                 {
                     "verdict": "REQUEST_CHANGES",
-                    "findings_by_severity": {"P1": 2, "P2": 3},
+                    "p1_count": 2,
+                    "p2_count": 3,
                 }
             ]
         },
@@ -682,6 +683,55 @@ def test_unclassified_skip_reason_says_so_instead_of_naming_a_class(tmp_path: Pa
     actions = entry["recommended_next_actions"]
     assert not any("land blocking dependencies" in a for a in actions)
     assert any("no rule in this taxonomy classifies" in a for a in actions)
+
+
+def test_unclassified_skip_reason_keeps_review_verdict_as_evidence(tmp_path: Path) -> None:
+    """A review cannot recast a recorded, unclassified skip as rejection."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "the scheduler withdrew the story for a reason nothing classifies",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "taxonomy_gap"
+    assert any(item["rule_id"] == "review_changes_requested" for item in entry["evidence"])
+    actions = entry["recommended_next_actions"]
+    assert any("no rule in this taxonomy classifies" in action for action in actions)
+    assert not any("address the review findings" in action for action in actions)
+
+
+def test_mid_flight_budget_halt_with_approve_does_not_invent_review_findings(
+    tmp_path: Path,
+) -> None:
+    """An approval remains evidence; the unfinished work still needs budget."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)",
+                    verdict="APPROVE",
+                    reviews=[{"verdict": "APPROVE", "p1_count": 0, "p2_count": 0}],
+                )
+            ]
+        ),
+    )
+
+    action = _build(d)["stories"]["issue-2206"]["recommended_next_actions"][0]
+    assert "APPROVE (0 P1, 0 P2)" in action
+    assert "raise the budget or re-sprint" in action
+    assert "inspect and address" not in action
 
 
 # ── Engine: unknown residual never drops ──────────────────────────────────────
