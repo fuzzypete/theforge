@@ -560,6 +560,72 @@ def test_mid_flight_budget_halt_is_not_a_credential_rejection(tmp_path: Path) ->
     assert any("budget" in a for a in entry["recommended_next_actions"])
 
 
+def test_mid_flight_budget_halt_surfaces_recorded_review_verdict(tmp_path: Path) -> None:
+    """A budget halt does not erase the review judgment recorded before it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 15, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "sprint_budget_halted_in_flight"
+    verdict_evidence = next(
+        evidence
+        for evidence in entry["evidence"]
+        if evidence["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (15 P1, 1 P2)" in verdict_evidence["excerpt"]
+    action = entry["recommended_next_actions"][0]
+    assert "REQUEST_CHANGES (15 P1, 1 P2)" in action
+    assert "no model judged it" not in action
+    assert "not rejected" not in action
+
+
+def test_mid_flight_budget_halt_surfaces_audit_review_verdict(tmp_path: Path) -> None:
+    """The per-story audit also supplies the verdict when the summary omits it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)"
+                )
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2206" / "audit.yaml",
+        {
+            "reviews": [
+                {
+                    "verdict": "REQUEST_CHANGES",
+                    "p1_count": 2,
+                    "p2_count": 3,
+                }
+            ]
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    evidence = next(
+        item for item in entry["evidence"] if item["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (2 P1, 3 P2)" in evidence["excerpt"]
+    assert "REQUEST_CHANGES (2 P1, 3 P2)" in entry["recommended_next_actions"][0]
+
+
 def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
@@ -576,6 +642,35 @@ def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) ->
     entry = _build(d)["stories"]["issue-2206"]
     assert entry["primary_failure_class"] == "agent_auth_rejected"
     assert any("re-authenticate" in a for a in entry["recommended_next_actions"])
+
+
+def test_mid_flight_credential_stop_surfaces_recorded_review_verdict(tmp_path: Path) -> None:
+    """A credential stop does not erase a review judgment recorded before it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: agent credential rejected during REVIEW: "
+                    "OAuth token revoked",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "agent_auth_rejected"
+    evidence = next(
+        item for item in entry["evidence"] if item["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (2 P1, 1 P2)" in evidence["excerpt"]
+    action = entry["recommended_next_actions"][0]
+    assert "REQUEST_CHANGES (2 P1, 1 P2)" in action
+    assert "inspect and address" in action
+    assert "not a judgment about its work" not in action
 
 
 def test_collision_stand_down_skip_classifies_as_stand_down(tmp_path: Path) -> None:
@@ -619,6 +714,55 @@ def test_unclassified_skip_reason_says_so_instead_of_naming_a_class(tmp_path: Pa
     assert any("no rule in this taxonomy classifies" in a for a in actions)
 
 
+def test_unclassified_skip_reason_keeps_review_verdict_as_evidence(tmp_path: Path) -> None:
+    """A review cannot recast a recorded, unclassified skip as rejection."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "the scheduler withdrew the story for a reason nothing classifies",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "taxonomy_gap"
+    assert any(item["rule_id"] == "review_changes_requested" for item in entry["evidence"])
+    actions = entry["recommended_next_actions"]
+    assert any("no rule in this taxonomy classifies" in action for action in actions)
+    assert not any("address the review findings" in action for action in actions)
+
+
+def test_mid_flight_budget_halt_with_approve_does_not_invent_review_findings(
+    tmp_path: Path,
+) -> None:
+    """An approval remains evidence; the unfinished work still needs budget."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)",
+                    verdict="APPROVE",
+                    reviews=[{"verdict": "APPROVE", "p1_count": 0, "p2_count": 0}],
+                )
+            ]
+        ),
+    )
+
+    action = _build(d)["stories"]["issue-2206"]["recommended_next_actions"][0]
+    assert "APPROVE (0 P1, 0 P2)" in action
+    assert "raise the budget or re-sprint" in action
+    assert "inspect and address" not in action
+
+
 # ── Engine: unknown residual never drops ──────────────────────────────────────
 
 
@@ -651,6 +795,31 @@ def test_reasonless_skip_is_not_the_unknown_residual(tmp_path: Path) -> None:
     assert entry["primary_failure_class"] == "skip_reason_unrecorded"
     assert entry["evidence"][-1]["rule_id"] == "captured_outcome"
     assert not any("forge diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_reasonless_skip_keeps_review_verdict_as_evidence(tmp_path: Path) -> None:
+    """A review cannot rewrite a SKIPPED row whose reason is absent."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-77",
+                    "outcome": "SKIPPED",
+                    "verdict": "REQUEST_CHANGES",
+                    "reviews": [{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                }
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-77"]
+    assert entry["primary_failure_class"] == "skip_reason_unrecorded"
+    assert any(item["rule_id"] == "review_changes_requested" for item in entry["evidence"])
+    actions = entry["recommended_next_actions"]
+    assert any("recorded no reason on its row" in action for action in actions)
+    assert not any("address the review findings" in action for action in actions)
 
 
 # ── Engine: monetary allocation exhaustion (#2292) ────────────────────────────
@@ -1648,8 +1817,8 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    # Bumped by #1759 (intake operator-review rule).
-    assert payload["ruleset_version"] == 14
+    # Bumped by #2999 (recorded review verdict survives in-flight stops).
+    assert payload["ruleset_version"] == 16
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
