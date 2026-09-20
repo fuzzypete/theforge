@@ -51,7 +51,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 15
+RULESET_VERSION = 16
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -2743,10 +2743,8 @@ def _recommend_actions(
         "sprint_budget_halted_in_flight": _budget_halted_in_flight_action(
             ref, review_verdict, review_verdict_detail
         ),
-        "agent_auth_rejected": (
-            f"re-authenticate the agent credential the run recorded as rejected, then "
-            f"re-sprint {ref} — the credential circuit breaker stopped the story, so "
-            "this is not a judgment about its work"
+        "agent_auth_rejected": _credential_rejected_action(
+            ref, review_verdict, review_verdict_detail
         ),
         "collision_stand_down": (
             f"land or clear the preserved work holding the files {ref} planned to change, "
@@ -3170,4 +3168,27 @@ def _budget_halted_in_flight_action(
     return (
         f"{prefix} — raise the budget or re-sprint {ref} in a new run; its work is "
         "unfinished, not rejected, and no model judged it"
+    )
+
+
+def _credential_rejected_action(
+    ref: str, review_verdict: str | None, review_verdict_detail: str
+) -> str:
+    """Recommend recovery after a credential stop without hiding a review."""
+    prefix = "re-authenticate the agent credential the run recorded as rejected"
+    if review_verdict == "REQUEST_CHANGES":
+        return (
+            f"{prefix}, then inspect and address {ref}'s recorded final review verdict"
+            f"{review_verdict_detail} before re-sprinting — the credential circuit breaker "
+            "stopped the story after that review"
+        )
+    if review_verdict is not None:
+        return (
+            f"{prefix}, then re-sprint {ref} — the credential circuit breaker stopped the "
+            f"story after its recorded final review verdict{review_verdict_detail}; the "
+            "work remains unfinished"
+        )
+    return (
+        f"{prefix}, then re-sprint {ref} — the credential circuit breaker stopped the "
+        "story, so this is not a judgment about its work"
     )

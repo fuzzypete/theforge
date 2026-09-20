@@ -644,6 +644,35 @@ def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) ->
     assert any("re-authenticate" in a for a in entry["recommended_next_actions"])
 
 
+def test_mid_flight_credential_stop_surfaces_recorded_review_verdict(tmp_path: Path) -> None:
+    """A credential stop does not erase a review judgment recorded before it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: agent credential rejected during REVIEW: "
+                    "OAuth token revoked",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "agent_auth_rejected"
+    evidence = next(
+        item for item in entry["evidence"] if item["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (2 P1, 1 P2)" in evidence["excerpt"]
+    action = entry["recommended_next_actions"][0]
+    assert "REQUEST_CHANGES (2 P1, 1 P2)" in action
+    assert "inspect and address" in action
+    assert "not a judgment about its work" not in action
+
+
 def test_collision_stand_down_skip_classifies_as_stand_down(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
@@ -1788,8 +1817,8 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    # Bumped by #2999 (recorded review verdict survives a budget halt).
-    assert payload["ruleset_version"] == 15
+    # Bumped by #2999 (recorded review verdict survives in-flight stops).
+    assert payload["ruleset_version"] == 16
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
