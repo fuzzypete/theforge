@@ -72,11 +72,12 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
     unchanged when no restructure is proposed.
 
     The restructure adds the modeled sections the specification asks of this
-    type. It also removes a section the selected type explicitly forbids: a bug
-    body cannot retain a feature-style acceptance-criteria section and pass the
-    shape gate. Every other part of the operator's structure is left intact — a
-    remediation offered toward a gate must be a no-op on input that gate already
-    accepts, and additive on input that is partially conformant (#2053).
+    type. It also rehomes content from a section the selected type explicitly
+    forbids: a bug body cannot retain a feature-style acceptance-criteria
+    section and pass the shape gate. Every other part of the operator's
+    structure is left intact — a remediation offered toward a gate must be a
+    no-op on input that gate already accepts, and additive on input that is
+    partially conformant (#2053).
     """
     current_body = current_body or ""
     if proposal.classification is Classification.BUG:
@@ -94,7 +95,7 @@ def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
     # criteria section is present. That section is forbidden by ``BUG_SPEC``;
     # retaining it means ``forge shape --apply`` labels the issue as a bug but
     # leaves it blocked by the very gate it is meant to repair (#3054).
-    body = _remove_acceptance_criteria_sections(current_body)
+    body = _rehome_acceptance_criteria_sections(current_body)
     missing_observed = not has_heading(body, _OBSERVED_HEADING_PATTERN)
     missing_expected = not has_heading(body, _EXPECTED_HEADING_PATTERN)
 
@@ -145,42 +146,37 @@ def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
     return render_issue_document(document)
 
 
-def _remove_acceptance_criteria_sections(body: str) -> str:
-    """Remove every acceptance-criteria section from a bug-body repair.
+def _rehome_acceptance_criteria_sections(body: str) -> str:
+    """Rehome feature-style checklist sections under Notes headings.
 
-    Section boundaries come from the same fence-aware heading scanner used by
-    the gate. This deliberately removes the heading and its whole owned block,
-    rather than merely relabelling it as Notes: acceptance-criteria checklists
-    are feature shape, not diagnostic evidence, and bugs have a separate
-    fix-success field in their Diagnosis section.
+    The bug specification forbids acceptance-criteria headings, but the text
+    beneath one is still operator-authored context.  Every heading recognized
+    by the specification — including its ``Checklist`` alias — is retitled
+    ``Notes`` in place, leaving its complete body under that heading.  This
+    clears the contradiction without dropping content or moving a later
+    checklist body beneath an unrelated section.  The fence-aware shared
+    scanner is essential: a heading in a Markdown sample is prose, not an
+    issue section to rewrite.
     """
     headings = iter_headings(body)
-    acceptance_criteria_heading = re.compile(ACCEPTANCE_CRITERIA_HEADING_PATTERN, re.IGNORECASE)
-    removals: list[tuple[int, int]] = []
-
-    for index, heading in enumerate(headings):
-        if not acceptance_criteria_heading.search(heading.group(2)):
-            continue
-        start = heading.start()
-        level = len(heading.group(1))
-        end = len(body)
-        for following in headings[index + 1 :]:
-            if len(following.group(1)) <= level:
-                end = following.start()
-                break
-        if removals and start < removals[-1][1]:
-            # A nested matching heading belongs to an already removed parent.
-            continue
-        removals.append((start, end))
-
-    if not removals:
+    replacements = [
+        heading
+        for heading in headings
+        if re.search(ACCEPTANCE_CRITERIA_HEADING_PATTERN, heading.group(2), re.IGNORECASE)
+    ]
+    if not replacements:
         return body
 
     chunks: list[str] = []
     cursor = 0
-    for start, end in removals:
-        chunks.append(body[cursor:start])
-        cursor = end
+    for heading in replacements:
+        heading_start = heading.start(1)
+        line_end = body.find("\n", heading_start)
+        if line_end == -1:
+            line_end = len(body)
+        chunks.append(body[cursor:heading_start])
+        chunks.append(f"{'#' * len(heading.group(1))} Notes")
+        cursor = line_end
     chunks.append(body[cursor:])
     return "".join(chunks)
 

@@ -827,8 +827,9 @@ written. **Epic** classifications may propose child stories in prose; no
 child issues are created.
 
 **The body restructure preserves existing structure except for a section that
-contradicts the selected type.** For a bug, it removes a feature-style
-`## Acceptance criteria` section, then appends what the shape gate reports
+contradicts the selected type.** For a bug, it retitles a feature-style
+`## Acceptance criteria` (or `## Checklist`) section as `## Notes`, keeping the
+operator-authored content beneath it, then appends what the shape gate reports
 missing — an absent `## Observed` / `## Expected` section, or the specific
 `## Diagnosis` components the gate names. Missing diagnosis components are
 inserted into the existing `## Diagnosis` section; other headings are never
