@@ -51,7 +51,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 14
+RULESET_VERSION = 15
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -381,7 +381,13 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="review_changes_requested",
         failure_class="review_rejected",
         role="primary",
-        description="Story escalated/failed with a REQUEST_CHANGES review verdict.",
+        description="A terminal review recorded a REQUEST_CHANGES verdict.",
+    ),
+    RcaRule(
+        rule_id="review_verdict_recorded",
+        failure_class="review_verdict_recorded",
+        role="informational",
+        description="A terminal review recorded a non-rejection verdict.",
     ),
     RcaRule(
         rule_id="dev_handoff_no_gate_evidence",
@@ -456,8 +462,7 @@ RULES: tuple[RcaRule, ...] = (
         role="primary",
         description=(
             "The sprint's spend met or passed the run's budget cap while this story "
-            "was running, so the sprint cancelled it at its next phase boundary. "
-            "Nothing judged the work — it is unfinished, not rejected."
+            "was running, so the sprint cancelled it at its next phase boundary."
         ),
     ),
     RcaRule(
@@ -913,10 +918,11 @@ def _classify_story(
     for rule_id, source, excerpt, matched_pattern, source_kind in hits:
         if rule_id in seen_rules:
             continue
-        rule = RULES_BY_ID.get(rule_id)
-        if rule is None:
-            continue
-        if skip_rule is not None and rule_id != skip_rule.rule_id:
+        if skip_rule is not None and rule_id not in {
+            skip_rule.rule_id,
+            "review_changes_requested",
+            "review_verdict_recorded",
+        }:
             # Dropped entirely — not even as evidence. The sprint stated why it
             # skipped this story; every other hit was matched in material the
             # skip decision never consulted (a declared depends_on list) or that
@@ -925,8 +931,17 @@ def _classify_story(
             # a hit as evidence is how the wrong reason reached the operator in
             # the first place: report surfaces quote evidence as the cause.
             continue
+        rule = RULES_BY_ID.get(rule_id)
+        if rule is None:
+            continue
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
+        if skip_rule is not None and rule_id == "review_changes_requested":
+            # A recorded review is important evidence, but the sprint's own
+            # budget-halt/skip outcome remains the primary classification.
+            # Otherwise this primary review rule would rewrite SKIPPED as a
+            # rejection merely because the review completed before the halt.
+            continue
         if recorded_skip_reason is not None and source_kind != "structured":
             # The reason was recorded but no rule receives it. Other structured
             # facts of the run may still classify the story; a pattern matched in
@@ -1047,10 +1062,13 @@ def _classify_story(
     )
 
     partial_value = _detect_partial_value(story, audit)
+    review_verdict, review_verdict_detail = _review_verdict_details(story, audit)
     actions = _recommend_actions(
         primary,
         contributing,
         story,
+        review_verdict=review_verdict,
+        review_verdict_detail=review_verdict_detail,
         capability_preset=capability_gap.preset if capability_gap else None,
         capability_profile_note=capability_gap.profile_note if capability_gap else None,
         allocation_shortfall=allocation_shortfall,
@@ -2199,7 +2217,7 @@ def _signal_rule_hits(
                 )
 
     # Review verdict — from the per-story audit reviews (or summary verdict).
-    verdict = _last_review_verdict(story, audit)
+    verdict, verdict_detail = _review_verdict_details(story, audit)
     # A dev iteration that terminates by handing off a completion claim without
     # gate PASS evidence (HANDOFF_NO_GATE_EVIDENCE) is the *terminal* failure: it
     # ran after — and was never re-reviewed by — any earlier review cycle. Do not
@@ -2230,12 +2248,21 @@ def _signal_rule_hits(
                 "structured",
             )
         )
-    elif verdict == "REQUEST_CHANGES" and outcome in {"ESCALATE", "ESCALATED", "FAILED"}:
+    elif verdict == "REQUEST_CHANGES":
         hits.append(
             (
                 "review_changes_requested",
                 audit_source if audit else summary_source,
-                _truncate(f"final review verdict REQUEST_CHANGES; outcome={outcome}"),
+                _truncate(f"final review verdict{verdict_detail}; outcome={outcome}"),
+                "structured",
+            )
+        )
+    elif verdict is not None:
+        hits.append(
+            (
+                "review_verdict_recorded",
+                audit_source if audit else summary_source,
+                _truncate(f"final review verdict{verdict_detail}; outcome={outcome}"),
                 "structured",
             )
         )
@@ -2635,6 +2662,8 @@ def _recommend_actions(
     contributing: list[str],
     story: dict,
     *,
+    review_verdict: str | None = None,
+    review_verdict_detail: str = "",
     capability_preset: str | None = None,
     capability_profile_note: str | None = None,
     allocation_shortfall: dict | None = None,
@@ -2708,10 +2737,8 @@ def _recommend_actions(
             f"budget or re-sprint {ref} in a new run; nothing about {ref}'s own work was "
             "judged"
         ),
-        "sprint_budget_halted_in_flight": (
-            f"the sprint's budget cap was reached while {ref} was running, so the sprint "
-            f"cancelled it at its next phase boundary — raise the budget or re-sprint {ref} "
-            "in a new run; its work is unfinished, not rejected, and no model judged it"
+        "sprint_budget_halted_in_flight": _budget_halted_in_flight_action(
+            ref, review_verdict, review_verdict_detail
         ),
         "agent_auth_rejected": (
             f"re-authenticate the agent credential the run recorded as rejected, then "
@@ -3080,3 +3107,58 @@ def _last_review_verdict(story: dict, audit: dict) -> str | None:
                 if raw:
                     return raw.upper()
     return None
+
+
+def _review_verdict_details(story: dict, audit: dict) -> tuple[str | None, str]:
+    """Return the terminal review verdict and any recorded P1/P2 counts.
+
+    The summary's direct verdict remains authoritative when present. Counts may
+    live on the summary's per-cycle review record or the per-story audit, so
+    only use a record whose verdict agrees with that terminal value.
+    """
+    verdict = _last_review_verdict(story, audit)
+    if verdict is None:
+        return None, ""
+
+    for container in (story, audit):
+        reviews = container.get("reviews") if isinstance(container, dict) else None
+        if not isinstance(reviews, list) or not reviews:
+            continue
+        last = reviews[-1]
+        recorded_verdict = _nonempty(last.get("verdict")) if isinstance(last, dict) else None
+        if recorded_verdict is None or recorded_verdict.upper() != verdict:
+            continue
+        counts = last.get("findings_by_severity")
+        if isinstance(counts, dict):
+            p1, p2 = counts.get("P1"), counts.get("P2")
+        else:
+            p1, p2 = last.get("p1_count"), last.get("p2_count")
+        counts_text = ", ".join(
+            f"{count} {severity}"
+            for severity, count in (("P1", p1), ("P2", p2))
+            if isinstance(count, int)
+        )
+        if counts_text:
+            return verdict, f" {verdict} ({counts_text})"
+        return verdict, f" {verdict}"
+    return verdict, f" {verdict}"
+
+
+def _budget_halted_in_flight_action(
+    ref: str, review_verdict: str | None, review_verdict_detail: str
+) -> str:
+    """Recommend recovery after an in-flight budget halt without hiding a review."""
+    prefix = (
+        f"the sprint's budget cap was reached while {ref} was running, so the sprint "
+        "cancelled it at its next phase boundary"
+    )
+    if review_verdict is not None:
+        return (
+            f"{prefix}; its recorded final review verdict was{review_verdict_detail} — "
+            "inspect and address that verdict before deciding whether a re-sprint needs "
+            "additional budget"
+        )
+    return (
+        f"{prefix} — raise the budget or re-sprint {ref} in a new run; its work is "
+        "unfinished, not rejected, and no model judged it"
+    )

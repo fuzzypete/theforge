@@ -560,6 +560,71 @@ def test_mid_flight_budget_halt_is_not_a_credential_rejection(tmp_path: Path) ->
     assert any("budget" in a for a in entry["recommended_next_actions"])
 
 
+def test_mid_flight_budget_halt_surfaces_recorded_review_verdict(tmp_path: Path) -> None:
+    """A budget halt does not erase the review judgment recorded before it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)",
+                    verdict="REQUEST_CHANGES",
+                    reviews=[{"verdict": "REQUEST_CHANGES", "p1_count": 15, "p2_count": 1}],
+                )
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "sprint_budget_halted_in_flight"
+    verdict_evidence = next(
+        evidence
+        for evidence in entry["evidence"]
+        if evidence["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (15 P1, 1 P2)" in verdict_evidence["excerpt"]
+    action = entry["recommended_next_actions"][0]
+    assert "REQUEST_CHANGES (15 P1, 1 P2)" in action
+    assert "no model judged it" not in action
+    assert "not rejected" not in action
+
+
+def test_mid_flight_budget_halt_surfaces_audit_review_verdict(tmp_path: Path) -> None:
+    """The per-story audit also supplies the verdict when the summary omits it."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)"
+                )
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2206" / "audit.yaml",
+        {
+            "reviews": [
+                {
+                    "verdict": "REQUEST_CHANGES",
+                    "findings_by_severity": {"P1": 2, "P2": 3},
+                }
+            ]
+        },
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    evidence = next(
+        item for item in entry["evidence"] if item["rule_id"] == "review_changes_requested"
+    )
+    assert "REQUEST_CHANGES (2 P1, 3 P2)" in evidence["excerpt"]
+    assert "REQUEST_CHANGES (2 P1, 3 P2)" in entry["recommended_next_actions"][0]
+
+
 def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
@@ -1648,8 +1713,8 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    # Bumped by #1759 (intake operator-review rule).
-    assert payload["ruleset_version"] == 14
+    # Bumped by #2999 (recorded review verdict survives a budget halt).
+    assert payload["ruleset_version"] == 15
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
