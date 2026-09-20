@@ -768,6 +768,31 @@ def test_reasonless_skip_is_not_the_unknown_residual(tmp_path: Path) -> None:
     assert not any("forge diagnose" in a for a in entry["recommended_next_actions"])
 
 
+def test_reasonless_skip_keeps_review_verdict_as_evidence(tmp_path: Path) -> None:
+    """A review cannot rewrite a SKIPPED row whose reason is absent."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-77",
+                    "outcome": "SKIPPED",
+                    "verdict": "REQUEST_CHANGES",
+                    "reviews": [{"verdict": "REQUEST_CHANGES", "p1_count": 2, "p2_count": 1}],
+                }
+            ]
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-77"]
+    assert entry["primary_failure_class"] == "skip_reason_unrecorded"
+    assert any(item["rule_id"] == "review_changes_requested" for item in entry["evidence"])
+    actions = entry["recommended_next_actions"]
+    assert any("recorded no reason on its row" in action for action in actions)
+    assert not any("address the review findings" in action for action in actions)
+
+
 # ── Engine: monetary allocation exhaustion (#2292) ────────────────────────────
 
 

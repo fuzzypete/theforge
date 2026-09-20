@@ -866,7 +866,9 @@ def _classify_story(
 
     # A skip the sprint recorded a reason for is classified from that reason and
     # from nothing else (#2312). The sprint stated why it stopped, in a sentence
-    # it controls; every other signal available for a skipped story is either
+    # it controls; a terminal review verdict remains visible as supplemental
+    # evidence but never replaces that recorded skipped outcome. Every other
+    # signal available for a skipped story is either
     # about a different subject (a declared depends_on list the skip decision
     # never consulted) or, for a story that was never dispatched, about a
     # different run entirely (audit/log artifacts a prior generation left in the
@@ -936,12 +938,12 @@ def _classify_story(
             continue
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
-        if recorded_skip_reason is not None and rule_id == "review_changes_requested":
-            # A recorded review is important evidence, but the sprint's own
-            # skip outcome remains the primary classification.  This guard is
-            # keyed to the recorded reason rather than to a matching skip rule:
-            # an unclassified skip reason is a taxonomy gap, not a rejection
-            # rewritten from a review that completed before the halt.
+        if outcome in SKIPPED_OUTCOMES and rule_id == "review_changes_requested":
+            # Classification and evidence have distinct owners here. The
+            # sprint's recorded skipped outcome owns the primary class for all
+            # skip shapes, including an unrecorded reason; a terminal review is
+            # still useful evidence, but cannot rewrite that recorded outcome
+            # as rejection merely because it completed before the halt.
             continue
         if recorded_skip_reason is not None and source_kind != "structured":
             # The reason was recorded but no rule receives it. Other structured

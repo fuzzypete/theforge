@@ -277,13 +277,18 @@ def test_skipped_budget_halt_stays_under_skipped_with_recorded_review_verdict(
     rca_stories = {
         "issue-2206": {
             "primary_failure_class": "sprint_budget_halted_in_flight",
-            "contributing_factors": [],
+            "contributing_factors": ["iteration_exhaustion"],
             "evidence": [
                 {
                     "source": "run-runBH-summary.yaml",
+                    "rule_id": "sprint_budget_halted_in_flight",
+                    "excerpt": "cancelled mid-flight after the budget cap was reached",
+                },
+                {
+                    "source": "issue-2206/audit.yaml",
                     "rule_id": "review_changes_requested",
                     "excerpt": "final review verdict REQUEST_CHANGES (2 P1); outcome=SKIPPED",
-                }
+                },
             ],
             "partial_value": [],
             "recommended_next_actions": [],
@@ -297,6 +302,11 @@ def test_skipped_budget_halt_stays_under_skipped_with_recorded_review_verdict(
     assert "⊘ #2206" in output
     assert "sprint_budget_halted_in_flight" in output
     assert "FAILED — sprint_budget_halted_in_flight" not in output
+    assert "contributing: iteration_exhaustion" in output
+    assert (
+        "final review verdict REQUEST_CHANGES (2 P1); outcome=SKIPPED at "
+        "issue-2206/audit.yaml" in output
+    )
 
 
 def test_failed_heading_is_literal_primary_class(tmp_path: Path) -> None:

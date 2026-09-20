@@ -529,6 +529,13 @@ def _print_skipped_intake(
             print(f"       {primary} — {detail}")
         else:
             print(f"       {primary}")
+        contributing = _string_list(entry.get("contributing_factors"))
+        if contributing:
+            print(f"       contributing: {', '.join(contributing)}")
+        evidence_lines = _evidence_lines(entry)
+        for index, line in enumerate(evidence_lines):
+            label = "evidence:    " if index == 0 else "             "
+            print(f"       {label} {line}")
         _print_entry_notes(entry)
 
 
