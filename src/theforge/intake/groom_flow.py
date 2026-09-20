@@ -404,6 +404,7 @@ def _next_command(
     *,
     issue_ref: str,
     issue_number: int | None,
+    issue_type: str | None,
     action: GroomAction,
     bug_state: BugDiagnosisState,
     post_verdict: ShapeVerdict,
@@ -415,6 +416,8 @@ def _next_command(
     ref_for_cmd = str(issue_number) if issue_number is not None else issue_ref
 
     if action is GroomAction.REFUSED:
+        if issue_type is None:
+            return f"forge shape {ref_for_cmd} --apply"
         return f"forge diagnose {ref_for_cmd}"
 
     if bug_state is BugDiagnosisState.CAUSE_UNKNOWN:
@@ -455,6 +458,12 @@ def _classify_action(
     investigation-ready regardless of staleness (per spec — staleness is
     informational for that state, not a refusal).
     """
+    if issue_type is None:
+        return (
+            GroomAction.REFUSED,
+            f"needs a recognized type label — run forge shape {issue_ref} --apply "
+            "to classify it before grooming.",
+        )
     if issue_type == "bug" and bug_state is BugDiagnosisState.NO_DIAGNOSIS:
         return GroomAction.REFUSED, "needs diagnosis — run forge diagnose <N> first."
     if (
@@ -535,6 +544,7 @@ def run_groom(
         next_cmd = _next_command(
             issue_ref=issue_ref,
             issue_number=loaded.number,
+            issue_type=issue_type,
             action=action,
             bug_state=bug_state,
             post_verdict=pre_verdict,
@@ -652,6 +662,7 @@ def run_groom(
     next_cmd = _next_command(
         issue_ref=issue_ref,
         issue_number=loaded.number,
+        issue_type=issue_type,
         action=action,
         bug_state=bug_state,
         post_verdict=post_verdict,

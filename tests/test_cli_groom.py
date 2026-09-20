@@ -11,7 +11,10 @@ import sqlite3
 from pathlib import Path
 
 from theforge.cli import groom as cli_groom
+from theforge.cli import shape as cli_shape
 from theforge.coordinator.audit_substrate import substrate_path
+from theforge.shape_check import ShapeVerdict
+from theforge.shape_check import check as shape_check
 
 _CONFIRMED_BUG_BODY = """\
 ## What happened
@@ -103,6 +106,53 @@ def test_cli_refusal_exits_nonzero(tmp_path, monkeypatch, capsys):
     assert "REFUSED" in captured.out
     assert "needs diagnosis" in captured.out
     assert "forge diagnose 1234" in captured.out
+
+
+def test_cli_refuses_untyped_bug_body_without_reporting_a_restructure(
+    tmp_path, monkeypatch, capsys
+):
+    body = _NO_DIAGNOSIS_BUG_BODY + "\n## Acceptance criteria\n\n- The failure is fixed.\n"
+    _patch_fetch(monkeypatch, {"title": "t", "body": body, "labels": []})
+    _patch_edit(monkeypatch, ok=True)
+
+    rc = cli_groom.cmd_groom(_build_args("3054", tmp_path, apply=True, want_next=True))
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "REFUSED" in captured.out
+    assert "recognized type label" in captured.out
+    assert "forge shape 3054 --apply" in captured.out
+    assert "Applied body restructure" not in captured.out
+
+    applied: dict[str, object] = {}
+
+    def apply_shape(issue_number, proposal, new_body, current_body, _cwd):
+        applied.update(
+            issue_number=issue_number,
+            labels=proposal.proposed_labels,
+            body=new_body,
+            current_body=current_body,
+        )
+        return True
+
+    monkeypatch.setattr(cli_shape, "_load_issue", lambda *_: ("t", body, []))
+    monkeypatch.setattr(cli_shape, "_apply_to_github", apply_shape)
+    shape_args = argparse.Namespace(
+        issue=3054,
+        apply=True,
+        next=False,
+        config=str(tmp_path / "forge.yaml"),
+        from_brief=None,
+        from_stdin=False,
+    )
+
+    assert cli_shape.cmd_shape(shape_args) == 0
+    shaped_body = applied["body"]
+    assert applied["issue_number"] == 3054
+    assert applied["labels"] == ("bug",)
+    assert isinstance(shaped_body, str)
+    assert "## Acceptance criteria" not in shaped_body
+    assert shape_check("t", shaped_body, ["bug"]).verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
 
 
 def test_cli_proposal_exits_2_without_apply(tmp_path, monkeypatch, capsys):

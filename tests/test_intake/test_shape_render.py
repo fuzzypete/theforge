@@ -14,6 +14,8 @@ from theforge.intake.shape_render import (
     render_proposal,
     restructure_body,
 )
+from theforge.shape_check import ShapeVerdict
+from theforge.shape_check import check as shape_check
 from theforge.shape_check.heuristics import diagnosis_completeness
 
 
@@ -60,6 +62,27 @@ def test_restructure_bug_is_noop_on_gate_passing_body():
     body = _complete_bug_body()
     assert diagnosis_completeness(body) == (True, [])
     assert restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body) == body
+
+
+def test_restructure_bug_rehomes_feature_checklists_as_notes():
+    body = (
+        _complete_bug_body()
+        + "\n## Acceptance criteria\n\n- The failure is fixed.\n\n"
+        + "## Checklist\n\n- A second operator-authored item.\n\n"
+        + "## Notes\n\nKeep this context.\n"
+    )
+
+    new = restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body)
+
+    assert "## Acceptance criteria" not in new
+    assert "## Checklist" not in new
+    # Both forbidden sections are retitled in place, so the Notes count grows by
+    # exactly the two rehomed headings — no matter how many the fixture already has.
+    assert new.count("## Notes") == body.count("## Notes") + 2
+    assert "The failure is fixed." in new
+    assert "A second operator-authored item." in new
+    assert "## Notes\n\nKeep this context.\n" in new
+    assert shape_check("t", new, ["bug"]).verdict is ShapeVerdict.RUNNABLE
 
 
 def test_restructure_bug_adds_only_missing_component_in_place():

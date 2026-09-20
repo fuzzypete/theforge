@@ -16,6 +16,7 @@ have never heard of — is written back intact.
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -53,6 +54,7 @@ from theforge.shape_check.parsing import (
     authoritative_section_span,
     find_authoritative_heading,
     has_heading,
+    iter_headings,
 )
 from theforge.shape_check.types import ShapeVerdict
 
@@ -69,11 +71,13 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
     """Return the proposed restructured body for the issue, or ``current_body``
     unchanged when no restructure is proposed.
 
-    The restructure is strictly additive: it adds the modeled sections the
-    specification asks of this type and nothing else. Existing operator
-    structure is never rewritten, re-levelled, or demoted into quoted prose — a
-    remediation offered toward a gate must be a no-op on input that gate already
-    accepts, and additive on input that is partially conformant (#2053).
+    The restructure adds the modeled sections the specification asks of this
+    type. It also rehomes content from a section the selected type explicitly
+    forbids: a bug body cannot retain a feature-style acceptance-criteria
+    section and pass the shape gate. Every other part of the operator's
+    structure is left intact — a remediation offered toward a gate must be a
+    no-op on input that gate already accepts, and additive on input that is
+    partially conformant (#2053).
     """
     current_body = current_body or ""
     if proposal.classification is Classification.BUG:
@@ -86,7 +90,12 @@ def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
 
 
 def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
-    body = current_body
+    # ``classify`` can correctly recognize an untyped bug from its
+    # observed/expected shape even when a stray feature-style acceptance
+    # criteria section is present. That section is forbidden by ``BUG_SPEC``;
+    # retaining it means ``forge shape --apply`` labels the issue as a bug but
+    # leaves it blocked by the very gate it is meant to repair (#3054).
+    body = _rehome_acceptance_criteria_sections(current_body)
     missing_observed = not has_heading(body, _OBSERVED_HEADING_PATTERN)
     missing_expected = not has_heading(body, _EXPECTED_HEADING_PATTERN)
 
@@ -135,6 +144,41 @@ def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
             document, DIAGNOSIS_SECTION.key, _diagnosis_section_body(proposal), type_spec=BUG_SPEC
         )
     return render_issue_document(document)
+
+
+def _rehome_acceptance_criteria_sections(body: str) -> str:
+    """Rehome feature-style checklist sections under Notes headings.
+
+    The bug specification forbids acceptance-criteria headings, but the text
+    beneath one is still operator-authored context.  Every heading recognized
+    by the specification — including its ``Checklist`` alias — is retitled
+    ``Notes`` in place, leaving its complete body under that heading.  This
+    clears the contradiction without dropping content or moving a later
+    checklist body beneath an unrelated section.  The fence-aware shared
+    scanner is essential: a heading in a Markdown sample is prose, not an
+    issue section to rewrite.
+    """
+    headings = iter_headings(body)
+    replacements = [
+        heading
+        for heading in headings
+        if re.search(ACCEPTANCE_CRITERIA_HEADING_PATTERN, heading.group(2), re.IGNORECASE)
+    ]
+    if not replacements:
+        return body
+
+    chunks: list[str] = []
+    cursor = 0
+    for heading in replacements:
+        heading_start = heading.start(1)
+        line_end = body.find("\n", heading_start)
+        if line_end == -1:
+            line_end = len(body)
+        chunks.append(body[cursor:heading_start])
+        chunks.append(f"{'#' * len(heading.group(1))} Notes")
+        cursor = line_end
+    chunks.append(body[cursor:])
+    return "".join(chunks)
 
 
 def _diagnosis_status_line(proposal: ShapeProposal) -> str:

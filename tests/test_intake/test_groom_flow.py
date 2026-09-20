@@ -384,6 +384,35 @@ def test_groom_refuses_bug_with_no_diagnosis():
     assert result.next_command == "forge diagnose 1234"
 
 
+def test_groom_refuses_untyped_bug_body_with_acceptance_criteria():
+    """Untyped bug bodies must not be treated as feature restructures."""
+    body = _NO_DIAGNOSIS_BUG_BODY + "\n## Acceptance criteria\n\n- The failure is fixed.\n"
+    edit_calls = []
+
+    def edit(*args):
+        edit_calls.append(args)
+        return True
+
+    fetch = _fake_fetch(
+        {
+            "title": "Tests sometimes fail flakily on CI",
+            "body": body,
+            "labels": [],
+        }
+    )
+    result = run_groom("3054", apply_changes=True, fetch_issue=fetch, edit_issue_body=edit)
+
+    assert result.action is GroomAction.REFUSED
+    assert result.issue_type is None
+    assert result.pre_verdict is ShapeVerdict.NEEDS_TYPE
+    assert result.post_verdict is ShapeVerdict.NEEDS_TYPE
+    assert result.proposed_body == body
+    assert result.applied is False
+    assert edit_calls == []
+    assert "recognized type label" in (result.refusal_reason or "")
+    assert result.next_command == "forge shape 3054 --apply"
+
+
 def test_groom_hook_filed_body_still_requires_diagnosis():
     fetch = _fake_fetch(
         {
